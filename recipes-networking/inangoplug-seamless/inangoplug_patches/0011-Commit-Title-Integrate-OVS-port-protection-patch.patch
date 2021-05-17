@@ -1,0 +1,512 @@
+From 00facfe0c4e6d3ff3689215f00426cc45ca8e5dc Mon Sep 17 00:00:00 2001
+From: Anastasiia Kononenko <a.hryts@inango-systems.com>
+Date: Tue, 30 Mar 2021 10:47:54 +0300
+Subject: [PATCH] Commit Title: Integrate OVS port protection patch
+
+BugID                 : 23104
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Ported Inango port-protection patch on OpenvSwitch 2.11
+---
+ ofproto/automake.mk       |   2 +
+ ofproto/connmgr.c         |  25 ++++
+ ofproto/connmgr.h         |   3 +
+ ofproto/port-protection.c | 296 ++++++++++++++++++++++++++++++++++++++++++++++
+ ofproto/port-protection.h |  40 +++++++
+ vswitchd/bridge.c         |  16 +++
+ 6 files changed, 382 insertions(+)
+
+diff --git a/ofproto/automake.mk b/ofproto/automake.mk
+index 7c08b563b..f5394654a 100644
+--- a/ofproto/automake.mk
++++ b/ofproto/automake.mk
+@@ -21,6 +21,8 @@ ofproto_libofproto_la_SOURCES = \
+ 	ofproto/fail-open.h \
+ 	ofproto/in-band.c \
+ 	ofproto/in-band.h \
++	ofproto/port-protection.c \
++	ofproto/port-protection.h \
+ 	ofproto/names.c \
+ 	ofproto/netflow.c \
+ 	ofproto/netflow.h \
+diff --git a/ofproto/connmgr.c b/ofproto/connmgr.c
+index 684f77c39..57bcd7f02 100644
+--- a/ofproto/connmgr.c
++++ b/ofproto/connmgr.c
+@@ -16,6 +16,7 @@
+ 
+ #include <config.h>
+ #include <errno.h>
++#include <ofproto/port-protection.h>
+ #include <stdlib.h>
+ 
+ #include "bundles.h"
+@@ -225,6 +226,7 @@ struct connmgr {
+ 
+     /* In-band control. */
+     struct in_band *in_band;
++    struct p_protect_info *p_protect_info;
+     struct sockaddr_in *extra_in_band_remotes;
+     size_t n_extra_remotes;
+     int in_band_queue;
+@@ -263,6 +265,7 @@ connmgr_create(struct ofproto *ofproto,
+     mgr->fail_mode = OFPROTO_FAIL_SECURE;
+ 
+     mgr->in_band = NULL;
++    mgr->p_protect_info = NULL;
+     mgr->extra_in_band_remotes = NULL;
+     mgr->n_extra_remotes = 0;
+     mgr->in_band_queue = -1;
+@@ -331,6 +334,7 @@ connmgr_destroy(struct connmgr *mgr)
+     mgr->fail_open = NULL;
+ 
+     in_band_destroy(mgr->in_band);
++    port_protection_destroy(mgr->p_protect_info);
+     mgr->in_band = NULL;
+     free(mgr->extra_in_band_remotes);
+     free(mgr->name);
+@@ -339,6 +343,22 @@ connmgr_destroy(struct connmgr *mgr)
+     free(mgr);
+ }
+ 
++void
++connmgr_port_protection_reconfigure(struct connmgr *mgr, bool enable_port_protection, char* port_list)
++{
++
++    if(enable_port_protection) {
++            if (!mgr->p_protect_info) {
++                port_protection_create(mgr->ofproto, &mgr->p_protect_info);
++        }
++    }
++
++    if (mgr->p_protect_info) {
++            port_protection_run(mgr->p_protect_info, enable_port_protection, port_list);
++    }
++}
++
++
+ /* Does all of the periodic maintenance required by 'mgr'.  Calls
+  * 'handle_openflow' for each message received on an OpenFlow connection,
+  * passing along the OpenFlow connection itself and the message that was sent.
+@@ -1986,6 +2006,11 @@ connmgr_count_hidden_rules(const struct connmgr *mgr)
+     if (mgr->in_band) {
+         n_hidden += in_band_count_rules(mgr->in_band);
+     }
++
++    if (mgr->p_protect_info) {
++        n_hidden += port_protection_count_rules(mgr->p_protect_info);
++    }
++
+     if (mgr->fail_open) {
+         n_hidden += fail_open_count_rules(mgr->fail_open);
+     }
+diff --git a/ofproto/connmgr.h b/ofproto/connmgr.h
+index 7ca7fe67b..3a8a1d37b 100644
+--- a/ofproto/connmgr.h
++++ b/ofproto/connmgr.h
+@@ -178,6 +178,9 @@ void connmgr_set_in_band_queue(struct connmgr *, int queue_id);
+ /* In-band implementation. */
+ bool connmgr_has_in_band(struct connmgr *);
+ 
++/* port protection configuration */
++void connmgr_port_protection_reconfigure(struct connmgr *mgr, bool enable_port_protection, char* port_list);
++
+ /* Fail-open and in-band implementation. */
+ void connmgr_flushed(struct connmgr *);
+ 
+diff --git a/ofproto/port-protection.c b/ofproto/port-protection.c
+new file mode 100644
+index 000000000..b5353c239
+--- /dev/null
++++ b/ofproto/port-protection.c
+@@ -0,0 +1,296 @@
++/*
++ * Copyright (c) 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015 Nicira, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at:
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include <config.h>
++#include <arpa/inet.h>
++#include <errno.h>
++#include <inttypes.h>
++#include <sys/socket.h>
++#include <net/if.h>
++#include <ofproto/port-protection.h>
++#include <string.h>
++#include <stdlib.h>
++#include "classifier.h"
++#include "dhcp.h"
++#include "flow.h"
++#include "netdev.h"
++#include "netlink.h"
++#include "odp-util.h"
++#include "openvswitch/ofp-actions.h"
++#include "ofproto.h"
++#include "openvswitch/ofpbuf.h"
++#include "ofproto-provider.h"
++#include "openflow/openflow.h"
++#include "packets.h"
++#include "openvswitch/poll-loop.h"
++#include "timeval.h"
++#include "openvswitch/vlog.h"
++#include "fail-open.h"
++
++VLOG_DEFINE_THIS_MODULE(p_protection);
++
++/* FAIL_OPEN_PRIORITY - priority of the rule added by the fail-open subsystem
++ * when a switch enters fail-open mode. Port protection flows priority values
++ * are higher than any that may be set with OpenFlow (FAIL_OPEN_PRIORITY). */
++
++#define P_PROTECT_FROM_LAN FAIL_OPEN_PRIORITY + 1
++#define P_PROTECT_FROM_CONTROLLER P_PROTECT_FROM_LAN + 1
++
++/* What to do to an p_protect_rule. */
++enum p_protect_op {
++    ADD,                       /* Add the rule to ofproto's flow table. */
++    DEL                        /* Delete the rule from ofproto's flow table. */
++};
++
++/* What action should be performd in rule. */
++enum p_protect_action {
++    DROP,
++    NORMAL
++};
++
++/* A rule to add to or delete from ofproto's flow table.  */
++struct p_protect_rule {
++    struct hmap_node hmap_node; /* In struct p_protect_info's "rules" hmap. */
++    struct match match;
++    int priority;
++    enum p_protect_op op;
++    enum p_protect_action act;
++};
++
++struct port_info {
++    struct sockaddr_storage ss;
++    short proto;
++};
++
++struct p_protect_info {
++    struct ofproto *ofproto;
++    bool enable_port_protection;
++
++    /* list of port which should be protected */
++    int n_ports;
++    struct port_info *ports;
++    /* Flow tracking. */
++    struct hmap rules;          /* Contains "struct p_protect_rule"s. */
++};
++
++int parse_port_protection(struct p_protect_info *prtc, const char *target) {
++    struct port_info *port_info;
++    char *tmp, *target_list, *context;
++    int n_ports = 0;
++    int i = 0;
++    /* count of ports in target */
++    if (prtc->ports) {
++        free(prtc->ports);
++        prtc->ports = NULL;
++    }
++    if (target == NULL)
++    {
++        return 0;
++    }
++    target_list = strdup(target);
++    tmp = target_list;
++    while(*tmp)
++    {
++        if(*tmp++ == ',')
++          n_ports++;
++    }
++    n_ports++;
++
++    prtc->ports = n_ports ? xzalloc(n_ports * sizeof *prtc->ports) : NULL;
++
++    tmp = strtok_r (target_list,",", &context);
++    while (tmp != NULL)
++    {
++        port_info = &prtc->ports[i];
++        if(!strncmp(tmp, "tcp:", 4))
++            {
++                port_info->proto = IPPROTO_TCP;
++            } else if (!strncmp(tmp, "udp:", 4)) {
++                port_info->proto = IPPROTO_UDP;
++            } else {
++                VLOG_ERR("Unknown proto %s", tmp);
++                tmp = strtok_r(NULL,",", &context);
++                continue;
++            }
++
++            if (!inet_parse_passive(strchr(tmp, ':') + 1, -1, &port_info->ss)) {
++                VLOG_ERR("Cannot parse port protection info %s", tmp);
++                tmp = strtok_r(NULL,",", &context);
++                continue;
++            }
++            i++;
++            if (i > n_ports) {
++                VLOG_ERR("Cannot parse full port list,  %s", target);
++                break;
++            }
++            tmp = strtok_r(NULL,",", &context);
++    }
++
++    free (target_list);
++
++    if (i < n_ports)
++        n_ports = i;
++
++    prtc->n_ports = n_ports;
++
++    return n_ports;
++}
++
++
++
++
++/* Returns the number of port protection rules currently installed in the flow
++ * table. */
++int
++port_protection_count_rules(const struct p_protect_info *prtc)
++{
++    return hmap_count(&prtc->rules);
++}
++
++static void
++add_rule(struct p_protect_info *prtc, const struct match *match, int priority, enum p_protect_action act)
++{
++    uint32_t hash = match_hash(match, 0);
++    struct p_protect_rule *rule;
++
++    HMAP_FOR_EACH_WITH_HASH (rule, hmap_node, hash, &prtc->rules) {
++        if (match_equal(&rule->match, match)) {
++            rule->op = ADD;
++            return;
++        }
++    }
++
++    rule = xmalloc(sizeof *rule);
++    rule->match = *match;
++    rule->priority = priority;
++    rule->op = ADD;
++    rule->act = act;
++    hmap_insert(&prtc->rules, &rule->hmap_node, hash);
++}
++
++static void
++update_rules(struct p_protect_info *prtc)
++{
++    struct p_protect_rule *prtc_rule;
++    struct port_info port_info;
++    struct match match;
++    int i;
++
++    /* Mark all the existing rules for deletion.  (Afterward we will re-add any
++     * rules that are still valid.) */
++    HMAP_FOR_EACH (prtc_rule, hmap_node, &prtc->rules) {
++        prtc_rule->op = DEL;
++    }
++
++    if (prtc->enable_port_protection && prtc->n_ports != 0) {
++        for (i = 0; i < prtc->n_ports; i++) {
++            port_info = prtc->ports[i];
++            int port = ss_get_port(&port_info.ss);
++            /* (g) Deny ANY requests containing the destination specified port (from port protection). */
++            match_init_catchall(&match);
++            match_set_nw_proto(&match, port_info.proto);
++            match_set_tp_dst(&match, htons(port));
++            add_rule(prtc, &match, P_PROTECT_FROM_LAN, DROP);
++
++            /* (f) Allow port protection request from any controller port to specified port. */
++            match_init_catchall(&match);
++            match_set_in_port(&match, OFPP_CONTROLLER);
++            match_set_nw_proto(&match, port_info.proto);
++            match_set_tp_dst(&match, htons(port));
++            add_rule(prtc, &match, P_PROTECT_FROM_CONTROLLER, NORMAL);
++        }
++    }
++}
++
++/* Updates the OpenFlow flow table for the current state of port protection control.
++ * Returns true ordinarily.  Returns false if 'p_protect_info' doesn't have any rules
++ * left to remove from the OpenFlow flow table. Thus, a false return value
++ * means that the caller can destroy 'p_protect_info' without leaving extra flows
++ * hanging around in the flow table. */
++bool
++port_protection_run(struct p_protect_info *prtc, bool enable_port_protection, char* port_list)
++{
++    uint64_t ofpacts_stub[128 / 8];
++    struct ofpbuf ofpacts;
++
++    struct p_protect_rule *rule, *next;
++
++    prtc->enable_port_protection = enable_port_protection;
++
++    ofpbuf_use_stub(&ofpacts, ofpacts_stub, sizeof ofpacts_stub);
++
++    parse_port_protection(prtc, port_list);
++    update_rules(prtc);
++
++    HMAP_FOR_EACH_SAFE (rule, next, hmap_node, &prtc->rules) {
++        switch (rule->op) {
++        case ADD:
++            if (rule->act == NORMAL)
++            {
++                ofpact_put_OUTPUT(&ofpacts)->port = OFPP_NORMAL;
++            }
++            else
++            {
++                ofpbuf_clear(&ofpacts);
++            }
++            ofproto_add_flow(prtc->ofproto, &rule->match, rule->priority,
++                             ofpacts.data, ofpacts.size);
++            break;
++
++        case DEL:
++            ofproto_delete_flow(prtc->ofproto, &rule->match, rule->priority);
++            hmap_remove(&prtc->rules, &rule->hmap_node);
++            free(rule);
++            break;
++        }
++    }
++
++    ofpbuf_uninit(&ofpacts);
++
++    return !hmap_is_empty(&prtc->rules);
++}
++
++int
++port_protection_create(struct ofproto *ofproto, struct p_protect_info **prtcp)
++{
++    struct p_protect_info *prtc;
++
++    *prtcp = NULL;
++    prtc = xzalloc(sizeof *prtc);
++    prtc->ofproto = ofproto;
++    hmap_init(&prtc->rules);
++
++    *prtcp = prtc;
++
++    return 0;
++}
++
++void
++port_protection_destroy(struct p_protect_info *prtc)
++{
++    if (prtc) {
++        struct p_protect_rule *rule, *next;
++
++        HMAP_FOR_EACH_SAFE (rule, next, hmap_node, &prtc->rules) {
++            hmap_remove(&prtc->rules, &rule->hmap_node);
++            free(rule);
++        }
++        free(prtc->ports);
++        hmap_destroy(&prtc->rules);
++        free(prtc);
++    }
++}
++
+diff --git a/ofproto/port-protection.h b/ofproto/port-protection.h
+new file mode 100644
+index 000000000..af531a715
+--- /dev/null
++++ b/ofproto/port-protection.h
+@@ -0,0 +1,40 @@
++/*
++ * Copyright (c) 2008, 2009, 2010, 2011, 2013, 2015 Nicira, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at:
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef PORT_PROTECTION_H
++#define PORT_PROTECTION_H 1
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <sys/socket.h>
++#include <netinet/in.h>
++#include "flow.h"
++
++struct flow;
++struct p_protect_info;
++struct nlattr;
++struct ofpbuf;
++struct ofproto;
++
++int port_protection_create(struct ofproto *, struct p_protect_info **);
++void port_protection_destroy(struct p_protect_info *);
++
++bool port_protection_run(struct p_protect_info *p_protect_info, bool enable_port_protection, char* port_list);
++void port_protection_wait(struct p_protect_info *);
++
++int port_protection_count_rules(const struct p_protect_info *p_protect_info);
++
++#endif /* port-protection.h */
+diff --git a/vswitchd/bridge.c b/vswitchd/bridge.c
+index 83708ee51..5e4364085 100644
+--- a/vswitchd/bridge.c
++++ b/vswitchd/bridge.c
+@@ -41,6 +41,7 @@
+ #include "nx-match.h"
+ #include "ofproto/bond.h"
+ #include "ofproto/ofproto.h"
++#include "ofproto/connmgr.h"
+ #include "openvswitch/dynamic-string.h"
+ #include "openvswitch/list.h"
+ #include "openvswitch/meta-flow.h"
+@@ -318,6 +319,7 @@ static bool iface_is_synthetic(const struct iface *);
+ static ofp_port_t iface_get_requested_ofp_port(
+     const struct ovsrec_interface *);
+ static ofp_port_t iface_pick_ofport(const struct ovsrec_interface *);
++static void bridge_configure_port_protection(struct bridge *br);
+ 
+ 
+ static void discover_types(const struct ovsrec_open_vswitch *cfg);
+@@ -710,6 +712,7 @@ bridge_reconfigure(const struct ovsrec_open_vswitch *ovs_cfg)
+         bridge_configure_tables(br);
+         bridge_configure_dp_desc(br);
+         bridge_configure_aa(br);
++        bridge_configure_port_protection(br);
+     }
+     free(managers);
+ 
+@@ -3537,6 +3540,19 @@ equal_pathnames(const char *a, const char *b, size_t b_stoplen)
+ }
+ 
+ static void
++bridge_configure_port_protection(struct bridge *br)
++{
++        bool enable_port_protection;
++    char* list_port_protection;
++
++    enable_port_protection = smap_get_bool(&br->cfg->other_config, "enable-port-protection",
++                                       false);
++
++    list_port_protection = smap_get(&br->cfg->other_config, "list-port-protection");
++
++    connmgr_port_protection_reconfigure(br->ofproto->connmgr, enable_port_protection, list_port_protection);
++}
++
+ bridge_configure_remotes(struct bridge *br,
+                          const struct sockaddr_in *managers, size_t n_managers)
+ {

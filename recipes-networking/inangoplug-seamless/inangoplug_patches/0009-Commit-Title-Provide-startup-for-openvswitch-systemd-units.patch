@@ -1,0 +1,369 @@
+From 5a6899721978c3dfbed92cfb850f54d0aff25c99 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Mon, 15 Mar 2021 16:22:21 +0200
+Subject: [PATCH] Commit Title: Provide startup for openvswitch systemd units
+
+BugID: 23213
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description: Resolved issue with systemd units for ovs, added new brcompatd service.
+---
+ rhel/usr_lib_systemd_system_openvswitch.service    |  3 +-
+ .../usr_lib_systemd_system_ovs-vswitchd.service.in |  8 ++--
+ rhel/usr_lib_systemd_system_ovsdb-server.service   |  8 ++--
+ ...sr_share_openvswitch_scripts_ovs-systemd-reload | 12 ++++++
+ utilities/ovs-ctl.in                               | 48 ++++++++++++++++++++-
+ utilities/ovs-kmod-ctl.in                          | 50 ++++++++++++++++------
+ utilities/ovs-lib.in                               | 12 ++++++
+ 7 files changed, 116 insertions(+), 25 deletions(-)
+
+diff --git a/rhel/usr_lib_systemd_system_openvswitch.service b/rhel/usr_lib_systemd_system_openvswitch.service
+index feaba37d5..61b312b14 100644
+--- a/rhel/usr_lib_systemd_system_openvswitch.service
++++ b/rhel/usr_lib_systemd_system_openvswitch.service
+@@ -1,10 +1,11 @@
+ [Unit]
+ Description=Open vSwitch
+ Before=network.target network.service
+-After=network-pre.target ovsdb-server.service ovs-vswitchd.service
++After=network-pre.target ovsdb-server.service ovs-vswitchd.service ovs-brcompatd.service
+ PartOf=network.target
+ Requires=ovsdb-server.service
+ Requires=ovs-vswitchd.service
++Requires=ovs-brcompatd.service
+ 
+ [Service]
+ Type=oneshot
+diff --git a/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in b/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
+index 525deae0b..d2c2ce860 100644
+--- a/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
++++ b/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
+@@ -12,18 +12,18 @@ Type=forking
+ Restart=on-failure
+ Environment=XDG_RUNTIME_DIR=/var/run/openvswitch
+ EnvironmentFile=/etc/openvswitch/default.conf
+-EnvironmentFile=-/etc/sysconfig/openvswitch
++EnvironmentFile=-/nvram/openvswitch.conf
+ EnvironmentFile=-/run/openvswitch/useropts
+ @begin_dpdk@
+ ExecStartPre=-/bin/sh -c '/usr/bin/chown :$${OVS_USER_ID##*:} /dev/hugepages'
+ ExecStartPre=-/usr/bin/chmod 0775 /dev/hugepages
+ @end_dpdk@
+ ExecStart=/usr/share/openvswitch/scripts/ovs-ctl \
+-          --no-ovsdb-server --no-monitor --system-id=random \
++          --no-ovsdb-server --no-ovs-brcompatd --no-monitor --system-id=random \
+           ${OVSUSER} \
+           start $OPTIONS
+-ExecStop=/usr/share/openvswitch/scripts/ovs-ctl --no-ovsdb-server stop
+-ExecReload=/usr/share/openvswitch/scripts/ovs-ctl --no-ovsdb-server \
++ExecStop=/usr/share/openvswitch/scripts/ovs-ctl --no-ovsdb-server --no-ovs-brcompatd stop
++ExecReload=/usr/share/openvswitch/scripts/ovs-ctl --no-ovsdb-server --no-ovs-brcompatd \
+           --no-monitor --system-id=random \
+           ${OVSUSER} \
+           restart $OPTIONS
+diff --git a/rhel/usr_lib_systemd_system_ovsdb-server.service b/rhel/usr_lib_systemd_system_ovsdb-server.service
+index 70da1ec95..7c3ce6727 100644
+--- a/rhel/usr_lib_systemd_system_ovsdb-server.service
++++ b/rhel/usr_lib_systemd_system_ovsdb-server.service
+@@ -9,16 +9,16 @@ PartOf=openvswitch.service
+ Type=forking
+ Restart=on-failure
+ EnvironmentFile=/etc/openvswitch/default.conf
+-EnvironmentFile=-/etc/sysconfig/openvswitch
++EnvironmentFile=-/nvram/openvswitch.conf
+ ExecStartPre=/usr/bin/chown ${OVS_USER_ID} /var/run/openvswitch /var/log/openvswitch
+ ExecStartPre=/bin/sh -c 'rm -f /run/openvswitch/useropts; if [ "$${OVS_USER_ID/:*/}" != "root" ]; then /usr/bin/echo "OVSUSER=--ovs-user=${OVS_USER_ID}" > /run/openvswitch/useropts; fi'
+ EnvironmentFile=-/run/openvswitch/useropts
+ ExecStart=/usr/share/openvswitch/scripts/ovs-ctl \
+-          --no-ovs-vswitchd --no-monitor --system-id=random \
++          --no-ovs-vswitchd --no-ovs-brcompatd --no-monitor --system-id=random \
+           ${OVSUSER} \
+           start $OPTIONS
+-ExecStop=/usr/share/openvswitch/scripts/ovs-ctl --no-ovs-vswitchd stop
+-ExecReload=/usr/share/openvswitch/scripts/ovs-ctl --no-ovs-vswitchd \
++ExecStop=/usr/share/openvswitch/scripts/ovs-ctl --no-ovs-vswitchd --no-ovs-brcompatd stop
++ExecReload=/usr/share/openvswitch/scripts/ovs-ctl --no-ovs-vswitchd --no-ovs-brcompatd \
+            ${OVSUSER} \
+            --no-monitor restart $OPTIONS
+ RuntimeDirectory=openvswitch
+diff --git a/rhel/usr_share_openvswitch_scripts_ovs-systemd-reload b/rhel/usr_share_openvswitch_scripts_ovs-systemd-reload
+index 894df0427..f43319873 100755
+--- a/rhel/usr_share_openvswitch_scripts_ovs-systemd-reload
++++ b/rhel/usr_share_openvswitch_scripts_ovs-systemd-reload
+@@ -13,6 +13,10 @@
+ # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
++#
++#Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++#Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++#
+ 
+ case $0 in
+     */*) dir0=`echo "$0" | sed 's,/[^/]*$,,'` ;;
+@@ -36,6 +40,14 @@ start_forwarding() {
+     systemctl --job-mode=ignore-dependencies start ovs-vswitchd
+ }
+ 
++stop_brcompatd() {
++    systemctl --job-mode=ignore-dependencies stop ovs-brcompatd
++}
++
++start_brcompatd() {
++    systemctl --job-mode=ignore-dependencies start ovs-brcompatd
++}
++
+ add_managers() {
+     :
+ }
+diff --git a/utilities/ovs-ctl.in b/utilities/ovs-ctl.in
+index 9c2a092ea..e6f62ac10 100644
+--- a/utilities/ovs-ctl.in
++++ b/utilities/ovs-ctl.in
+@@ -12,6 +12,10 @@
+ # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
++#
++#Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++#Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++#
+ 
+ case $0 in
+     */*) dir0=`echo "$0" | sed 's,/[^/]*$,,'` ;;
+@@ -32,7 +36,7 @@ done
+ 
+ insert_mod_if_required () {
+     ## This takes care of inserting any required kernel modules
+-    ovs_kmod_ctl insert
++    ovs_kmod_ctl --ovs-bridges=$OVS_BRIDGES insert
+ }
+ 
+ set_hostname () {
+@@ -227,6 +231,30 @@ start_forwarding () {
+     return 0
+ }
+ 
++do_start_brcompatd () {
++    if daemon_is_running ovs-brcompatd; then
++        log_success_msg "ovs-brcompatd is already running"
++    else
++        # Start ovs-brcompatd.
++        set ovs-brcompatd
++        if test X"$SELF_CONFINEMENT" = Xno; then
++            set "$@" --no-self-confinement
++        fi
++        [ "$OVS_USER" != "" ] && set "$@" --user "$OVS_USER"
++
++        start_daemon "$OVS_BRCOMPATD_PRIORITY" "$OVS_BRCOMPATD_WRAPPER" "$@" ||
++            return 1
++    fi
++}
++
++start_brcompatd () {
++    if test X"$OVS_BRCOMPATD" = Xyes; then
++        do_start_brcompatd || return 1
++    fi
++
++    return 0
++}
++
+ start_ovs_ipsec () {
+     ${datadir}/scripts/ovs-monitor-ipsec \
+         --pidfile=${rundir}/ovs-monitor-ipsec.pid \
+@@ -251,6 +279,12 @@ stop_forwarding () {
+     fi
+ }
+ 
++stop_brcompatd () {
++    if test X"$OVS_BRCOMPATD" = Xyes; then
++        stop_daemon ovs-brcompatd
++    fi
++}
++
+ stop_ovs_ipsec () {
+     ${bindir}/ovs-appctl -t ovs-monitor-ipsec exit || return 1
+     return 0
+@@ -322,10 +356,14 @@ set_defaults () {
+     OVS_USER=
+     OVSDB_SERVER=yes
+     OVS_VSWITCHD=yes
++    OVS_BRCOMPATD=yes
+     OVSDB_SERVER_PRIORITY=-10
+     OVS_VSWITCHD_PRIORITY=-10
++    OVS_BRCOMPATD_PRIORITY=-10
+     OVSDB_SERVER_WRAPPER=
+     OVS_VSWITCHD_WRAPPER=
++    OVS_BRCOMPATD_WRAPPER=
++    OVS_BRIDGES=
+ 
+     DB_FILE=$dbdir/conf.db
+     DB_SOCK=$rundir/db.sock
+@@ -356,6 +394,10 @@ set_defaults () {
+         SYSTEM_TYPE=unknown
+         SYSTEM_VERSION=unknown
+     fi
++
++    if ! test -e /nvram/openvswitch.conf; then
++        echo 'OPTIONS="--ovs-bridges=brlan0"' > /nvram/openvswitch.conf
++    fi
+ }
+ 
+ usage () {
+@@ -454,7 +496,7 @@ set_option () {
+ }
+ 
+ daemons () {
+-    echo ovsdb-server ovs-vswitchd
++    echo ovsdb-server ovs-vswitchd ovs-brcompatd
+ }
+ 
+ set_defaults
+@@ -518,9 +560,11 @@ case $command in
+     start)
+         start_ovsdb || exit 1
+         start_forwarding || exit 1
++        start_brcompatd || exit 1
+         add_managers
+         ;;
+     stop)
++        stop_brcompatd
+         stop_forwarding
+         stop_ovsdb
+         ;;
+diff --git a/utilities/ovs-kmod-ctl.in b/utilities/ovs-kmod-ctl.in
+index 19f100964..fee0f0916 100644
+--- a/utilities/ovs-kmod-ctl.in
++++ b/utilities/ovs-kmod-ctl.in
+@@ -13,6 +13,10 @@
+ # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
++#
++#Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++#Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++#
+ 
+ case $0 in
+     */*) dir0=`echo "$0" | sed 's,/[^/]*$,,'` ;;
+@@ -32,6 +36,20 @@ insert_mods () {
+     action "Inserting openvswitch module" modprobe openvswitch
+ }
+ 
++insert_brc_mods () {
++    if test -e /sys/module/bridge; then
++        # Try loading brcompat kernel module.
++        if test X"$OVS_BRIDGES" != X; then
++            action "Inserting openvswitch module" modprobe brcompat bridges=$OVS_BRIDGES
++        else
++            action "Inserting openvswitch module" modprobe brcompat
++        fi
++    else
++        log_failure_msg "You need to load the Linux bridge module before the brcompat module will be loaded."
++        return 1
++    fi
++}
++
+ insert_kmods_if_required() {
+     # If this kernel has no module support, expect we're done.
+     if test ! -e /proc/modules
+@@ -41,23 +59,18 @@ insert_kmods_if_required() {
+     fi
+ 
+     # If openvswitch is already loaded then we're done.
+-    test -e /sys/module/openvswitch && return 0
+-
+-    # Load openvswitch.  If that's successful then we're done.
+-    insert_mods && return 0
++    if ! test -e /sys/module/openvswitch; then
++        # Load openvswitch.  If that's successful then we're done.
++        insert_mods || return 1
++    fi
+ 
+-    # If the bridge module is loaded, then that might be blocking
+-    # openvswitch.  Try to unload it, if there are no bridges.
+-    test -e /sys/module/bridge || return 1
+-    bridges=`echo /sys/class/net/*/bridge | sed 's,/sys/class/net/,,g;s,/bridge,,g'`
+-    if test "$bridges" != "*"; then
+-        log_warning_msg "not removing bridge module because bridges exist ($bridges)"
+-        return 1
++    # If brcompat is already loaded then we're done.
++    if ! test -e /sys/module/brcompat; then
++        # Load brcompat.  If that's successful then we're done.
++        insert_brc_mods || return 1
+     fi
+-    action "removing bridge module" rmmod bridge || return 1
+ 
+-    # Try loading openvswitch again.
+-    insert_mods
++    return 0
+ }
+ 
+ remove_kmods() {
+@@ -77,6 +90,10 @@ remove_kmods() {
+         action "Removing openvswitch module" rmmod openvswitch
+     fi
+ 
++    if test -e /sys/module/brcompat; then
++        action "Removing openvswitch module" rmmod brcompat
++    fi
++
+     # Older releases may be using the rtnetlink interface while a
+     # newer release will want to use the internal compat interface
+     # for geneve and vxlan.
+@@ -97,6 +114,10 @@ remove_kmods() {
+     fi
+ }
+ 
++set_defaults () {
++    OVS_BRIDGES=
++}
++
+ usage () {
+     cat <<EOF
+ $0: controls Open vSwitch kernel modules
+@@ -141,6 +162,7 @@ set_option () {
+     eval $var=\$value
+ }
+ 
++set_defaults
+ extra_ids=
+ command=
+ for arg
+diff --git a/utilities/ovs-lib.in b/utilities/ovs-lib.in
+index 9a0af2e82..c4d6e43e5 100644
+--- a/utilities/ovs-lib.in
++++ b/utilities/ovs-lib.in
+@@ -16,6 +16,10 @@
+ # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
++#
++#Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++#Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++#
+ 
+ ## ----------------- ##
+ ## configure options ##
+@@ -642,6 +646,10 @@ force_reload_kmod () {
+     flow_restore_wait
+     start_forwarding || return 1
+ 
++    # Restart the ovs-brcompatd
++    stop_brcompatd
++    start_brcompatd || return 1
++
+     # Restore saved flows and inform vswitchd that we are done.
+     restore_flows
+     flow_restore_complete
+@@ -675,6 +683,10 @@ restart () {
+     flow_restore_wait
+     start_forwarding || return 1
+ 
++    # Restart the ovs-brcompatd
++    stop_brcompatd
++    start_brcompatd || return 1
++
+     # Restore saved flows and inform vswitchd that we are done.
+     restore_flows
+     flow_restore_complete

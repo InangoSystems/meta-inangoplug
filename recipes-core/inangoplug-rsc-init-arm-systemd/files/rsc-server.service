@@ -1,0 +1,8 @@
+[Unit]
+Description=Remote system call server
+After=puma_fs.service
+
+[Service]
+EnvironmentFile=/etc/systemd/rsc-server_default.conf
+ExecStart=/usr/bin/rsc-server -i $net_interface -p $tcp_port
+Type=simple

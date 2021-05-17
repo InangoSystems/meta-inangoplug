@@ -1,0 +1,8 @@
+[Unit]
+Description=RSC-proxy
+Requires=rsc-init@%i.service
+
+[Service]
+EnvironmentFile=/etc/systemd/rsc-proxy_default.conf
+EnvironmentFile=/tmp/rsc-proxy_%i.conf
+ExecStart=/usr/bin/tcp-proxy -i %i --dst-ip $ip_addr --src-port $port

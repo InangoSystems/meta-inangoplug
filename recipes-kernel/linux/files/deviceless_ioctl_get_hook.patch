@@ -1,0 +1,31 @@
+diff --git a/include/linux/if_bridge.h b/include/linux/if_bridge.h
+index c6587c0..2c0ebe7 100644
+--- a/include/linux/if_bridge.h
++++ b/include/linux/if_bridge.h
+@@ -49,6 +49,9 @@ struct br_ip_list {
+ 
+ #define BR_DEFAULT_AGEING_TIME	(300 * HZ)
+ 
++typedef int (*br_ioctl_hook_t)(struct net *, unsigned int, void __user *arg);
++extern br_ioctl_hook_t brioctl_get(void);
++
+ extern void brioctl_set(int (*ioctl_hook)(struct net *, unsigned int, void __user *));
+ 
+ typedef int br_should_route_hook_t(struct sk_buff *skb);
+diff --git a/net/socket.c b/net/socket.c
+index 27ff59c..0ae3b1f 100644
+--- a/net/socket.c
++++ b/net/socket.c
+@@ -867,6 +867,12 @@ void brioctl_set(int (*hook) (struct net *, unsigned int, void __user *))
+ }
+ EXPORT_SYMBOL(brioctl_set);
+ 
++br_ioctl_hook_t brioctl_get(void)
++{
++	return br_ioctl_hook;
++}
++EXPORT_SYMBOL(brioctl_get);
++
+ static DEFINE_MUTEX(vlan_ioctl_mutex);
+ static int (*vlan_ioctl_hook) (struct net *, void __user *arg);
+ 

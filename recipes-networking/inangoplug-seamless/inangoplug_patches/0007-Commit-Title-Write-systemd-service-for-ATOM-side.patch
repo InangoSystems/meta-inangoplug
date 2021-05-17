@@ -1,0 +1,48 @@
+From b5514d52e3e9ff6c5b363d8d075ee629129ef0ba Mon Sep 17 00:00:00 2001
+From: Anastasiia Kononenko <a.hryts@inango-systems.com>
+Date: Tue, 16 Mar 2021 12:22:21 +0200
+Subject: [PATCH] Commit Title: Write systemd service for ATOM side
+
+BugID: 23101
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description: Added start/stop for rsc systemd services in the moment of adding/deleting bridge.
+---
+ vswitchd/ovs-brcompatd.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 1c6357c7f..c544e1dc3 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -330,6 +330,19 @@ send_simple_reply(uint32_t seq, int error)
+     send_reply(compose_reply(error), seq);
+ }
+ 
++/* Start and stop for rsc-server and rsc-proxy for specified bridge */
++static int
++on_bridge_add_del(bool add, const char *br_name)
++{
++    int error;
++    const char *add_br = add ? "true" : "false";
++
++    if (!run_vsctl("/etc/scripts/on_ovs_bridge_event.sh", add_br, br_name, (char *) NULL)) {
++        error = EINVAL;
++    }
++    return error;
++}
++
+ static int
+ handle_bridge_cmd(struct ofpbuf *buffer, bool add)
+ {
+@@ -346,6 +359,10 @@ handle_bridge_cmd(struct ofpbuf *buffer, bool add)
+                        "--", "comment", "ovs-brcompatd:", brctl_cmd, br_name,
+                        (char *) NULL)) {
+             error = add ? EEXIST : ENXIO;
++        } else {
++            if(!on_bridge_add_del(add, br_name)) {
++                VLOG_WARN_RL(&rl, "Function on_bridge_add_del failed to start/stop rsc-server and rsc-proxy for specified bridge");
++            }
+         }
+         if (add && !error)
+             set_default_parameters(br_name);

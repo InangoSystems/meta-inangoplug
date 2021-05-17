@@ -1,0 +1,7 @@
+[Unit]
+Description=Remote system call server
+Requires=rsc-init@%i.service
+
+[Service]
+EnvironmentFile=/tmp/rsc-server_%i.conf
+ExecStart=/usr/bin/rsc-server -i %i -p $port

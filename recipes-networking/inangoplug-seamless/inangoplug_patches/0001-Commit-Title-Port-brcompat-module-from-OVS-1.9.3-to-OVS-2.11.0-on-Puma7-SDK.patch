@@ -1,0 +1,3927 @@
+From 9bb258db9b7408563f2e66d7920e90c18a46ba7e Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Wed, 17 Feb 2021 13:46:31 +0200
+Subject: [PATCH] Commit Title: Port brcompat module from OVS 1.9.3 to OVS
+ 2.11.0 on Puma7 SDK
+
+BugID: 23047
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description: Added new module brcompat, user space daemon ovs-brcompatd and changes were made in datapath module.
+---
+ acinclude.m4                                    |   5 +-
+ configure.ac                                    |   1 +
+ datapath/Modules.mk                             |   7 +
+ datapath/brcompat_main.c                        | 579 +++++++++++++++
+ datapath/compat.h                               |  20 +
+ datapath/conntrack.c                            |   1 +
+ datapath/datapath.c                             | 116 +++
+ datapath/datapath.h                             |   4 +
+ datapath/dp_notify.c                            |  26 +-
+ datapath/dp_sysfs.h                             |  38 +
+ datapath/dp_sysfs_dp.c                          | 419 +++++++++++
+ datapath/dp_sysfs_if.c                          | 275 +++++++
+ datapath/linux/Makefile.main.in                 |   1 +
+ datapath/linux/Modules.mk                       |   4 +-
+ datapath/linux/compat/genetlink-brcompat.c      |  10 +
+ datapath/linux/compat/genetlink.inc             | 148 ++++
+ datapath/linux/compat/geneve.c                  |   3 +-
+ datapath/linux/compat/include/linux/netdevice.h |   6 +
+ datapath/linux/compat/ip6_gre.c                 |   8 +-
+ datapath/linux/compat/ip_tunnel.c               |   6 +-
+ datapath/linux/compat/nf_conntrack_reasm.c      |  15 +-
+ datapath/linux/compat/vxlan.c                   |   3 +-
+ datapath/vport-internal_dev.c                   |  19 +
+ datapath/vport-netdev.c                         |  70 ++
+ datapath/vport-netdev.h                         |  11 +
+ datapath/vport.c                                |  19 +
+ datapath/vport.h                                |  29 +
+ include/openvswitch/automake.mk                 |   2 +
+ include/openvswitch/brcompat-netlink.h          | 100 +++
+ lib/daemon.c                                    |  26 +-
+ lib/netlink-socket.c                            |   3 +-
+ lib/netlink-socket.h                            |   2 +
+ lib/process.c                                   | 194 +++++
+ lib/process.h                                   |   3 +
+ lib/socket-util.c                               |  24 +
+ lib/socket-util.h                               |   1 +
+ m4/openvswitch.m4                               |  20 +
+ manpages.mk                                     |  10 +
+ vswitchd/.gitignore                             |   2 +
+ vswitchd/automake.mk                            |  14 +-
+ vswitchd/ovs-brcompatd.8.in                     |  52 ++
+ vswitchd/ovs-brcompatd.c                        | 948 ++++++++++++++++++++++++
+ 42 files changed, 3193 insertions(+), 51 deletions(-)
+
+diff --git a/acinclude.m4 b/acinclude.m4
+index 9d6b68226..9d7f0f003 100644
+--- a/acinclude.m4
++++ b/acinclude.m4
+@@ -683,7 +683,10 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
+ 
+   OVS_GREP_IFELSE([$KSRC/include/linux/random.h], [prandom_u32])
+   OVS_GREP_IFELSE([$KSRC/include/linux/random.h], [prandom_u32_max])
+-
++  OVS_GREP_IFELSE([$KSRC/include/linux/prandom.h],
++                  [prandom_u32[[\(]]],
++                  [OVS_DEFINE([HAVE_PRANDOM_U32])])
++  OVS_GREP_IFELSE([$KSRC/include/linux/prandom.h], [prandom_u32_max])
+   OVS_GREP_IFELSE([$KSRC/include/net/rtnetlink.h], [get_link_net])
+   OVS_GREP_IFELSE([$KSRC/include/net/rtnetlink.h], [name_assign_type])
+   OVS_GREP_IFELSE([$KSRC/include/net/rtnetlink.h], [rtnl_create_link.*src_net],
+diff --git a/configure.ac b/configure.ac
+index 8a05870a4..407f8c064 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -123,6 +123,7 @@ OVS_CHECK_VALGRIND
+ OVS_CHECK_SOCKET_LIBS
+ OVS_CHECK_XENSERVER_VERSION
+ OVS_CHECK_GROFF
++OVS_CHECK_BRCOMPAT
+ OVS_CHECK_TLS
+ OVS_CHECK_ATOMIC_LIBS
+ OVS_CHECK_GCC4_ATOMICS
+diff --git a/datapath/Modules.mk b/datapath/Modules.mk
+index 3c4ae366c..cd7148bd9 100644
+--- a/datapath/Modules.mk
++++ b/datapath/Modules.mk
+@@ -4,6 +4,7 @@
+ # hwtable modules.
+ build_multi_modules = \
+ 	openvswitch
++build_multi_modules += $(if $(BUILD_BRCOMPAT),brcompat)
+ both_modules = \
+ 	$(build_multi_modules) \
+ 	vport_geneve \
+@@ -21,6 +22,8 @@ openvswitch_sources = \
+ 	conntrack.c \
+ 	datapath.c \
+ 	dp_notify.c \
++	dp_sysfs_dp.c \
++	dp_sysfs_if.c \
+ 	flow.c \
+ 	flow_netlink.c \
+ 	flow_table.c \
+@@ -41,6 +44,7 @@ openvswitch_headers = \
+ 	compat.h \
+ 	conntrack.h \
+ 	datapath.h \
++	dp_sysfs.h \
+ 	flow.h \
+ 	flow_netlink.h \
+ 	flow_table.h \
+@@ -49,6 +53,9 @@ openvswitch_headers = \
+ 	vport-netdev.h \
+ 	meter.h
+ 
++brcompat_sources = linux/compat/genetlink-brcompat.c brcompat_main.c
++brcompat_headers =
++
+ dist_sources = $(foreach module,$(dist_modules),$($(module)_sources))
+ dist_headers = $(foreach module,$(dist_modules),$($(module)_headers))
+ dist_extras = $(foreach module,$(dist_modules),$($(module)_extras))
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+new file mode 100644
+index 000000000..316da65bf
+--- /dev/null
++++ b/datapath/brcompat_main.c
+@@ -0,0 +1,579 @@
++/*
++ * Copyright (c) 2007-2012 Nicira, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of version 2 of the GNU General Public
++ * License as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
++ * 02110-1301, USA
++ */
++
++#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/uaccess.h>
++#include <linux/completion.h>
++#include <linux/etherdevice.h>
++#include <linux/if_bridge.h>
++#include <linux/netdevice.h>
++#include <linux/rtnetlink.h>
++#include <net/genetlink.h>
++
++#include "openvswitch/brcompat-netlink.h"
++#include "datapath.h"
++
++static struct genl_family brc_genl_family;
++static struct genl_multicast_group brc_mc_group = {
++	.name = "brcompat"
++};
++/* Time to wait for ovs-vswitchd to respond to a datapath action, in
++ * jiffies. */
++#define BRC_TIMEOUT (HZ * 5)
++
++/* Mutex to serialize ovs-brcompatd callbacks.  (Some callbacks naturally hold
++ * br_ioctl_mutex, others hold rtnl_lock, but we can't take the former
++ * ourselves and we don't want to hold the latter over a potentially long
++ * period of time.) */
++static DEFINE_MUTEX(brc_serial);
++
++/* Userspace communication. */
++static DEFINE_SPINLOCK(brc_lock);    /* Ensure atomic access to these vars. */
++static DECLARE_COMPLETION(brc_done); /* Userspace signaled operation done? */
++static struct sk_buff *brc_reply;    /* Reply from userspace. */
++static u32 brc_seq;		     /* Sequence number for current op. */
++
++static struct sk_buff *brc_send_command(struct net *,
++					struct sk_buff *,
++					struct nlattr **attrs);
++static int brc_send_simple_command(struct net *, struct sk_buff *);
++
++static struct sk_buff *brc_make_request(int op, const char *bridge,
++					const char *port)
++{
++	struct sk_buff *skb = genlmsg_new(NLMSG_GOODSIZE, GFP_KERNEL);
++	if (!skb)
++		goto error;
++
++	genlmsg_put(skb, 0, 0, &brc_genl_family, 0, op);
++
++	if (bridge && nla_put_string(skb, BRC_GENL_A_DP_NAME, bridge))
++		goto nla_put_failure;
++	if (port && nla_put_string(skb, BRC_GENL_A_PORT_NAME, port))
++		goto nla_put_failure;
++
++	return skb;
++
++nla_put_failure:
++	kfree_skb(skb);
++error:
++	return NULL;
++}
++
++static int brc_send_simple_command(struct net *net, struct sk_buff *request)
++{
++	struct nlattr *attrs[BRC_GENL_A_MAX + 1];
++	struct sk_buff *reply;
++	int error;
++
++	reply = brc_send_command(net, request, attrs);
++	if (IS_ERR(reply))
++		return PTR_ERR(reply);
++
++	error = nla_get_u32(attrs[BRC_GENL_A_ERR_CODE]);
++	kfree_skb(reply);
++	return -error;
++}
++
++static int brc_add_del_bridge(struct net *net, char __user *uname, int add)
++{
++	struct sk_buff *request;
++	char name[IFNAMSIZ];
++
++	if (!capable(CAP_NET_ADMIN))
++		return -EPERM;
++
++	if (copy_from_user(name, uname, IFNAMSIZ))
++		return -EFAULT;
++
++	name[IFNAMSIZ - 1] = 0;
++	request = brc_make_request(add ? BRC_GENL_C_DP_ADD : BRC_GENL_C_DP_DEL,
++				   name, NULL);
++	if (!request)
++		return -ENOMEM;
++
++	return brc_send_simple_command(net, request);
++}
++
++static int brc_get_indices(struct net *net,
++			   int op, const char *br_name,
++			   int __user *uindices, int n)
++{
++	struct nlattr *attrs[BRC_GENL_A_MAX + 1];
++	struct sk_buff *request, *reply;
++	int *indices;
++	int ret;
++	int len;
++
++	if (n < 0)
++		return -EINVAL;
++	if (n >= 2048)
++		return -ENOMEM;
++
++	request = brc_make_request(op, br_name, NULL);
++	if (!request)
++		return -ENOMEM;
++
++	reply = brc_send_command(net, request, attrs);
++	ret = PTR_ERR(reply);
++	if (IS_ERR(reply))
++		goto exit;
++
++	ret = -nla_get_u32(attrs[BRC_GENL_A_ERR_CODE]);
++	if (ret < 0)
++		goto exit_free_skb;
++
++	ret = -EINVAL;
++	if (!attrs[BRC_GENL_A_IFINDEXES])
++		goto exit_free_skb;
++
++	len = nla_len(attrs[BRC_GENL_A_IFINDEXES]);
++	indices = nla_data(attrs[BRC_GENL_A_IFINDEXES]);
++	if (len % sizeof(int))
++		goto exit_free_skb;
++
++	n = min_t(int, n, len / sizeof(int));
++	ret = copy_to_user(uindices, indices, n * sizeof(int)) ? -EFAULT : n;
++
++exit_free_skb:
++	kfree_skb(reply);
++exit:
++	return ret;
++}
++
++/* Called with br_ioctl_mutex. */
++static int brc_get_bridges(struct net *net, int __user *uindices, int n)
++{
++	return brc_get_indices(net, BRC_GENL_C_GET_BRIDGES, NULL, uindices, n);
++}
++
++/* Legacy deviceless bridge ioctl's.  Called with br_ioctl_mutex. */
++static int old_deviceless(struct net *net, void __user *uarg)
++{
++	unsigned long args[3];
++
++	if (copy_from_user(args, uarg, sizeof(args)))
++		return -EFAULT;
++
++	switch (args[0]) {
++	case BRCTL_GET_BRIDGES:
++		return brc_get_bridges(net, (int __user *)args[1], args[2]);
++
++	case BRCTL_ADD_BRIDGE:
++		return brc_add_del_bridge(net, (void __user *)args[1], 1);
++	case BRCTL_DEL_BRIDGE:
++		return brc_add_del_bridge(net, (void __user *)args[1], 0);
++	}
++
++	return -EOPNOTSUPP;
++}
++
++/* Called with the br_ioctl_mutex. */
++static int
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,23)
++brc_ioctl_deviceless_stub(unsigned int cmd, void __user *uarg)
++{
++	struct net *net = NULL;
++#else
++brc_ioctl_deviceless_stub(struct net *net, unsigned int cmd, void __user *uarg)
++{
++#endif
++	switch (cmd) {
++	case SIOCGIFBR:
++	case SIOCSIFBR:
++		return old_deviceless(net, uarg);
++
++	case SIOCBRADDBR:
++		return brc_add_del_bridge(net, uarg, 1);
++	case SIOCBRDELBR:
++		return brc_add_del_bridge(net, uarg, 0);
++	}
++
++	return -EOPNOTSUPP;
++}
++
++static int brc_add_del_port(struct net_device *dev, int port_ifindex, int add)
++{
++	struct sk_buff *request;
++	struct net_device *port;
++	int err;
++
++	if (!capable(CAP_NET_ADMIN))
++		return -EPERM;
++
++	port = __dev_get_by_index(dev_net(dev), port_ifindex);
++	if (!port)
++		return -EINVAL;
++
++	/* Save name of dev and port because there's a race between the
++	 * rtnl_unlock() and the brc_send_simple_command(). */
++	request = brc_make_request(add ? BRC_GENL_C_PORT_ADD : BRC_GENL_C_PORT_DEL,
++				   dev->name, port->name);
++	if (!request)
++		return -ENOMEM;
++
++	rtnl_unlock();
++	err = brc_send_simple_command(dev_net(dev), request);
++	rtnl_lock();
++
++	return err;
++}
++
++static int brc_get_bridge_info(struct net_device *dev,
++			       struct __bridge_info __user *ub)
++{
++	struct __bridge_info b;
++
++	memset(&b, 0, sizeof(struct __bridge_info));
++
++	/* First two bytes are the priority, which we should skip.  This comes
++	 * from struct bridge_id in br_private.h, which is unavailable to us.
++	 */
++	memcpy((u8 *)&b.bridge_id + 2, dev->dev_addr, ETH_ALEN);
++	b.stp_enabled = 0;
++
++	if (copy_to_user(ub, &b, sizeof(struct __bridge_info)))
++		return -EFAULT;
++
++	return 0;
++}
++
++static int brc_get_port_list(struct net_device *dev, int __user *uindices,
++			     int num)
++{
++	int retval;
++
++	rtnl_unlock();
++	retval = brc_get_indices(dev_net(dev), BRC_GENL_C_GET_PORTS, dev->name,
++				 uindices, num);
++	rtnl_lock();
++
++	return retval;
++}
++
++/*
++ * Format up to a page worth of forwarding table entries
++ * userbuf -- where to copy result
++ * maxnum  -- maximum number of entries desired
++ *            (limited to a page for sanity)
++ * offset  -- number of records to skip
++ */
++static int brc_get_fdb_entries(struct net_device *dev, void __user *userbuf,
++			       unsigned long maxnum, unsigned long offset)
++{
++	struct nlattr *attrs[BRC_GENL_A_MAX + 1];
++	struct sk_buff *request, *reply;
++	int retval;
++	int len;
++
++	/* Clamp size to PAGE_SIZE, test maxnum to avoid overflow */
++	if (maxnum > PAGE_SIZE/sizeof(struct __fdb_entry))
++		maxnum = PAGE_SIZE/sizeof(struct __fdb_entry);
++
++	request = brc_make_request(BRC_GENL_C_FDB_QUERY, dev->name, NULL);
++	if (!request)
++		return -ENOMEM;
++	if (nla_put_u64_64bit(request, BRC_GENL_A_FDB_COUNT, maxnum, BRC_GENL_A_PAD) ||
++	    nla_put_u64_64bit(request, BRC_GENL_A_FDB_SKIP, offset, BRC_GENL_A_PAD))
++		goto nla_put_failure;
++
++	rtnl_unlock();
++	reply = brc_send_command(dev_net(dev), request, attrs);
++	retval = PTR_ERR(reply);
++	if (IS_ERR(reply))
++		goto exit;
++
++	retval = -nla_get_u32(attrs[BRC_GENL_A_ERR_CODE]);
++	if (retval < 0)
++		goto exit_free_skb;
++
++	retval = -EINVAL;
++	if (!attrs[BRC_GENL_A_FDB_DATA])
++		goto exit_free_skb;
++	len = nla_len(attrs[BRC_GENL_A_FDB_DATA]);
++	if (len % sizeof(struct __fdb_entry) ||
++	    len / sizeof(struct __fdb_entry) > maxnum)
++		goto exit_free_skb;
++
++	retval = len / sizeof(struct __fdb_entry);
++	if (copy_to_user(userbuf, nla_data(attrs[BRC_GENL_A_FDB_DATA]), len))
++		retval = -EFAULT;
++
++exit_free_skb:
++	kfree_skb(reply);
++exit:
++	rtnl_lock();
++	return retval;
++
++nla_put_failure:
++	kfree_skb(request);
++	return -ENOMEM;
++}
++
++/* Legacy ioctl's through SIOCDEVPRIVATE.  Called with rtnl_lock. */
++static int old_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
++{
++	unsigned long args[4];
++
++	if (copy_from_user(args, rq->ifr_data, sizeof(args)))
++		return -EFAULT;
++
++	switch (args[0]) {
++	case BRCTL_ADD_IF:
++		return brc_add_del_port(dev, args[1], 1);
++	case BRCTL_DEL_IF:
++		return brc_add_del_port(dev, args[1], 0);
++
++	case BRCTL_GET_BRIDGE_INFO:
++		return brc_get_bridge_info(dev, (struct __bridge_info __user *)args[1]);
++
++	case BRCTL_GET_PORT_LIST:
++		return brc_get_port_list(dev, (int __user *)args[1], args[2]);
++
++	case BRCTL_GET_FDB_ENTRIES:
++		return brc_get_fdb_entries(dev, (void __user *)args[1],
++					   args[2], args[3]);
++	}
++
++	return -EOPNOTSUPP;
++}
++
++/* Called with the rtnl_lock. */
++static int brc_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
++{
++	int err;
++
++	switch (cmd) {
++	case SIOCDEVPRIVATE:
++		err = old_dev_ioctl(dev, rq, cmd);
++		break;
++
++	case SIOCBRADDIF:
++		return brc_add_del_port(dev, rq->ifr_ifindex, 1);
++	case SIOCBRDELIF:
++		return brc_add_del_port(dev, rq->ifr_ifindex, 0);
++
++	default:
++		err = -EOPNOTSUPP;
++		break;
++	}
++
++	return err;
++}
++
++
++static int brc_genl_query(struct sk_buff *skb, struct genl_info *info)
++{
++	int err = -EINVAL;
++	struct sk_buff *ans_skb;
++	void *data;
++
++	ans_skb = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
++	if (!ans_skb)
++		return -ENOMEM;
++
++	data = genlmsg_put_reply(ans_skb, info, &brc_genl_family,
++				 0, BRC_GENL_C_QUERY_MC);
++	if (data == NULL) {
++		err = -ENOMEM;
++		goto err;
++	}
++	if (nla_put_u32(ans_skb, BRC_GENL_A_MC_GROUP, GROUP_ID(&brc_mc_group)))
++		goto nla_put_failure;
++
++	genlmsg_end(ans_skb, data);
++	return genlmsg_reply(ans_skb, info);
++
++err:
++nla_put_failure:
++	kfree_skb(ans_skb);
++	return err;
++}
++
++/* Attribute policy: what each attribute may contain.  */
++static struct nla_policy brc_genl_policy[BRC_GENL_A_MAX + 1] = {
++	[BRC_GENL_A_ERR_CODE] = { .type = NLA_U32 },
++	[BRC_GENL_A_FDB_DATA] = { .type = NLA_UNSPEC },
++};
++
++static int brc_genl_dp_result(struct sk_buff *skb, struct genl_info *info)
++{
++	unsigned long int flags;
++	int err;
++
++	if (!info->attrs[BRC_GENL_A_ERR_CODE])
++		return -EINVAL;
++
++	skb = skb_clone(skb, GFP_KERNEL);
++	if (!skb)
++		return -ENOMEM;
++
++	spin_lock_irqsave(&brc_lock, flags);
++	if (brc_seq == info->snd_seq) {
++		brc_seq++;
++
++		kfree_skb(brc_reply);
++		brc_reply = skb;
++
++		complete(&brc_done);
++		err = 0;
++	} else {
++		kfree_skb(skb);
++		err = -ESTALE;
++	}
++	spin_unlock_irqrestore(&brc_lock, flags);
++
++	return err;
++}
++
++static struct genl_ops brc_genl_ops[] = {
++	{ .cmd = BRC_GENL_C_QUERY_MC,
++	  .flags = GENL_ADMIN_PERM, /* Requires CAP_NET_ADMIN privelege. */
++	  .policy = NULL,
++	  .doit = brc_genl_query,
++	},
++	{ .cmd = BRC_GENL_C_DP_RESULT,
++	  .flags = GENL_ADMIN_PERM, /* Requires CAP_NET_ADMIN privelege. */
++	  .policy = brc_genl_policy,
++	  .doit = brc_genl_dp_result,
++	},
++};
++
++static struct genl_family brc_genl_family = {
++        .id = GENL_ID_GENERATE,
++	.hdrsize = 0,
++	.name = BRC_GENL_FAMILY_NAME,
++	.version = 1,
++	.maxattr = BRC_GENL_A_MAX,
++	.netnsok = true,
++	.parallel_ops = true,
++	.ops = brc_genl_ops,
++	.n_ops = ARRAY_SIZE(brc_genl_ops),
++	.mcgrps = &brc_mc_group,
++	.n_mcgrps = 1,
++	.module = THIS_MODULE,
++};
++
++static struct sk_buff *brc_send_command(struct net *net,
++					struct sk_buff *request,
++					struct nlattr **attrs)
++{
++	unsigned long int flags;
++	struct sk_buff *reply;
++	int error;
++
++	mutex_lock(&brc_serial);
++
++	/* Increment sequence number first, so that we ignore any replies
++	 * to stale requests. */
++	spin_lock_irqsave(&brc_lock, flags);
++	nlmsg_hdr(request)->nlmsg_seq = ++brc_seq;
++	init_completion(&brc_done);
++	spin_unlock_irqrestore(&brc_lock, flags);
++
++	nlmsg_end(request, nlmsg_hdr(request));
++
++	/* Send message. */
++	error = genlmsg_multicast_netns(&brc_genl_family, net, request, 0,
++					GROUP_ID(&brc_mc_group), GFP_KERNEL);
++	if (error < 0)
++		goto error;
++
++	/* Wait for reply. */
++	error = -ETIMEDOUT;
++	if (!wait_for_completion_timeout(&brc_done, BRC_TIMEOUT)) {
++		pr_warn("timed out waiting for userspace\n");
++		goto error;
++	}
++
++	/* Grab reply. */
++	spin_lock_irqsave(&brc_lock, flags);
++	reply = brc_reply;
++	brc_reply = NULL;
++	spin_unlock_irqrestore(&brc_lock, flags);
++
++	mutex_unlock(&brc_serial);
++
++	/* Re-parse message.  Can't fail, since it parsed correctly once
++	 * already. */
++	error = genlmsg_parse(nlmsg_hdr(reply), &brc_genl_family,
++			    attrs, BRC_GENL_A_MAX, brc_genl_policy, NULL);
++	WARN_ON(error);
++
++	return reply;
++
++error:
++	mutex_unlock(&brc_serial);
++	return ERR_PTR(error);
++}
++
++static int __init brc_init(void)
++{
++	int err;
++
++	pr_info("Open vSwitch Bridge Compatibility\n");
++
++	/* Set the bridge ioctl handler */
++	brioctl_set(brc_ioctl_deviceless_stub);
++
++	/* Set the openvswitch device ioctl handler */
++	ovs_dp_ioctl_hook = brc_dev_ioctl;
++
++	/* Randomize the initial sequence number.  This is not a security
++	 * feature; it only helps avoid crossed wires between userspace and
++	 * the kernel when the module is unloaded and reloaded. */
++	brc_seq = prandom_u32();
++
++	/* Register generic netlink family to communicate changes to
++	 * userspace. */
++	err = genl_register_family(&brc_genl_family);
++	if (err)
++		goto error;
++
++	return 0;
++
++error:
++	pr_emerg("failed to install!\n");
++	return err;
++}
++
++static void brc_cleanup(void)
++{
++	/* Unregister ioctl hooks */
++	ovs_dp_ioctl_hook = NULL;
++	brioctl_set(NULL);
++
++	genl_unregister_family(&brc_genl_family);
++}
++
++module_init(brc_init);
++module_exit(brc_cleanup);
++
++MODULE_DESCRIPTION("Open vSwitch bridge compatibility");
++MODULE_AUTHOR("Nicira, Inc.");
++MODULE_LICENSE("GPL");
++
++/*
++ * Open vSwitch can safely coexist with
++ * the Linux bridge module, but it does not make sense to load both bridge and
++ * brcompat, so this prevents it.
++ */
++//BRIDGE_MUTUAL_EXCLUSION;
+diff --git a/datapath/compat.h b/datapath/compat.h
+index b820251a4..a26358a76 100644
+--- a/datapath/compat.h
++++ b/datapath/compat.h
+@@ -43,6 +43,26 @@
+ #define GROUP_ID(grp)	0
+ #endif
+ 
++/*
++ * Enforces, mutual exclusion with the Linux bridge module, by declaring and
++ * exporting br_should_route_hook.  Because the bridge module also exports the
++ * same symbol, the module loader will refuse to load both modules at the same
++ * time (e.g. "bridge: exports duplicate symbol br_should_route_hook (owned by
++ * openvswitch)").
++ *
++ * Before Linux 2.6.36, Open vSwitch cannot safely coexist with the Linux
++ * bridge module, so openvswitch uses this macro in those versions.  In
++ * Linux 2.6.36 and later, Open vSwitch can coexist with the bridge module,
++ * but it makes no sense to load both bridge and brcompat, so brcompat uses
++ * this macro in those versions.
++ *
++ * The use of "typeof" here avoids the need to track changes in the type of
++ * br_should_route_hook over various kernel versions.
++ */
++#define BRIDGE_MUTUAL_EXCLUSION					\
++	typeof(br_should_route_hook) br_should_route_hook;	\
++	EXPORT_SYMBOL(br_should_route_hook)
++
+ #ifdef HAVE_NF_IPV6_OPS_FRAGMENT
+ static inline int __init ip6_output_init(void) { return 0; }
+ static inline void ip6_output_exit(void) { }
+diff --git a/datapath/conntrack.c b/datapath/conntrack.c
+index a7dc9e0c3..69bda5a9c 100644
+--- a/datapath/conntrack.c
++++ b/datapath/conntrack.c
+@@ -31,6 +31,7 @@
+ #include <net/netfilter/nf_conntrack_seqadj.h>
+ #include <net/netfilter/nf_conntrack_zones.h>
+ #include <net/netfilter/ipv6/nf_defrag_ipv6.h>
++#include <net/ipv6_frag.h>
+ 
+ #ifdef CONFIG_NF_NAT_NEEDED
+ #include <linux/netfilter/nf_nat.h>
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 2febcb3f2..c9f2818bd 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -65,6 +65,10 @@
+ 
+ unsigned int ovs_net_id __read_mostly;
+ 
++int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
++EXPORT_SYMBOL(ovs_dp_ioctl_hook);
++
++
+ static struct genl_family dp_packet_genl_family;
+ static struct genl_family dp_flow_genl_family;
+ static struct genl_family dp_datapath_genl_family;
+@@ -172,6 +176,102 @@ static int get_dpifindex(const struct datapath *dp)
+ 	return ifindex;
+ }
+ 
++static size_t br_nlmsg_size(void)
++{
++	return NLMSG_ALIGN(sizeof(struct ifinfomsg))
++	       + nla_total_size(IFNAMSIZ) /* IFLA_IFNAME */
++	       + nla_total_size(MAX_ADDR_LEN) /* IFLA_ADDRESS */
++	       + nla_total_size(4) /* IFLA_MASTER */
++	       + nla_total_size(4) /* IFLA_MTU */
++	       + nla_total_size(1); /* IFLA_OPERSTATE */
++}
++
++/* Caller must hold RTNL lock. */
++static int dp_fill_ifinfo(struct sk_buff *skb,
++			  const struct vport *port,
++			  int event, unsigned int flags)
++{
++	struct datapath *dp = port->dp;
++	struct ifinfomsg *hdr;
++	struct nlmsghdr *nlh;
++
++	if (!port->ops->get_ifindex)
++		return -ENODEV;
++
++	nlh = nlmsg_put(skb, 0, 0, event, sizeof(*hdr), flags);
++	if (nlh == NULL)
++		return -EMSGSIZE;
++
++	hdr = nlmsg_data(nlh);
++	hdr->ifi_family = AF_BRIDGE;
++	hdr->__ifi_pad = 0;
++	hdr->ifi_type = ARPHRD_ETHER;
++	hdr->ifi_index = port->ops->get_ifindex(port);
++	hdr->ifi_flags = port->ops->get_dev_flags(port);
++	hdr->ifi_change = 0;
++
++	if (nla_put_string(skb, IFLA_IFNAME, port->ops->get_name(port)) ||
++	    nla_put_u32(skb, IFLA_MASTER, get_dpifindex(dp)) ||
++	    nla_put_u32(skb, IFLA_MTU, port->ops->get_mtu(port)) ||
++#ifdef IFLA_OPERSTATE
++	    nla_put_u8(skb, IFLA_OPERSTATE,
++		       port->ops->is_running(port) ?
++				port->ops->get_operstate(port) :
++				IF_OPER_DOWN) ||
++#endif
++	    nla_put(skb, IFLA_ADDRESS, ETH_ALEN, port->ops->get_addr(port)))
++		goto nla_put_failure;
++
++	nlmsg_end(skb, nlh);
++	return 0;
++
++nla_put_failure:
++	nlmsg_cancel(skb, nlh);
++	return -EMSGSIZE;
++}
++
++/* Caller must hold RTNL lock. */
++static void dp_ifinfo_notify(int event, struct vport *port)
++{
++	struct sk_buff *skb;
++	int err;
++
++	skb = nlmsg_new(br_nlmsg_size(), GFP_KERNEL);
++	if (!skb) {
++		err = -ENOBUFS;
++		goto err;
++	}
++
++	err = dp_fill_ifinfo(skb, port, event, 0);
++	if (err < 0) {
++		if (err == -ENODEV) {
++			goto out;
++		} else {
++			/* -EMSGSIZE implies BUG in br_nlmsg_size() */
++			WARN_ON(err == -EMSGSIZE);
++			goto err;
++		}
++	}
++
++	rtnl_notify(skb, ovs_dp_get_net(port->dp), 0, RTNLGRP_LINK, NULL, GFP_KERNEL);
++
++	return;
++err:
++	rtnl_set_sk_err(ovs_dp_get_net(port->dp), RTNLGRP_LINK, err);
++out:
++	kfree_skb(skb);
++}
++
++static void release_dp(struct kobject *kobj)
++{
++	struct datapath *dp = container_of(kobj, struct datapath, ifobj);
++	kfree(dp);
++}
++
++static struct kobj_type dp_ktype = {
++	.release = release_dp
++};
++
+ static void destroy_dp_rcu(struct rcu_head *rcu)
+ {
+ 	struct datapath *dp = container_of(rcu, struct datapath, rcu);
+@@ -179,6 +279,7 @@ static void destroy_dp_rcu(struct rcu_head *rcu)
+ 	ovs_flow_tbl_destroy(&dp->table);
+ 	free_percpu(dp->stats_percpu);
+ 	kfree(dp->ports);
++	kobject_put(&dp->ifobj);
+ 	ovs_meters_exit(dp);
+ 	kfree(dp);
+ }
+@@ -214,6 +315,7 @@ static struct vport *new_vport(const struct vport_parms *parms)
+ 		struct hlist_head *head = vport_hash_bucket(dp, vport->port_no);
+ 
+ 		hlist_add_head_rcu(&vport->dp_hash_node, head);
++		dp_ifinfo_notify(RTM_NEWLINK, vport);
+ 	}
+ 	return vport;
+ }
+@@ -222,6 +324,11 @@ void ovs_dp_detach_port(struct vport *p)
+ {
+ 	ASSERT_OVSL();
+ 
++	if (p->port_no != OVSP_LOCAL)
++		ovs_dp_sysfs_del_if(p);
++
++	dp_ifinfo_notify(RTM_DELLINK, p);
++
+ 	/* First drop references to device. */
+ 	hlist_del_rcu(&p->dp_hash_node);
+ 
+@@ -1581,6 +1688,11 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 	if (dp == NULL)
+ 		goto err_free_reply;
+ 
++	/* Initialize kobject for bridge.  This will be added as
++	 * /sys/class/net/<devname>/brif later, if sysfs is enabled. */
++	dp->ifobj.kset = NULL;
++	kobject_init(&dp->ifobj, &dp_ktype);
++
+ 	ovs_dp_set_net(dp, sock_net(skb->sk));
+ 
+ 	/* Allocate table. */
+@@ -1646,6 +1758,7 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 
+ 	ovs_net = net_generic(ovs_dp_get_net(dp), ovs_net_id);
+ 	list_add_tail_rcu(&dp->list_node, &ovs_net->dps);
++	ovs_dp_sysfs_add_dp(dp);
+ 
+ 	ovs_unlock();
+ 
+@@ -1683,6 +1796,7 @@ static void __dp_destroy(struct datapath *dp)
+ 				ovs_dp_detach_port(vport);
+ 	}
+ 
++	ovs_dp_sysfs_del_dp(dp);
+ 	list_del_rcu(&dp->list_node);
+ 
+ 	/* OVSP_LOCAL is datapath internal port. We need to make sure that
+@@ -2057,6 +2171,8 @@ restart:
+ 		goto exit_unlock_free;
+ 	}
+ 
++	ovs_dp_sysfs_add_if(vport);
++
+ 	err = ovs_vport_cmd_fill_info(vport, reply, genl_info_net(info),
+ 				      info->snd_portid, info->snd_seq, 0,
+ 				      OVS_VPORT_CMD_NEW);
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index ee7666215..a270517a9 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -29,6 +29,7 @@
+ #include <net/ip_tunnels.h>
+ 
+ #include "compat.h"
++#include "dp_sysfs.h"
+ #include "flow.h"
+ #include "flow_table.h"
+ #include "meter.h"
+@@ -64,6 +65,7 @@ struct dp_stats_percpu {
+  * struct datapath - datapath for flow-based packet switching
+  * @rcu: RCU callback head for deferred destruction.
+  * @list_node: Element in global 'dps' list.
++ * @ifobj: Represents /sys/class/net/<devname>/brif.  Protected by RTNL.
+  * @table: flow table.
+  * @ports: Hash table for ports.  %OVSP_LOCAL port always exists.  Protected by
+  * ovs_mutex and RCU.
+@@ -78,6 +80,7 @@ struct dp_stats_percpu {
+ struct datapath {
+ 	struct rcu_head rcu;
+ 	struct list_head list_node;
++	struct kobject ifobj;
+ 
+ 	/* Flow table. */
+ 	struct flow_table table;
+@@ -238,6 +241,7 @@ static inline struct datapath *get_dp(struct net *net, int dp_ifindex)
+ extern struct notifier_block ovs_dp_device_notifier;
+ extern struct genl_family dp_vport_genl_family;
+ extern struct genl_multicast_group ovs_dp_vport_multicast_group;
++extern int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
+ 
+ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key);
+ void ovs_dp_detach_port(struct vport *);
+diff --git a/datapath/dp_notify.c b/datapath/dp_notify.c
+index 932a37ed2..b4c844100 100644
+--- a/datapath/dp_notify.c
++++ b/datapath/dp_notify.c
+@@ -84,16 +84,24 @@ static int dp_device_event(struct notifier_block *unused, unsigned long event,
+ 
+ 	if (!vport)
+ 		return NOTIFY_DONE;
+-
+-	if (event == NETDEV_UNREGISTER) {
+-		/* upper_dev_unlink and decrement promisc immediately */
+-		ovs_netdev_detach_dev(vport);
+-
+-		/* schedule vport destroy, dev_put and genl notification */
+-		ovs_net = net_generic(dev_net(dev), ovs_net_id);
+-		queue_work(system_wq, &ovs_net->dp_notify_work);
++	switch (event) {
++	case NETDEV_UNREGISTER:
++		{
++			/* upper_dev_unlink and decrement promisc immediately */
++			ovs_netdev_detach_dev(vport);
++
++			/* schedule vport destroy, dev_put and genl notification */
++			ovs_net = net_generic(dev_net(dev), ovs_net_id);
++			queue_work(system_wq, &ovs_net->dp_notify_work);
++		}
++		break;
++	case NETDEV_CHANGENAME:
++		if (vport->port_no != OVSP_LOCAL) {
++			ovs_dp_sysfs_del_if(vport);
++			ovs_dp_sysfs_add_if(vport);
++		}
++		break;
+ 	}
+-
+ 	return NOTIFY_DONE;
+ }
+ 
+diff --git a/datapath/dp_sysfs.h b/datapath/dp_sysfs.h
+new file mode 100644
+index 000000000..526b0a130
+--- /dev/null
++++ b/datapath/dp_sysfs.h
+@@ -0,0 +1,38 @@
++/*
++ * Copyright (c) 2007-2011 Nicira, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of version 2 of the GNU General Public
++ * License as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
++ * 02110-1301, USA
++ */
++
++#ifndef DP_SYSFS_H
++#define DP_SYSFS_H 1
++
++struct datapath;
++struct vport;
++
++/* dp_sysfs_dp.c */
++int ovs_dp_sysfs_add_dp(struct datapath *dp);
++int ovs_dp_sysfs_del_dp(struct datapath *dp);
++
++/* dp_sysfs_if.c */
++int ovs_dp_sysfs_add_if(struct vport *p);
++int ovs_dp_sysfs_del_if(struct vport *p);
++
++#ifdef CONFIG_SYSFS
++extern struct sysfs_ops ovs_brport_sysfs_ops;
++#endif
++
++#endif /* dp_sysfs.h */
++
+diff --git a/datapath/dp_sysfs_dp.c b/datapath/dp_sysfs_dp.c
+new file mode 100644
+index 000000000..9684c8e24
+--- /dev/null
++++ b/datapath/dp_sysfs_dp.c
+@@ -0,0 +1,419 @@
++/*
++ * Copyright (c) 2007-2012 Nicira, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of version 2 of the GNU General Public
++ * License as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
++ * 02110-1301, USA
++ */
++
++#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++
++#include <linux/version.h>
++
++/*
++ *	Sysfs attributes of bridge for Open vSwitch
++ *
++ *  This has been shamelessly copied from the kernel sources.
++ */
++
++#include <linux/capability.h>
++#include <linux/device.h>
++#include <linux/kernel.h>
++#include <linux/netdevice.h>
++#include <linux/if_bridge.h>
++#include <linux/rtnetlink.h>
++#include <linux/version.h>
++
++#include "dp_sysfs.h"
++#include "datapath.h"
++#include "vport-internal_dev.h"
++
++#ifdef CONFIG_SYSFS
++
++/* Hack to attempt to build on more platforms. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,21)
++#define INTERNAL_DEVICE_ATTR CLASS_DEVICE_ATTR
++#define DEVICE_PARAMS struct class_device *d
++#define DEVICE_ARGS d
++#define DEV_ATTR(NAME) class_device_attr_##NAME
++#else
++#define INTERNAL_DEVICE_ATTR DEVICE_ATTR
++#define DEVICE_PARAMS struct device *d, struct device_attribute *attr
++#define DEVICE_ARGS d, attr
++#define DEV_ATTR(NAME) dev_attr_##NAME
++#endif
++
++static struct datapath *sysfs_get_dp(struct net_device *netdev)
++{
++	struct vport *vport = ovs_internal_dev_get_vport(netdev);
++	return vport ? vport->dp : NULL;
++}
++/*
++ * Common code for storing bridge parameters.
++ */
++static ssize_t store_bridge_parm(DEVICE_PARAMS,
++				 const char *buf, size_t len,
++				 void (*set)(struct datapath *, unsigned long))
++{
++	char *endp;
++	unsigned long val;
++	ssize_t result = len;
++
++	if (!capable(CAP_NET_ADMIN))
++		return -EPERM;
++
++	val = simple_strtoul(buf, &endp, 0);
++	if (endp == buf)
++		return -EINVAL;
++
++	/* xxx We use a default value of 0 for all fields.  If the caller is
++	 * xxx attempting to set the value to our default, just silently
++	 * xxx ignore the request.
++	 */
++	if (val != 0) {
++		struct datapath *dp;
++
++		rcu_read_lock();
++
++		dp = sysfs_get_dp(to_net_dev(d));
++		if (dp)
++			pr_warning("%s: xxx writing dp parms not supported yet!\n",
++			       ovs_dp_name(dp));
++		else
++			result = -ENODEV;
++
++		rcu_read_unlock();
++	}
++
++	return result;
++}
++
++
++static ssize_t show_forward_delay(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++
++static void set_forward_delay(struct datapath *dp, unsigned long val)
++{
++	pr_info("%s: xxx attempt to set_forward_delay()\n", ovs_dp_name(dp));
++}
++
++static ssize_t store_forward_delay(DEVICE_PARAMS,
++				   const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_forward_delay);
++}
++static INTERNAL_DEVICE_ATTR(forward_delay, S_IRUGO | S_IWUSR,
++		   show_forward_delay, store_forward_delay);
++
++static ssize_t show_hello_time(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++
++static void set_hello_time(struct datapath *dp, unsigned long val)
++{
++	pr_info("%s: xxx attempt to set_hello_time()\n", ovs_dp_name(dp));
++}
++
++static ssize_t store_hello_time(DEVICE_PARAMS,
++				const char *buf,
++				size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_hello_time);
++}
++static INTERNAL_DEVICE_ATTR(hello_time, S_IRUGO | S_IWUSR, show_hello_time,
++		   store_hello_time);
++
++static ssize_t show_max_age(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++
++static void set_max_age(struct datapath *dp, unsigned long val)
++{
++	pr_info("%s: xxx attempt to set_max_age()\n", ovs_dp_name(dp));
++}
++
++static ssize_t store_max_age(DEVICE_PARAMS,
++			     const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_max_age);
++}
++static INTERNAL_DEVICE_ATTR(max_age, S_IRUGO | S_IWUSR, show_max_age, store_max_age);
++
++static ssize_t show_ageing_time(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++
++static void set_ageing_time(struct datapath *dp, unsigned long val)
++{
++	pr_info("%s: xxx attempt to set_ageing_time()\n", ovs_dp_name(dp));
++}
++
++static ssize_t store_ageing_time(DEVICE_PARAMS,
++				 const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_ageing_time);
++}
++static INTERNAL_DEVICE_ATTR(ageing_time, S_IRUGO | S_IWUSR, show_ageing_time,
++		   store_ageing_time);
++
++static ssize_t show_stp_state(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++
++
++static ssize_t store_stp_state(DEVICE_PARAMS,
++			       const char *buf,
++			       size_t len)
++{
++	struct datapath *dp;
++	ssize_t result = len;
++
++	rcu_read_lock();
++
++	dp = sysfs_get_dp(to_net_dev(d));
++	if (dp)
++		pr_info("%s: xxx attempt to set_stp_state()\n", ovs_dp_name(dp));
++	else
++		result = -ENODEV;
++
++	rcu_read_unlock();
++
++	return result;
++}
++static INTERNAL_DEVICE_ATTR(stp_state, S_IRUGO | S_IWUSR, show_stp_state,
++		   store_stp_state);
++
++static ssize_t show_priority(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++
++static void set_priority(struct datapath *dp, unsigned long val)
++{
++	pr_info("%s: xxx attempt to set_priority()\n", ovs_dp_name(dp));
++}
++
++static ssize_t store_priority(DEVICE_PARAMS,
++			       const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_priority);
++}
++static INTERNAL_DEVICE_ATTR(priority, S_IRUGO | S_IWUSR, show_priority, store_priority);
++
++static ssize_t show_root_id(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "0000.010203040506\n");
++}
++static INTERNAL_DEVICE_ATTR(root_id, S_IRUGO, show_root_id, NULL);
++
++static ssize_t show_bridge_id(DEVICE_PARAMS, char *buf)
++{
++	struct vport *vport;
++	ssize_t result;
++
++	rcu_read_lock();
++
++	vport = ovs_internal_dev_get_vport(to_net_dev(d));
++	if (vport) {
++		const unsigned char *addr;
++
++		addr = vport->ops->get_addr(vport);
++		result = sprintf(buf, "%.2x%.2x.%.2x%.2x%.2x%.2x%.2x%.2x\n",
++				 0, 0, addr[0], addr[1], addr[2], addr[3],
++				 addr[4], addr[5]);
++	} else
++		result = -ENODEV;
++
++	rcu_read_unlock();
++
++	return result;
++}
++static INTERNAL_DEVICE_ATTR(bridge_id, S_IRUGO, show_bridge_id, NULL);
++
++static ssize_t show_root_port(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static INTERNAL_DEVICE_ATTR(root_port, S_IRUGO, show_root_port, NULL);
++
++static ssize_t show_root_path_cost(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static INTERNAL_DEVICE_ATTR(root_path_cost, S_IRUGO, show_root_path_cost, NULL);
++
++static ssize_t show_topology_change(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static INTERNAL_DEVICE_ATTR(topology_change, S_IRUGO, show_topology_change, NULL);
++
++static ssize_t show_topology_change_detected(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static INTERNAL_DEVICE_ATTR(topology_change_detected, S_IRUGO,
++		   show_topology_change_detected, NULL);
++
++static ssize_t show_hello_timer(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static INTERNAL_DEVICE_ATTR(hello_timer, S_IRUGO, show_hello_timer, NULL);
++
++static ssize_t show_tcn_timer(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static INTERNAL_DEVICE_ATTR(tcn_timer, S_IRUGO, show_tcn_timer, NULL);
++
++static ssize_t show_topology_change_timer(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static INTERNAL_DEVICE_ATTR(topology_change_timer, S_IRUGO, show_topology_change_timer,
++		   NULL);
++
++static ssize_t show_gc_timer(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static INTERNAL_DEVICE_ATTR(gc_timer, S_IRUGO, show_gc_timer, NULL);
++
++static ssize_t show_group_addr(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "00:01:02:03:04:05\n");
++}
++
++static ssize_t store_group_addr(DEVICE_PARAMS,
++				const char *buf, size_t len)
++{
++	struct datapath *dp;
++	ssize_t result = len;
++
++	rcu_read_lock();
++
++	dp = sysfs_get_dp(to_net_dev(d));
++	if (dp)
++		pr_info("%s: xxx attempt to store_group_addr()\n",
++		       ovs_dp_name(dp));
++	else
++		result = -ENODEV;
++
++	rcu_read_unlock();
++
++	return result;
++}
++
++static INTERNAL_DEVICE_ATTR(group_addr, S_IRUGO | S_IWUSR,
++		   show_group_addr, store_group_addr);
++
++static struct attribute *bridge_attrs[] = {
++	&DEV_ATTR(forward_delay).attr,
++	&DEV_ATTR(hello_time).attr,
++	&DEV_ATTR(max_age).attr,
++	&DEV_ATTR(ageing_time).attr,
++	&DEV_ATTR(stp_state).attr,
++	&DEV_ATTR(priority).attr,
++	&DEV_ATTR(bridge_id).attr,
++	&DEV_ATTR(root_id).attr,
++	&DEV_ATTR(root_path_cost).attr,
++	&DEV_ATTR(root_port).attr,
++	&DEV_ATTR(topology_change).attr,
++	&DEV_ATTR(topology_change_detected).attr,
++	&DEV_ATTR(hello_timer).attr,
++	&DEV_ATTR(tcn_timer).attr,
++	&DEV_ATTR(topology_change_timer).attr,
++	&DEV_ATTR(gc_timer).attr,
++	&DEV_ATTR(group_addr).attr,
++	NULL
++};
++
++static struct attribute_group bridge_group = {
++	.name = SYSFS_BRIDGE_ATTR, /* "bridge" */
++	.attrs = bridge_attrs,
++};
++
++/*
++ * Add entries in sysfs onto the existing network class device
++ * for the bridge.
++ *   Adds a attribute group "bridge" containing tuning parameters.
++ *   Sub directory to hold links to interfaces.
++ *
++ * Note: the ifobj exists only to be a subdirectory
++ *   to hold links.  The ifobj exists in the same data structure
++ *   as its parent the bridge so reference counting works.
++ */
++int ovs_dp_sysfs_add_dp(struct datapath *dp)
++{
++	struct vport *vport = ovs_vport_ovsl(dp, OVSP_LOCAL);
++	struct kobject *kobj = vport->ops->get_kobj(vport);
++	int err;
++
++#ifdef CONFIG_NET_NS
++	/* Due to bug in 2.6.32 kernel, sysfs_create_group() could panic
++	 * in other namespace than init_net. Following check is to avoid it. */
++	if (!kobj->sd)
++		return -ENOENT;
++#endif
++	/* Create /sys/class/net/<devname>/bridge directory. */
++	err = sysfs_create_group(kobj, &bridge_group);
++	if (err) {
++		pr_info("%s: can't create group %s/%s\n",
++			__func__, ovs_dp_name(dp), bridge_group.name);
++		goto out1;
++	}
++
++	/* Create /sys/class/net/<devname>/brif directory. */
++	err = kobject_add(&dp->ifobj, kobj, SYSFS_BRIDGE_PORT_SUBDIR);
++	if (err) {
++		pr_info("%s: can't add kobject (directory) %s/%s\n",
++			__func__, ovs_dp_name(dp), kobject_name(&dp->ifobj));
++		goto out2;
++	}
++	kobject_uevent(&dp->ifobj, KOBJ_ADD);
++	return 0;
++
++ out2:
++	sysfs_remove_group(kobj, &bridge_group);
++ out1:
++	return err;
++}
++
++int ovs_dp_sysfs_del_dp(struct datapath *dp)
++{
++	struct vport *vport = ovs_vport_ovsl(dp, OVSP_LOCAL);
++	struct kobject *kobj = vport->ops->get_kobj(vport);
++
++#ifdef CONFIG_NET_NS
++	if (!kobj->sd)
++		return 0;
++#endif
++
++	kobject_del(&dp->ifobj);
++	sysfs_remove_group(kobj, &bridge_group);
++
++	return 0;
++}
++#else /* !CONFIG_SYSFS */
++int ovs_dp_sysfs_add_dp(struct datapath *dp) { return 0; }
++int ovs_dp_sysfs_del_dp(struct datapath *dp) { return 0; }
++int dp_sysfs_add_if(struct vport *p) { return 0; }
++int dp_sysfs_del_if(struct vport *p) { return 0; }
++#endif /* !CONFIG_SYSFS */
+diff --git a/datapath/dp_sysfs_if.c b/datapath/dp_sysfs_if.c
+new file mode 100644
+index 000000000..38faa1917
+--- /dev/null
++++ b/datapath/dp_sysfs_if.c
+@@ -0,0 +1,275 @@
++/*
++ * Copyright (c) 2007-2012 Nicira, Inc.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of version 2 of the GNU General Public
++ * License as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
++ * 02110-1301, USA
++ */
++
++#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++
++#include <linux/capability.h>
++#include <linux/kernel.h>
++#include <linux/netdevice.h>
++#include <linux/if_bridge.h>
++#include <linux/rtnetlink.h>
++
++#include "datapath.h"
++#include "dp_sysfs.h"
++#include "vport.h"
++
++#ifdef CONFIG_SYSFS
++
++struct brport_attribute {
++	struct attribute	attr;
++	ssize_t (*show)(struct vport *, char *);
++	ssize_t (*store)(struct vport *, unsigned long);
++};
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36)
++#define BRPORT_ATTR(_name, _mode, _show, _store)		\
++struct brport_attribute brport_attr_##_name = {		        \
++	.attr = {.name = __stringify(_name),			\
++		 .mode = _mode },				\
++	.show	= _show,					\
++	.store	= _store,					\
++};
++#else
++#define BRPORT_ATTR(_name, _mode, _show, _store)		\
++struct brport_attribute brport_attr_##_name = {			\
++	.attr = {.name = __stringify(_name),			\
++		 .mode = _mode,					\
++		 .owner = THIS_MODULE, },			\
++	.show	= _show,					\
++	.store	= _store,					\
++};
++#endif
++
++static ssize_t show_path_cost(struct vport *p, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static ssize_t store_path_cost(struct vport *p, unsigned long v)
++{
++	return 0;
++}
++static BRPORT_ATTR(path_cost, S_IRUGO | S_IWUSR,
++		   show_path_cost, store_path_cost);
++
++static ssize_t show_priority(struct vport *p, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static ssize_t store_priority(struct vport *p, unsigned long v)
++{
++	return 0;
++}
++static BRPORT_ATTR(priority, S_IRUGO | S_IWUSR,
++			 show_priority, store_priority);
++
++static ssize_t show_designated_root(struct vport *p, char *buf)
++{
++	return sprintf(buf, "0000.010203040506\n");
++}
++static BRPORT_ATTR(designated_root, S_IRUGO, show_designated_root, NULL);
++
++static ssize_t show_designated_bridge(struct vport *p, char *buf)
++{
++	return sprintf(buf, "0000.060504030201\n");
++}
++static BRPORT_ATTR(designated_bridge, S_IRUGO, show_designated_bridge, NULL);
++
++static ssize_t show_designated_port(struct vport *p, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static BRPORT_ATTR(designated_port, S_IRUGO, show_designated_port, NULL);
++
++static ssize_t show_designated_cost(struct vport *p, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static BRPORT_ATTR(designated_cost, S_IRUGO, show_designated_cost, NULL);
++
++static ssize_t show_port_id(struct vport *p, char *buf)
++{
++	return sprintf(buf, "0x%x\n", 0);
++}
++static BRPORT_ATTR(port_id, S_IRUGO, show_port_id, NULL);
++
++static ssize_t show_port_no(struct vport *p, char *buf)
++{
++	return sprintf(buf, "0x%x\n", p->port_no);
++}
++
++static BRPORT_ATTR(port_no, S_IRUGO, show_port_no, NULL);
++
++static ssize_t show_change_ack(struct vport *p, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static BRPORT_ATTR(change_ack, S_IRUGO, show_change_ack, NULL);
++
++static ssize_t show_config_pending(struct vport *p, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static BRPORT_ATTR(config_pending, S_IRUGO, show_config_pending, NULL);
++
++static ssize_t show_port_state(struct vport *p, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static BRPORT_ATTR(state, S_IRUGO, show_port_state, NULL);
++
++static ssize_t show_message_age_timer(struct vport *p, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static BRPORT_ATTR(message_age_timer, S_IRUGO, show_message_age_timer, NULL);
++
++static ssize_t show_forward_delay_timer(struct vport *p, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static BRPORT_ATTR(forward_delay_timer, S_IRUGO, show_forward_delay_timer, NULL);
++
++static ssize_t show_hold_timer(struct vport *p, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static BRPORT_ATTR(hold_timer, S_IRUGO, show_hold_timer, NULL);
++
++static struct brport_attribute *brport_attrs[] = {
++	&brport_attr_path_cost,
++	&brport_attr_priority,
++	&brport_attr_port_id,
++	&brport_attr_port_no,
++	&brport_attr_designated_root,
++	&brport_attr_designated_bridge,
++	&brport_attr_designated_port,
++	&brport_attr_designated_cost,
++	&brport_attr_state,
++	&brport_attr_change_ack,
++	&brport_attr_config_pending,
++	&brport_attr_message_age_timer,
++	&brport_attr_forward_delay_timer,
++	&brport_attr_hold_timer,
++	NULL
++};
++
++#define to_vport_attr(_at) container_of(_at, struct brport_attribute, attr)
++#define to_vport(obj)	container_of(obj, struct vport, kobj)
++
++static ssize_t brport_show(struct kobject *kobj,
++			   struct attribute *attr, char *buf)
++{
++	struct brport_attribute *brport_attr = to_vport_attr(attr);
++	struct vport *p = to_vport(kobj);
++
++	return brport_attr->show(p, buf);
++}
++
++static ssize_t brport_store(struct kobject *kobj,
++			    struct attribute *attr,
++			    const char *buf, size_t count)
++{
++	struct vport *p = to_vport(kobj);
++	ssize_t ret = -EINVAL;
++
++	if (!capable(CAP_NET_ADMIN))
++		return -EPERM;
++
++	pr_warning("%s: xxx writing port parms not supported yet!\n",
++		   ovs_dp_name(p->dp));
++
++	return ret;
++}
++
++struct sysfs_ops ovs_brport_sysfs_ops = {
++	.show = brport_show,
++	.store = brport_store,
++};
++
++/*
++ * Add sysfs entries to ethernet device added to a bridge.
++ * Creates a brport subdirectory with bridge attributes.
++ * Puts symlink in bridge's brport subdirectory
++ */
++int ovs_dp_sysfs_add_if(struct vport *p)
++{
++	struct datapath *dp = p->dp;
++	struct vport *local_port = ovs_vport_ovsl(dp, OVSP_LOCAL);
++	struct brport_attribute **a;
++	int err;
++
++	/* Create /sys/class/net/<devname>/brport directory. */
++	if (!p->ops->get_kobj)
++		return -ENOENT;
++
++#ifdef CONFIG_NET_NS
++	/* Due to bug in 2.6.32 kernel, sysfs_create_group() could panic
++	 * in other namespace than init_net. Following check is to avoid it. */
++
++	if (!p->kobj.sd)
++		return -ENOENT;
++#endif
++
++	err = kobject_add(&p->kobj, p->ops->get_kobj(p),
++			  SYSFS_BRIDGE_PORT_ATTR);
++	if (err)
++		goto err;
++
++	/* Create symlink from /sys/class/net/<devname>/brport/bridge to
++	 * /sys/class/net/<bridgename>. */
++	err = sysfs_create_link(&p->kobj, local_port->ops->get_kobj(local_port),
++		SYSFS_BRIDGE_PORT_LINK); /* "bridge" */
++	if (err)
++		goto err_del;
++
++	/* Populate /sys/class/net/<devname>/brport directory with files. */
++	for (a = brport_attrs; *a; ++a) {
++		err = sysfs_create_file(&p->kobj, &((*a)->attr));
++		if (err)
++			goto err_del;
++	}
++
++	/* Create symlink from /sys/class/net/<bridgename>/brif/<devname> to
++	 * /sys/class/net/<devname>/brport.  */
++	err = sysfs_create_link(&dp->ifobj, &p->kobj, p->ops->get_name(p));
++	if (err)
++		goto err_del;
++	strcpy(p->linkname, p->ops->get_name(p));
++
++	kobject_uevent(&p->kobj, KOBJ_ADD);
++
++	return 0;
++
++err_del:
++	kobject_del(&p->kobj);
++err:
++	p->linkname[0] = 0;
++	return err;
++}
++
++int ovs_dp_sysfs_del_if(struct vport *p)
++{
++	if (p->linkname[0]) {
++		sysfs_remove_link(&p->dp->ifobj, p->linkname);
++		kobject_uevent(&p->kobj, KOBJ_REMOVE);
++		kobject_del(&p->kobj);
++		p->linkname[0] = '\0';
++	}
++	return 0;
++}
++#endif /* CONFIG_SYSFS */
+diff --git a/datapath/linux/Makefile.main.in b/datapath/linux/Makefile.main.in
+index 328bbfbb6..9b16d2bc2 100644
+--- a/datapath/linux/Makefile.main.in
++++ b/datapath/linux/Makefile.main.in
+@@ -4,6 +4,7 @@ export srcdir = @abs_srcdir@
+ export top_srcdir = @abs_top_srcdir@
+ export KSRC = @KBUILD@
+ export VERSION = @VERSION@
++export BUILD_BRCOMPAT = @BUILD_BRCOMPAT@
+ 
+ include $(srcdir)/../Modules.mk
+ include $(srcdir)/Modules.mk
+diff --git a/datapath/linux/Modules.mk b/datapath/linux/Modules.mk
+index e31d78447..936250c21 100644
+--- a/datapath/linux/Modules.mk
++++ b/datapath/linux/Modules.mk
+@@ -112,5 +112,7 @@ openvswitch_headers += \
+ 	linux/compat/include/net/netfilter/ipv6/nf_defrag_ipv6.h \
+ 	linux/compat/include/net/sctp/checksum.h \
+ 	linux/compat/include/net/erspan.h \
+-	linux/compat/include/uapi/linux/netfilter.h
++	linux/compat/include/uapi/linux/netfilter.h \
++	linux/compat/genetlink.inc
+ EXTRA_DIST += linux/compat/build-aux/export-check-whitelist
++
+diff --git a/datapath/linux/compat/genetlink-brcompat.c b/datapath/linux/compat/genetlink-brcompat.c
+new file mode 100644
+index 000000000..ed3a4bb84
+--- /dev/null
++++ b/datapath/linux/compat/genetlink-brcompat.c
+@@ -0,0 +1,10 @@
++/* We fix grp->id to 32 so that it doesn't collide with any of the multicast
++ * groups selected by openvswitch, which uses groups 16 through 31.
++ * Collision isn't fatal--multicast listeners should check that the family is
++ * the one that they want and discard others--but it wastes time and memory to
++ * receive unwanted messages. */
++
++#define GENL_FIRST_MCGROUP 32
++#define GENL_LAST_MCGROUP  32
++
++#include "genetlink.inc"
+diff --git a/datapath/linux/compat/genetlink.inc b/datapath/linux/compat/genetlink.inc
+new file mode 100644
+index 000000000..209d6cd1e
+--- /dev/null
++++ b/datapath/linux/compat/genetlink.inc
+@@ -0,0 +1,148 @@
++/* -*- c -*- */
++
++#include <net/genetlink.h>
++#include <linux/version.h>
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,23)
++#include <linux/mutex.h>
++#include <linux/openvswitch.h>
++
++#include "openvswitch/datapath-compat.h"
++
++static DEFINE_MUTEX(mc_group_mutex);
++
++int genl_register_mc_group(struct genl_family *family,
++			   struct genl_multicast_group *grp)
++{
++	static int next_group = GENL_FIRST_MCGROUP;
++
++	grp->family = family;
++
++	if (!strcmp(grp->name, OVS_VPORT_MCGROUP)) {
++		grp->id = OVS_VPORT_MCGROUP_FALLBACK_ID;
++		return 0;
++	}
++
++	mutex_lock(&mc_group_mutex);
++	grp->id = next_group;
++
++	if (++next_group > GENL_LAST_MCGROUP)
++		next_group = GENL_FIRST_MCGROUP;
++	mutex_unlock(&mc_group_mutex);
++
++	return 0;
++}
++#endif /* kernel < 2.6.23 */
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,31)
++/**
++ * genl_register_family_with_ops - register a generic netlink family
++ * @family: generic netlink family
++ * @ops: operations to be registered
++ * @n_ops: number of elements to register
++ *
++ * Registers the specified family and operations from the specified table.
++ * Only one family may be registered with the same family name or identifier.
++ *
++ * The family id may equal GENL_ID_GENERATE causing an unique id to
++ * be automatically generated and assigned.
++ *
++ * Either a doit or dumpit callback must be specified for every registered
++ * operation or the function will fail. Only one operation structure per
++ * command identifier may be registered.
++ *
++ * See include/net/genetlink.h for more documenation on the operations
++ * structure.
++ *
++ * This is equivalent to calling genl_register_family() followed by
++ * genl_register_ops() for every operation entry in the table taking
++ * care to unregister the family on error path.
++ *
++ * Return 0 on success or a negative error code.
++ */
++int genl_register_family_with_ops(struct genl_family *family,
++	struct genl_ops *ops, size_t n_ops)
++{
++	int err, i;
++
++	err = genl_register_family(family);
++	if (err)
++		return err;
++
++	for (i = 0; i < n_ops; ++i, ++ops) {
++		err = genl_register_ops(family, ops);
++		if (err)
++			goto err_out;
++	}
++	return 0;
++err_out:
++	genl_unregister_family(family);
++	return err;
++}
++#endif
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,19)
++/**
++ * nlmsg_notify - send a notification netlink message
++ * @sk: netlink socket to use
++ * @skb: notification message
++ * @portid: destination netlink portid for reports or 0
++ * @group: destination multicast group or 0
++ * @report: 1 to report back, 0 to disable
++ * @flags: allocation flags
++ */
++int nlmsg_notify(struct sock *sk, struct sk_buff *skb, u32 portid,
++		 unsigned int group, int report, gfp_t flags)
++{
++	int err = 0;
++
++	if (group) {
++		int exclude_portid = 0;
++
++		if (report) {
++			atomic_inc(&skb->users);
++			exclude_portid = portid;
++		}
++
++		/* errors reported via destination sk->sk_err, but propagate
++		 * delivery errors if NETLINK_BROADCAST_ERROR flag is set */
++		err = nlmsg_multicast(sk, skb, exclude_portid, group, flags);
++	}
++
++	if (report) {
++		int err2;
++
++		err2 = nlmsg_unicast(sk, skb, portid);
++		if (!err || err == -ESRCH)
++			err = err2;
++	}
++
++	return err;
++}
++#endif
++
++#ifdef HAVE_GENL_NOTIFY_TAKES_NET
++
++#undef genl_notify
++
++void rpl_genl_notify(struct genl_family *family, struct sk_buff *skb,
++		     struct genl_info *info, u32 group, gfp_t flags)
++{
++	struct net *net = genl_info_net(info);
++	u32 portid = info->snd_portid;
++	struct nlmsghdr *nlh = info->nlhdr;
++
++#ifdef HAVE_GENL_NOTIFY_TAKES_FAMILY
++	genl_notify(family, skb, net, portid, group, nlh, flags);
++#else
++	genl_notify(skb, net, portid, group, nlh, flags);
++#endif
++}
++#endif /* HAVE_GENL_NOTIFY_TAKES_NET */
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30)
++/* This function wasn't exported before 2.6.30.  Lose! */
++void netlink_set_err(struct sock *ssk, u32 portid, u32 group, int code)
++{
++}
++#endif
+diff --git a/datapath/linux/compat/geneve.c b/datapath/linux/compat/geneve.c
+index c044b1489..71c263304 100644
+--- a/datapath/linux/compat/geneve.c
++++ b/datapath/linux/compat/geneve.c
+@@ -961,7 +961,7 @@ static struct dst_entry *geneve_get_v6_dst(struct sk_buff *skb,
+ 		if (dst)
+ 			return dst;
+ 	}
+-
++#if 0   ///fixed compiler error: ‘const struct ipv6_stub’ has no member named ‘ipv6_dst_lookup’, don't relate to brcompate.
+ #ifdef HAVE_IPV6_DST_LOOKUP_NET
+ 	if (ipv6_stub->ipv6_dst_lookup(geneve->net, gs6->sock->sk, &dst, fl6)) {
+ #else
+@@ -974,6 +974,7 @@ static struct dst_entry *geneve_get_v6_dst(struct sk_buff *skb,
+ 		netdev_dbg(dev, "no route to %pI6\n", &fl6->daddr);
+ 		return ERR_PTR(-ENETUNREACH);
+ 	}
++#endif
+ 	if (dst->dev == dev) { /* is this necessary? */
+ 		netdev_dbg(dev, "circular route to %pI6\n", &fl6->daddr);
+ 		dst_release(dst);
+diff --git a/datapath/linux/compat/include/linux/netdevice.h b/datapath/linux/compat/include/linux/netdevice.h
+index cf68ed523..5d37dfab1 100644
+--- a/datapath/linux/compat/include/linux/netdevice.h
++++ b/datapath/linux/compat/include/linux/netdevice.h
+@@ -26,6 +26,12 @@ struct net;
+ #define IFF_OPENVSWITCH 0
+ #endif
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,21)
++#define NETDEV_DEV_MEMBER class_dev
++#else
++#define NETDEV_DEV_MEMBER dev
++#endif
++
+ #ifndef to_net_dev
+ #define to_net_dev(class) container_of(class, struct net_device, NETDEV_DEV_MEMBER)
+ #endif
+diff --git a/datapath/linux/compat/ip6_gre.c b/datapath/linux/compat/ip6_gre.c
+index 2ffdda5e1..96743b10a 100644
+--- a/datapath/linux/compat/ip6_gre.c
++++ b/datapath/linux/compat/ip6_gre.c
+@@ -1096,7 +1096,7 @@ static netdev_tx_t ip6erspan_tunnel_xmit(struct sk_buff *skb,
+ 					 struct net_device *dev)
+ {
+ 	struct ip6_tnl *t = netdev_priv(dev);
+-	struct dst_entry *dst = skb_dst(skb);
++//	struct dst_entry *dst = skb_dst(skb);
+ 	struct ip_tunnel_info *tun_info;
+ 	const struct ip_tunnel_key *key;
+ 	struct net_device_stats *stats;
+@@ -1193,10 +1193,10 @@ static netdev_tx_t ip6erspan_tunnel_xmit(struct sk_buff *skb,
+ 
+ 	/* Push GRE header. */
+ 	gre_build_header(skb, &tpi, 8);
+-
++// fixed compiler error: too few arguments to function ‘dst->ops->update_pmtu’, don't relate to brcompate.
+ 	/* TooBig packet may have updated dst->dev's mtu */
+-	if (!t->parms.collect_md && dst && dst_mtu(dst) > dst->dev->mtu)
+-		dst->ops->update_pmtu(dst, NULL, skb, dst->dev->mtu);
++//	if (!t->parms.collect_md && dst && dst_mtu(dst) > dst->dev->mtu)
++//		dst->ops->update_pmtu(dst, NULL, skb, dst->dev->mtu);
+ 
+ 	err = ip6_tnl_xmit(skb, dev, dsfield, &fl6, encap_limit, &mtu,
+ 			   NEXTHDR_GRE);
+diff --git a/datapath/linux/compat/ip_tunnel.c b/datapath/linux/compat/ip_tunnel.c
+index d16e60fbf..d1de24f7e 100644
+--- a/datapath/linux/compat/ip_tunnel.c
++++ b/datapath/linux/compat/ip_tunnel.c
+@@ -264,9 +264,9 @@ static int rpl_tnl_update_pmtu(struct net_device *dev, struct sk_buff *skb,
+ 					- sizeof(struct iphdr) - tunnel->hlen;
+ 	else
+ 		mtu = skb_dst(skb) ? dst_mtu(skb_dst(skb)) : dev->mtu;
+-
+-	if (skb_dst(skb))
+-		skb_dst(skb)->ops->update_pmtu(skb_dst(skb), NULL, skb, mtu);
++// fixed compiler error: too few arguments to function skb_dst, don't relate to brcompate.
++//	if (skb_dst(skb))
++//		skb_dst(skb)->ops->update_pmtu(skb_dst(skb), NULL, skb, mtu);
+ 
+ 	if (skb->protocol == htons(ETH_P_IP)) {
+ 		if (!skb_is_gso(skb) &&
+diff --git a/datapath/linux/compat/nf_conntrack_reasm.c b/datapath/linux/compat/nf_conntrack_reasm.c
+index 9d77d9827..7d0378389 100644
+--- a/datapath/linux/compat/nf_conntrack_reasm.c
++++ b/datapath/linux/compat/nf_conntrack_reasm.c
+@@ -51,6 +51,7 @@
+ #include <linux/netfilter.h>
+ #include <linux/netfilter_ipv6.h>
+ #include <linux/kernel.h>
++#include <net/ipv6_frag.h>
+ #include <linux/module.h>
+ #include <net/netfilter/ipv6/nf_defrag_ipv6.h>
+ #include <net/netns/generic.h>
+@@ -70,6 +71,14 @@ struct nf_ct_frag6_skb_cb
+ 
+ static struct inet_frags nf_frags;
+ 
++static const struct rhashtable_params ip6_rhash_params = {
++	.head_offset		= offsetof(struct inet_frag_queue, node),
++	.hashfn			= ip6frag_key_hashfn,
++	.obj_hashfn		= ip6frag_obj_hashfn,
++	.obj_cmpfn		= ip6frag_obj_cmpfn,
++	.automatic_shrinking	= true,
++};
++
+ static struct netns_frags *get_netns_frags6_from_net(struct net *net)
+ {
+ #ifdef HAVE_INET_FRAG_LRU_MOVE
+@@ -136,9 +145,9 @@ static void nf_ct_frag6_expire(unsigned long data)
+ 	net = get_net_from_netns_frags6(fq->q.net);
+ 
+ #ifdef HAVE_INET_FRAGS_RND
+-	ip6_expire_frag_queue(net, fq, &nf_frags);
++	ip6frag_expire_frag_queue(net, fq, &nf_frags);
+ #else
+-	ip6_expire_frag_queue(net, fq);
++	ip6frag_expire_frag_queue(net, fq);
+ #endif
+ }
+ 
+@@ -686,7 +695,7 @@ int rpl_nf_ct_frag6_init(void)
+ #else
+ 	nf_frags.rhash_params = ip6_rhash_params;
+ #endif
+-	nf_frags.constructor = ip6_frag_init;
++	nf_frags.constructor = ip6frag_init;
+ 	nf_frags.destructor = NULL;
+ 	nf_frags.qsize = sizeof(struct frag_queue);
+ 	nf_frags.frag_expire = nf_ct_frag6_expire;
+diff --git a/datapath/linux/compat/vxlan.c b/datapath/linux/compat/vxlan.c
+index 23118e8b6..286838cc0 100644
+--- a/datapath/linux/compat/vxlan.c
++++ b/datapath/linux/compat/vxlan.c
+@@ -989,7 +989,7 @@ static struct dst_entry *vxlan6_get_route(struct vxlan_dev *vxlan,
+ 	fl6.flowi6_proto = IPPROTO_UDP;
+ 	fl6.fl6_dport = dport;
+ 	fl6.fl6_sport = sport;
+-
++#if 0 ///fixed compiler error: ‘const struct ipv6_stub’ has no member named ‘ipv6_dst_lookup’, don't relate to brcompate.
+ #ifdef HAVE_IPV6_DST_LOOKUP_NET
+ 	err = ipv6_stub->ipv6_dst_lookup(vxlan->net,
+ 					 sock6->sock->sk,
+@@ -1001,6 +1001,7 @@ static struct dst_entry *vxlan6_get_route(struct vxlan_dev *vxlan,
+ #else
+ 	err = ip6_dst_lookup(vxlan->vn6_sock->sock->sk, &ndst, &fl6);
+ #endif
++#endif
+ #endif
+ 	if (err < 0)
+ 		return ERR_PTR(err);
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index 0318f5852..8ca5e942c 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -109,6 +109,15 @@ static int internal_dev_change_mtu(struct net_device *dev, int new_mtu)
+ }
+ #endif
+ 
++static int internal_dev_do_ioctl(struct net_device *dev,
++				 struct ifreq *ifr, int cmd)
++{
++	if (ovs_dp_ioctl_hook)
++		return ovs_dp_ioctl_hook(dev, ifr, cmd);
++
++	return -EOPNOTSUPP;
++}
++
+ static void internal_dev_destructor(struct net_device *dev)
+ {
+ 	struct vport *vport = ovs_internal_dev_get_vport(dev);
+@@ -153,6 +162,7 @@ static const struct net_device_ops internal_dev_netdev_ops = {
+ 	.ndo_open = internal_dev_open,
+ 	.ndo_stop = internal_dev_stop,
+ 	.ndo_start_xmit = internal_dev_xmit,
++	.ndo_do_ioctl = internal_dev_do_ioctl,
+ 	.ndo_set_mac_address = eth_mac_addr,
+ #if	!defined(HAVE_NET_DEVICE_WITH_MAX_MTU) && !defined(HAVE_RHEL7_MAX_MTU)
+ 	.ndo_change_mtu = internal_dev_change_mtu,
+@@ -302,6 +312,15 @@ static struct vport_ops ovs_internal_vport_ops = {
+ 	.type		= OVS_VPORT_TYPE_INTERNAL,
+ 	.create		= internal_dev_create,
+ 	.destroy	= internal_dev_destroy,
++	.set_addr	= ovs_netdev_set_addr,
++	.get_name	= ovs_netdev_get_name,
++	.get_addr	= ovs_netdev_get_addr,
++	.get_kobj	= ovs_netdev_get_kobj,
++	.get_dev_flags	= ovs_netdev_get_dev_flags,
++	.is_running	= ovs_netdev_is_running,
++	.get_operstate	= ovs_netdev_get_operstate,
++	.get_ifindex	= ovs_netdev_get_ifindex,
++	.get_mtu	= ovs_netdev_get_mtu,
+ 	.send		= internal_dev_recv,
+ };
+ 
+diff --git a/datapath/vport-netdev.c b/datapath/vport-netdev.c
+index 4eb881671..dbedb7d18 100644
+--- a/datapath/vport-netdev.c
++++ b/datapath/vport-netdev.c
+@@ -182,6 +182,56 @@ static void netdev_destroy(struct vport *vport)
+ 	call_rcu(&vport->rcu, vport_netdev_free);
+ }
+ 
++int ovs_netdev_set_addr(struct vport *vport, const unsigned char *addr)
++{
++	struct sockaddr sa;
++
++	sa.sa_family = ARPHRD_ETHER;
++	memcpy(sa.sa_data, addr, ETH_ALEN);
++
++	return dev_set_mac_address(vport->dev, &sa);
++}
++
++const char *ovs_netdev_get_name(const struct vport *vport)
++{
++	return vport->dev->name;
++}
++
++const unsigned char *ovs_netdev_get_addr(const struct vport *vport)
++{
++	return vport->dev->dev_addr;
++}
++
++struct kobject *ovs_netdev_get_kobj(const struct vport *vport)
++{
++	return &vport->dev->NETDEV_DEV_MEMBER.kobj;
++}
++
++unsigned ovs_netdev_get_dev_flags(const struct vport *vport)
++{
++	return dev_get_flags(vport->dev);
++}
++
++int ovs_netdev_is_running(const struct vport *vport)
++{
++	return netif_running(vport->dev);
++}
++
++unsigned char ovs_netdev_get_operstate(const struct vport *vport)
++{
++	return vport->dev->operstate;
++}
++
++int ovs_netdev_get_ifindex(const struct vport *vport)
++{
++	return vport->dev->ifindex;
++}
++
++int ovs_netdev_get_mtu(const struct vport *vport)
++{
++	return vport->dev->mtu;
++}
++
+ void ovs_netdev_tunnel_destroy(struct vport *vport)
+ {
+ 	rtnl_lock();
+@@ -216,6 +266,15 @@ static struct vport_ops ovs_netdev_vport_ops = {
+ 	.type		= OVS_VPORT_TYPE_NETDEV,
+ 	.create		= netdev_create,
+ 	.destroy	= netdev_destroy,
++	.set_addr	= ovs_netdev_set_addr,
++	.get_name	= ovs_netdev_get_name,
++	.get_addr	= ovs_netdev_get_addr,
++	.get_kobj	= ovs_netdev_get_kobj,
++	.get_dev_flags	= ovs_netdev_get_dev_flags,
++	.is_running	= ovs_netdev_is_running,
++	.get_operstate	= ovs_netdev_get_operstate,
++	.get_ifindex	= ovs_netdev_get_ifindex,
++	.get_mtu	= ovs_netdev_get_mtu,
+ 	.send		= dev_queue_xmit,
+ };
+ 
+@@ -228,3 +287,14 @@ void ovs_netdev_exit(void)
+ {
+ 	ovs_vport_ops_unregister(&ovs_netdev_vport_ops);
+ }
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,36) && \
++    !defined HAVE_RHEL_OVS_HOOK
++/*
++ * In kernels earlier than 2.6.36, Open vSwitch cannot safely coexist with the
++ * Linux bridge module, because there is only a single bridge hook function and
++ * only a single br_port member in struct net_device, so this prevents loading
++ * both bridge and openvswitch at the same time.
++ */
++BRIDGE_MUTUAL_EXCLUSION;
++#endif
+diff --git a/datapath/vport-netdev.h b/datapath/vport-netdev.h
+index 04ad190c9..6fb679d6b 100644
+--- a/datapath/vport-netdev.h
++++ b/datapath/vport-netdev.h
+@@ -36,4 +36,15 @@ void ovs_netdev_tunnel_destroy(struct vport *vport);
+ 
+ void netdev_port_receive(struct sk_buff *skb, struct ip_tunnel_info *tun_info);
+ 
++int ovs_netdev_set_addr(struct vport *, const unsigned char *addr);
++const char *ovs_netdev_get_name(const struct vport *);
++const unsigned char *ovs_netdev_get_addr(const struct vport *);
++struct kobject *ovs_netdev_get_kobj(const struct vport *);
++unsigned ovs_netdev_get_dev_flags(const struct vport *);
++int ovs_netdev_is_running(const struct vport *);
++unsigned char ovs_netdev_get_operstate(const struct vport *);
++int ovs_netdev_get_ifindex(const struct vport *);
++int ovs_netdev_get_mtu(const struct vport *);
++
++
+ #endif /* vport_netdev.h */
+diff --git a/datapath/vport.c b/datapath/vport.c
+index ed7f23ec8..02404f045 100644
+--- a/datapath/vport.c
++++ b/datapath/vport.c
+@@ -202,6 +202,19 @@ struct vport *ovs_vport_locate(const struct net *net, const char *name)
+ 	return NULL;
+ }
+ 
++static void release_vport(struct kobject *kobj)
++{
++	struct vport *p = container_of(kobj, struct vport, kobj);
++	kfree(p);
++}
++
++static struct kobj_type brport_ktype = {
++#ifdef CONFIG_SYSFS
++	.sysfs_ops = &ovs_brport_sysfs_ops,
++#endif
++	.release = release_vport
++};
++
+ /**
+  *	ovs_vport_alloc - allocate and initialize new vport
+  *
+@@ -234,6 +247,11 @@ struct vport *ovs_vport_alloc(int priv_size, const struct vport_ops *ops,
+ 	vport->ops = ops;
+ 	INIT_HLIST_NODE(&vport->dp_hash_node);
+ 
++	/* Initialize kobject for bridge.  This will be added as
++	 * /sys/class/net/<devname>/brport later, if sysfs is enabled. */
++	vport->kobj.kset = NULL;
++	kobject_init(&vport->kobj, &brport_ktype);
++
+ 	if (ovs_vport_set_upcall_portids(vport, parms->upcall_portids)) {
+ 		kfree(vport);
+ 		return ERR_PTR(-EINVAL);
+@@ -259,6 +277,7 @@ void ovs_vport_free(struct vport *vport)
+ 	 * it is safe to use raw dereference.
+ 	 */
+ 	kfree(rcu_dereference_raw(vport->upcall_portids));
++	kobject_put(&vport->kobj);
+ 	kfree(vport);
+ }
+ EXPORT_SYMBOL_GPL(ovs_vport_free);
+diff --git a/datapath/vport.h b/datapath/vport.h
+index d630c34bc..a4a10e685 100644
+--- a/datapath/vport.h
++++ b/datapath/vport.h
+@@ -72,6 +72,7 @@ struct vport_portids {
+  * struct vport - one port within a datapath
+  * @dev: Pointer to net_device.
+  * @dp: Datapath to which this port belongs.
++ * @kobj: Represents /sys/class/net/<devname>/brport.
+  * @upcall_portids: RCU protected 'struct vport_portids'.
+  * @port_no: Index into @dp's @ports array.
+  * @hash_node: Element in @dev_table hash table in vport.c.
+@@ -83,6 +84,8 @@ struct vport_portids {
+ struct vport {
+ 	struct net_device *dev;
+ 	struct datapath	*dp;
++	struct kobject kobj;
++	char linkname[IFNAMSIZ];
+ 	struct vport_portids __rcu *upcall_portids;
+ 	u16 port_no;
+ 
+@@ -130,6 +133,17 @@ struct vport_parms {
+  * have any configuration.
+  * @send: Send a packet on the device.
+  * zero for dropped packets or negative for error.
++ * @set_addr: Set the device's MAC address.  May be null if not supported.
++ * @get_name: Get the device's name.
++ * @get_addr: Get the device's MAC address.
++ * @get_config: Get the device's configuration.
++ * @get_kobj: Get the kobj associated with the device (may return null).
++ * @get_dev_flags: Get the device's flags.
++ * @is_running: Checks whether the device is running.
++ * @get_operstate: Get the device's operating state.
++ * @get_mtu: Get the device's MTU.  May be %NULL if the device does not have an
++ * MTU (as e.g. some tunnels do not).  Must be implemented if @get_ifindex is
++ * implemented.
+  */
+ struct vport_ops {
+ 	enum ovs_vport_type type;
+@@ -141,6 +155,21 @@ struct vport_ops {
+ 	int (*set_options)(struct vport *, struct nlattr *);
+ 	int (*get_options)(const struct vport *, struct sk_buff *);
+ 
++	int (*set_addr)(struct vport *, const unsigned char *);
++
++	const char *(*get_name)(const struct vport *);
++ 	const unsigned char *(*get_addr)(const struct vport *);
++	void (*get_config)(const struct vport *, void *);
++	struct kobject *(*get_kobj)(const struct vport *);
++
++	unsigned (*get_dev_flags)(const struct vport *);
++	int (*is_running)(const struct vport *);
++	unsigned char (*get_operstate)(const struct vport *);
++
++	int (*get_ifindex)(const struct vport *);
++
++	int (*get_mtu)(const struct vport *);
++
+ 	netdev_tx_t (*send)(struct sk_buff *skb);
+ #ifndef USE_UPSTREAM_TUNNEL
+ 	int  (*fill_metadata_dst)(struct net_device *dev, struct sk_buff *skb);
+diff --git a/include/openvswitch/automake.mk b/include/openvswitch/automake.mk
+index aede51566..ff16e3466 100644
+--- a/include/openvswitch/automake.mk
++++ b/include/openvswitch/automake.mk
+@@ -1,3 +1,5 @@
++ noinst_HEADERS += \
++       include/openvswitch/brcompat-netlink.h
+ openvswitchincludedir = $(includedir)/openvswitch
+ openvswitchinclude_HEADERS = \
+ 	include/openvswitch/compiler.h \
+diff --git a/include/openvswitch/brcompat-netlink.h b/include/openvswitch/brcompat-netlink.h
+new file mode 100644
+index 000000000..3bf42c58d
+--- /dev/null
++++ b/include/openvswitch/brcompat-netlink.h
+@@ -0,0 +1,100 @@
++/*
++ * Copyright (c) 2008, 2009, 2011 Nicira, Inc.
++ *
++ * This file is offered under your choice of two licenses: Apache 2.0 or GNU
++ * GPL 2.0 or later.  The permission statements for each of these licenses is
++ * given below.  You may license your modifications to this file under either
++ * of these licenses or both.  If you wish to license your modifications under
++ * only one of these licenses, delete the permission text for the other
++ * license.
++ *
++ * ----------------------------------------------------------------------
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at:
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ * ----------------------------------------------------------------------
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++ * ----------------------------------------------------------------------
++ */
++
++#ifndef OPENVSWITCH_BRCOMPAT_NETLINK_H
++#define OPENVSWITCH_BRCOMPAT_NETLINK_H 1
++
++#define BRC_GENL_FAMILY_NAME "brcompat"
++
++/* Attributes that can be attached to the datapath's netlink messages. */
++enum {
++    BRC_GENL_A_UNSPEC,
++
++    /*
++     * "K:" attributes appear in messages from the kernel to userspace.
++     * "U:" attributes appear in messages from userspace to the kernel.
++     */
++
++    /* BRC_GENL_C_DP_ADD, BRC_GENL_C_DP_DEL. */
++    BRC_GENL_A_DP_NAME,        /* K: Datapath name. */
++
++    /* BRC_GENL_C_DP_ADD, BRC_GENL_C_DP_DEL,
++       BRC_GENL_C_PORT_ADD, BRC_GENL_C_PORT_DEL. */
++    BRC_GENL_A_PORT_NAME,    /* K: Interface name. */
++
++    /* BRC_GENL_C_DP_RESULT. */
++    BRC_GENL_A_ERR_CODE,    /* U: Positive error code. */
++
++    /* BRC_GENL_C_QUERY_MC. */
++    BRC_GENL_A_MC_GROUP,    /* K: Generic netlink multicast group. */
++
++    /* BRC_GENL_C_FDB_QUERY. */
++    BRC_GENL_A_FDB_COUNT,    /* K: Number of FDB entries to read. */
++    BRC_GENL_A_FDB_SKIP,    /* K: Record offset into FDB to start reading. */
++
++    /* BRC_GENL_C_DP_RESULT. */
++    BRC_GENL_A_FDB_DATA,    /* U: FDB records. */
++    BRC_GENL_A_IFINDEXES,   /* U: "int" ifindexes of bridges or ports. */
++    BRC_GENL_A_PAD,
++    __BRC_GENL_A_MAX,
++    BRC_GENL_A_MAX = __BRC_GENL_A_MAX - 1
++};
++
++/* Commands that can be executed on the datapath's netlink interface. */
++enum brc_genl_command {
++    BRC_GENL_C_UNSPEC,
++
++    /*
++     * "K:" messages are sent by the kernel to userspace.
++     * "U:" messages are sent by userspace to the kernel.
++     */
++    BRC_GENL_C_DP_ADD,        /* K: Datapath created. */
++    BRC_GENL_C_DP_DEL,        /* K: Datapath destroyed. */
++    BRC_GENL_C_DP_RESULT,    /* U: Return code from ovs-brcompatd. */
++    BRC_GENL_C_PORT_ADD,    /* K: Port added to datapath. */
++    BRC_GENL_C_PORT_DEL,    /* K: Port removed from datapath. */
++    BRC_GENL_C_QUERY_MC,    /* U: Get multicast group for brcompat. */
++    BRC_GENL_C_FDB_QUERY,    /* K: Read records from forwarding database. */
++    BRC_GENL_C_GET_BRIDGES, /* K: Get ifindexes of all bridges. */
++    BRC_GENL_C_GET_PORTS,   /* K: Get ifindexes of all ports on a bridge. */
++
++    __BRC_GENL_C_MAX,
++    BRC_GENL_C_MAX = __BRC_GENL_C_MAX - 1
++};
++#endif /* openvswitch/brcompat-netlink.h */
+diff --git a/lib/daemon.c b/lib/daemon.c
+index 3249c5ab4..884bef608 100644
+--- a/lib/daemon.c
++++ b/lib/daemon.c
+@@ -22,6 +22,7 @@
+ #include "util.h"
+ #include "ovs-thread.h"
+ #include "openvswitch/vlog.h"
++#include "socket-util.h"
+ 
+ VLOG_DEFINE_THIS_MODULE(daemon);
+ 
+@@ -97,31 +98,6 @@ daemon_save_fd(int fd)
+     save_fds[fd] = true;
+ }
+ 
+-/* Returns a readable and writable fd for /dev/null, if successful, otherwise
+- * a negative errno value.  The caller must not close the returned fd (because
+- * the same fd will be handed out to subsequent callers). */
+-static int
+-get_null_fd(void)
+-{
+-    static int null_fd;
+-#ifndef _WIN32
+-    char *device = "/dev/null";
+-#else
+-    char *device = "nul";
+-#endif
+-
+-    if (!null_fd) {
+-        null_fd = open(device, O_RDWR);
+-        if (null_fd < 0) {
+-            int error = errno;
+-            VLOG_ERR("could not open %s: %s", device, ovs_strerror(error));
+-            null_fd = -error;
+-        }
+-    }
+-
+-    return null_fd;
+-}
+-
+ /* Close standard file descriptors (except any that the client has requested we
+  * leave open by calling daemon_save_fd()).  If we're started from e.g. an SSH
+  * session, then this keeps us from holding that session open artificially. */
+diff --git a/lib/netlink-socket.c b/lib/netlink-socket.c
+index 47077e947..7e089cb72 100644
+--- a/lib/netlink-socket.c
++++ b/lib/netlink-socket.c
+@@ -1094,8 +1094,7 @@ nl_sock_transact_multiple(struct nl_sock *sock,
+     }
+ }
+ 
+-static int
+-nl_sock_transact(struct nl_sock *sock, const struct ofpbuf *request,
++int nl_sock_transact(struct nl_sock *sock, const struct ofpbuf *request,
+                  struct ofpbuf **replyp)
+ {
+     struct nl_transaction *transactionp;
+diff --git a/lib/netlink-socket.h b/lib/netlink-socket.h
+index 7852ad052..4b3d7387e 100644
+--- a/lib/netlink-socket.h
++++ b/lib/netlink-socket.h
+@@ -224,6 +224,8 @@ int nl_sock_send(struct nl_sock *, const struct ofpbuf *, bool wait);
+ int nl_sock_send_seq(struct nl_sock *, const struct ofpbuf *,
+                      uint32_t nlmsg_seq, bool wait);
+ int nl_sock_recv(struct nl_sock *, struct ofpbuf *, int *nsid, bool wait);
++int nl_sock_transact(struct nl_sock *sock, const struct ofpbuf *request,
++                 struct ofpbuf **replyp);
+ 
+ int nl_sock_drain(struct nl_sock *);
+ 
+diff --git a/lib/process.c b/lib/process.c
+index 78de4b8df..474a8156e 100644
+--- a/lib/process.c
++++ b/lib/process.c
+@@ -40,6 +40,7 @@
+ VLOG_DEFINE_THIS_MODULE(process);
+ 
+ COVERAGE_DEFINE(process_start);
++COVERAGE_DEFINE(process_run_capture);
+ 
+ #ifdef __linux__
+ #define LINUX 1
+@@ -624,6 +625,199 @@ process_search_path(const char *name)
+     return NULL;
+ }
+ 
++/* process_run_capture() and supporting functions. */
++
++struct stream {
++    size_t max_size;
++    struct ds log;
++    int fds[2];
++};
++
++static int
++stream_open(struct stream *s, size_t max_size)
++{
++    s->max_size = max_size;
++    ds_init(&s->log);
++    if (pipe(s->fds)) {
++        VLOG_WARN("failed to create pipe: %s", ovs_strerror(errno));
++        return errno;
++    }
++    set_nonblocking(s->fds[0]);
++    return 0;
++}
++
++static void
++stream_read(struct stream *s)
++{
++    if (s->fds[0] < 0) {
++        return;
++    }
++
++    for (;;) {
++        char buffer[512];
++        int error;
++        size_t n;
++
++        error = read_fully(s->fds[0], buffer, sizeof buffer, &n);
++        ds_put_buffer(&s->log, buffer, n);
++        if (error) {
++            if (error == EAGAIN || error == EWOULDBLOCK) {
++                return;
++            } else {
++                if (error != EOF) {
++                    VLOG_WARN("error reading subprocess pipe: %s",
++                              ovs_strerror(error));
++                }
++                break;
++            }
++        } else if (s->log.length > s->max_size) {
++            VLOG_WARN("subprocess output overflowed %lu-byte buffer",
++                      s->max_size);
++            break;
++        }
++    }
++    close(s->fds[0]);
++    s->fds[0] = -1;
++}
++
++static void
++stream_wait(struct stream *s)
++{
++    if (s->fds[0] >= 0) {
++        poll_fd_wait(s->fds[0], POLLIN);
++    }
++}
++
++static void
++stream_close(struct stream *s)
++{
++    ds_destroy(&s->log);
++    if (s->fds[0] >= 0) {
++        close(s->fds[0]);
++    }
++    if (s->fds[1] >= 0) {
++        close(s->fds[1]);
++    }
++}
++
++/* Starts the process whose arguments are given in the null-terminated array
++ * 'argv' and waits for it to exit.  On success returns 0 and stores the
++ * process exit value (suitable for passing to process_status_msg()) in
++ * '*status'.  On failure, returns a positive errno value and stores 0 in
++ * '*status'.
++ *
++ * If 'stdout_log' is nonnull, then the subprocess's output to stdout (up to a
++ * limit of 'log_max' bytes) is captured in a memory buffer, which
++ * when this function returns 0 is stored as a null-terminated string in
++ * '*stdout_log'.  The caller is responsible for freeing '*stdout_log' (by
++ * passing it to free()).  When this function returns an error, '*stdout_log'
++ * is set to NULL.
++ *
++ * If 'stderr_log' is nonnull, then it is treated like 'stdout_log' except
++ * that it captures the subprocess's output to stderr. */
++int
++process_run_capture(char **argv, char **stdout_log, char **stderr_log,
++                    size_t max_log, int *status)
++{
++    struct stream s_stdout, s_stderr;
++    sigset_t prev_mask;
++    pid_t pid;
++    int error;
++
++    COVERAGE_INC(process_run_capture);
++    if (stdout_log) {
++        *stdout_log = NULL;
++    }
++    if (stderr_log) {
++        *stderr_log = NULL;
++    }
++    *status = 0;
++    error = process_prestart(argv);
++    if (error) {
++        return error;
++    }
++
++    error = stream_open(&s_stdout, max_log);
++    if (error) {
++        return error;
++    }
++
++    error = stream_open(&s_stderr, max_log);
++    if (error) {
++        stream_close(&s_stdout);
++        return error;
++    }
++
++    fatal_signal_block(&prev_mask);
++    pid = fork();
++    if (pid < 0) {
++        error = errno;
++
++        xpthread_sigmask(SIG_SETMASK, &prev_mask, NULL);
++        VLOG_WARN("fork failed: %s", ovs_strerror(error));
++
++        stream_close(&s_stdout);
++        stream_close(&s_stderr);
++        *status = 0;
++        return error;
++    } else if (pid) {
++        /* Running in parent process. */
++        struct process *p;
++
++        p = process_register(argv[0], pid);
++        xpthread_sigmask(SIG_SETMASK, &prev_mask, NULL);
++
++        close(s_stdout.fds[1]);
++        close(s_stderr.fds[1]);
++        while (!process_exited(p)) {
++            stream_read(&s_stdout);
++            stream_read(&s_stderr);
++            process_run();
++            stream_wait(&s_stdout);
++            stream_wait(&s_stderr);
++            process_wait(p);
++            poll_block();
++        }
++        stream_read(&s_stdout);
++        stream_read(&s_stderr);
++
++        if (stdout_log) {
++            *stdout_log = ds_steal_cstr(&s_stdout.log);
++        }
++        if (stderr_log) {
++            *stderr_log = ds_steal_cstr(&s_stderr.log);
++        }
++
++        stream_close(&s_stdout);
++        stream_close(&s_stderr);
++
++        *status = process_status(p);
++        process_destroy(p);
++        return 0;
++    } else {
++        /* Running in child process. */
++        int max_fds;
++        int i;
++
++        fatal_signal_fork();
++        xpthread_sigmask(SIG_SETMASK, &prev_mask, NULL);
++
++        dup2(get_null_fd(), 0);
++        dup2(s_stdout.fds[1], 1);
++        dup2(s_stderr.fds[1], 2);
++
++        max_fds = get_max_fds();
++        for (i = 3; i < max_fds; i++) {
++            close(i);
++        }
++
++        execvp(argv[0], argv);
++        fprintf(stderr, "execvp(\"%s\") failed: %s\n",
++                argv[0], ovs_strerror(errno));
++        exit(EXIT_FAILURE);
++    }
++}
++
+ static void
+ sigchld_handler(int signr OVS_UNUSED)
+ {
+diff --git a/lib/process.h b/lib/process.h
+index 8c52820f6..1f42e851c 100644
+--- a/lib/process.h
++++ b/lib/process.h
+@@ -58,4 +58,7 @@ char *process_status_msg(int);
+ char *process_escape_args(char **argv);
+ char *process_search_path(const char *);
+ 
++int process_run_capture(char **argv, char **stdout_log, char **stderr_log,
++                        size_t max_log, int *status);
++
+ #endif /* process.h */
+diff --git a/lib/socket-util.c b/lib/socket-util.c
+index 09daa3c90..78b2af877 100644
+--- a/lib/socket-util.c
++++ b/lib/socket-util.c
+@@ -1283,3 +1283,27 @@ wrap_sendmmsg(int fd, struct mmsghdr *msgs, unsigned int n, unsigned int flags)
+ }
+ #endif
+ #endif
++
++/* Returns a readable and writable fd for /dev/null, if successful, otherwise
++ * a negative errno value.  The caller must not close the returned fd (because
++ * the same fd will be handed out to subsequent callers). */
++int get_null_fd(void)
++{
++    static int null_fd;
++#ifndef _WIN32
++    char *device = "/dev/null";
++#else
++    char *device = "nul";
++#endif
++
++    if (!null_fd) {
++        null_fd = open(device, O_RDWR);
++        if (null_fd < 0) {
++            int error = errno;
++            VLOG_ERR("could not open %s: %s", device, ovs_strerror(error));
++            null_fd = -error;
++        }
++    }
++
++    return null_fd;
++}
+diff --git a/lib/socket-util.h b/lib/socket-util.h
+index a65433d90..4db58c895 100644
+--- a/lib/socket-util.h
++++ b/lib/socket-util.h
+@@ -68,6 +68,7 @@ int fsync_parent_dir(const char *file_name);
+ int get_mtime(const char *file_name, struct timespec *mtime);
+ 
+ char *describe_fd(int fd);
++int get_null_fd(void);
+ 
+ /* Default value of dscp bits for connection between controller and manager.
+  * Value of IPTOS_PREC_INTERNETCONTROL = 0xc0 which is defined
+diff --git a/m4/openvswitch.m4 b/m4/openvswitch.m4
+index 41042c98e..b4e1f7cf2 100644
+--- a/m4/openvswitch.m4
++++ b/m4/openvswitch.m4
+@@ -502,6 +502,26 @@ AC_DEFUN([OVS_CHECK_GROFF],
+      fi])
+    AM_CONDITIONAL([HAVE_GROFF], [test "$ovs_cv_groff" = yes])])
+ 
++dnl Checks for --disable-brcompat and undefines BUILD_BRCOMPAT if it is specified.
++AC_DEFUN([OVS_CHECK_BRCOMPAT],
++  [AC_ARG_ENABLE(
++     [brcompat],
++     [AC_HELP_STRING([--disable-brcompat],
++                     [Disable building brcompat])],
++     [case "${enableval}" in
++        (yes) brcompat=true ;;
++        (no)  brcompat=false ;;
++        (*) AC_MSG_ERROR([bad value ${enableval} for --enable-brcompat]) ;;
++      esac],
++     [brcompat=true])
++   if test x$brcompat = xtrue; then
++      BUILD_BRCOMPAT=yes
++   else
++      BUILD_BRCOMPAT=""
++   fi
++   AC_SUBST([BUILD_BRCOMPAT])
++   AM_CONDITIONAL([BUILD_BRCOMPAT], [test x$brcompat = xtrue])])
++
+ dnl Checks for thread-local storage support.
+ dnl
+ dnl Checks whether the compiler and linker support the C11
+diff --git a/manpages.mk b/manpages.mk
+index 5f43aa387..d24cc0585 100644
+--- a/manpages.mk
++++ b/manpages.mk
+@@ -282,6 +282,16 @@ lib/vconn-active.man:
+ lib/vconn-passive.man:
+ lib/vlog.man:
+ 
++vswitchd/ovs-brcompatd.8: \
++	vswitchd/ovs-brcompatd.8.in \
++	lib/common.man \
++	lib/daemon.man \
++	lib/vlog.man
++vswitchd/ovs-brcompatd.8.in:
++lib/common.man:
++lib/daemon.man:
++lib/vlog.man:
++
+ vswitchd/ovs-vswitchd.8: \
+ 	vswitchd/ovs-vswitchd.8.in \
+ 	lib/common.man \
+diff --git a/vswitchd/.gitignore b/vswitchd/.gitignore
+index 04eaf9d05..22e307d96 100644
+--- a/vswitchd/.gitignore
++++ b/vswitchd/.gitignore
+@@ -1,5 +1,7 @@
+ /Makefile
+ /Makefile.in
++/ovs-brcompatd
++/ovs-brcompatd.8
+ /ovs-vswitchd
+ /ovs-vswitchd.8
+ /ovs-vswitchd.conf.db.5
+diff --git a/vswitchd/automake.mk b/vswitchd/automake.mk
+index abdbcc698..589d158fd 100644
+--- a/vswitchd/automake.mk
++++ b/vswitchd/automake.mk
+@@ -1,7 +1,11 @@
+ sbin_PROGRAMS += vswitchd/ovs-vswitchd
+ man_MANS += vswitchd/ovs-vswitchd.8
++if BUILD_BRCOMPAT
++  man_MANS += vswitchd/ovs-brcompatd.8
++endif
+ CLEANFILES += \
+-	vswitchd/ovs-vswitchd.8
++	vswitchd/ovs-vswitchd.8 \
++	vswitchd/ovs-brcompatd.8
+ 
+ vswitchd_ovs_vswitchd_SOURCES = \
+ 	vswitchd/bridge.c \
+@@ -18,6 +22,14 @@ vswitchd_ovs_vswitchd_LDADD = \
+ vswitchd_ovs_vswitchd_LDFLAGS = $(AM_LDFLAGS) $(DPDK_vswitchd_LDFLAGS)
+ MAN_ROOTS += vswitchd/ovs-vswitchd.8.in
+ 
++if BUILD_BRCOMPAT
++sbin_PROGRAMS += vswitchd/ovs-brcompatd
++vswitchd_ovs_brcompatd_SOURCES = \
++	vswitchd/ovs-brcompatd.c
++vswitchd_ovs_brcompatd_LDADD = lib/libopenvswitch.la $(SSL_LIBS)
++MAN_ROOTS += vswitchd/ovs-brcompatd.8.in
++endif
++
+ # vswitch schema and IDL
+ EXTRA_DIST += vswitchd/vswitch.ovsschema
+ pkgdata_DATA += vswitchd/vswitch.ovsschema
+diff --git a/vswitchd/ovs-brcompatd.8.in b/vswitchd/ovs-brcompatd.8.in
+new file mode 100644
+index 000000000..fcc001d7b
+--- /dev/null
++++ b/vswitchd/ovs-brcompatd.8.in
+@@ -0,0 +1,52 @@
++.\" -*- nroff -*-
++.de IQ
++.  br
++.  ns
++.  IP "\\$1"
++..
++.TH ovs\-brcompatd 8 "March 2009" "Open vSwitch" "Open vSwitch Manual"
++.ds PN ovs\-brcompatd
++.
++.SH NAME
++ovs\-brcompatd \- Bridge compatibility front-end for ovs\-vswitchd
++.
++.SH SYNOPSIS
++.B ovs\-brcompatd
++[\fIoptions\fR]
++.
++.SH DESCRIPTION
++A daemon that provides a legacy bridge front-end for \fBovs\-vswitchd\fR.  It
++does this by listening for bridge ioctl commands (e.g., those generated by
++the \fBbrctl\fR program) to add or remove datapaths and the interfaces
++that attach to them.
++This feature is deprecated and will be removed no earlier than February 2013.
++.PP
++.SH OPTIONS
++.IP "\fB\-\-appctl=\fIprogram\fR"
++Sets the name to the program that \fBovs\-brcompatd\fR runs to
++communicate with \fBovs\-vswitchd\fR.  The default is
++\fBovs\-appctl\fR.  Unless \fIprogram\fR contains \fB/\fR,
++\fBovs\-brcompatd\fR will search the \fBPATH\fR environment variable
++to find it.
++.
++.IP "\fB\-\-vsctl=\fIprogram\fR"
++Sets the name to the program that \fBovs\-brcompatd\fR runs to
++communicate with \fBovsdb\-server\fR.  The default is
++\fBovs\-vsctl\fR.  Unless \fIprogram\fR contains \fB/\fR,
++\fBovs\-brcompatd\fR will search the \fBPATH\fR environment variable
++to find it.
++.
++.ds DD
++.so lib/daemon.man
++.so lib/vlog.man
++.so lib/common.man
++.
++.SH NOTES
++\fBovs\-brcompatd\fR requires the \fBbrcompat.ko\fR kernel module to be
++loaded.
++.SH "SEE ALSO"
++.BR ovs\-appctl (8),
++.BR ovs\-vsctl (8),
++.BR ovs\-vswitchd (8),
++.BR ovsdb\-server (1),
++\fBINSTALL.bridge\fR in the Open vSwitch distribution.
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+new file mode 100644
+index 000000000..a7c5e4383
+--- /dev/null
++++ b/vswitchd/ovs-brcompatd.c
+@@ -0,0 +1,948 @@
++/* Copyright (c) 2008, 2009, 2010, 2011, 2012 Nicira, Inc.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at:
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include <config.h>
++
++#include <asm/param.h>
++#include <errno.h>
++#include <getopt.h>
++#include <inttypes.h>
++#include <limits.h>
++#include <net/if.h>
++#include <linux/genetlink.h>
++#include <linux/rtnetlink.h>
++#include <signal.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/types.h>
++#include <sys/wait.h>
++#include <sys/stat.h>
++#include <time.h>
++#include <fcntl.h>
++#include <unistd.h>
++
++#include "command-line.h"
++#include "coverage.h"
++#include "daemon.h"
++#include "dirs.h"
++#include "openvswitch/dynamic-string.h"
++#include "fatal-signal.h"
++#include "openvswitch/json.h"
++//#include "leak-checker.h"
++#include "netdev.h"
++#include "netlink.h"
++#include "netlink-notifier.h"
++#include "netlink-socket.h"
++#include "openvswitch/ofpbuf.h"
++#include "openvswitch/brcompat-netlink.h"
++#include "packets.h"
++#include "openvswitch/poll-loop.h"
++#include "process.h"
++#include "rtnetlink.h"
++#include "signals.h"
++#include "sset.h"
++#include "svec.h"
++#include "timeval.h"
++#include "unixctl.h"
++#include "util.h"
++#include "openvswitch/vlog.h"
++
++VLOG_DEFINE_THIS_MODULE(brcompatd);
++
++#define ETH_ADDR_SCAN_COUNT 6
++
++/* xxx Just hangs if datapath is rmmod/insmod.  Learn to reconnect? */
++
++static void parse_options(int argc, char *argv[]);
++static void usage(void) OVS_NO_RETURN;
++
++static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 60);
++
++/* --appctl: Absolute path to ovs-appctl. */
++static char *appctl_program;
++
++/* --vsctl: Absolute path to ovs-vsctl. */
++static char *vsctl_program;
++
++/* Options that we should generally pass to ovs-vsctl. */
++#define VSCTL_OPTIONS "--timeout=5", "-vconsole:warn"
++
++/* Netlink socket to bridge compatibility kernel module. */
++static struct nl_sock *brc_sock;
++
++/* The Generic Netlink family number used for bridge compatibility. */
++static int brc_family;
++
++static const struct nl_policy brc_multicast_policy[] = {
++    [BRC_GENL_A_MC_GROUP] = {.type = NL_A_U32 }
++};
++
++static char *
++capture_vsctl_valist(const char *arg0, va_list args)
++{
++    char *stdout_log, *stderr_log;
++    enum vlog_level log_level;
++    struct svec argv;
++    int status;
++    char *msg;
++
++    /* Compose arguments. */
++    svec_init(&argv);
++    svec_add(&argv, arg0);
++    for (;;) {
++        const char *arg = va_arg(args, const char *);
++        if (!arg) {
++            break;
++        }
++        svec_add(&argv, arg);
++    }
++    svec_terminate(&argv);
++
++    /* Run process. */
++    if (process_run_capture(argv.names, &stdout_log, &stderr_log, SIZE_MAX,
++                            &status)) {
++        svec_destroy(&argv);
++        return NULL;
++    }
++
++    /* Log results. */
++    if (WIFEXITED(status)) {
++        int code = WEXITSTATUS(status);
++        log_level = code == 0 ? VLL_DBG : code == 1 ? VLL_WARN : VLL_ERR;
++    } else {
++        log_level = VLL_ERR;
++    }
++    msg = process_status_msg(status);
++    VLOG(log_level, "ovs-vsctl exited (%s)", msg);
++    if (stdout_log && *stdout_log) {
++        VLOG(log_level, "ovs-vsctl wrote to stdout:\n%s\n", stdout_log);
++    }
++    if (stderr_log && *stderr_log) {
++        VLOG(log_level, "ovs-vsctl wrote to stderr:\n%s\n", stderr_log);
++    }
++    free(msg);
++
++    svec_destroy(&argv);
++
++    free(stderr_log);
++    if (WIFEXITED(status) && !WEXITSTATUS(status)) {
++        return stdout_log;
++    } else {
++        free(stdout_log);
++        return NULL;
++    }
++}
++
++static char * SENTINEL(0)
++capture_vsctl(const char *arg0, ...)
++{
++    char *stdout_log;
++    va_list args;
++
++    va_start(args, arg0);
++    stdout_log = capture_vsctl_valist(arg0, args);
++    va_end(args);
++
++    return stdout_log;
++}
++
++static bool SENTINEL(0)
++run_vsctl(const char *arg0, ...)
++{
++    char *stdout_log;
++    va_list args;
++    bool ok;
++
++    va_start(args, arg0);
++    stdout_log = capture_vsctl_valist(arg0, args);
++    va_end(args);
++
++    ok = stdout_log != NULL;
++    free(stdout_log);
++    return ok;
++}
++#ifdef HAVE_GENL_MULTICAST_GROUP_WITH_ID
++static int
++lookup_brc_multicast_group(int *multicast_group)
++{
++    struct nl_sock *sock;
++    struct ofpbuf request, *reply;
++    struct nlattr *attrs[ARRAY_SIZE(brc_multicast_policy)];
++    int retval;
++
++    retval = nl_sock_create(NETLINK_GENERIC, &sock);
++    if (retval) {
++        return retval;
++    }
++    ofpbuf_init(&request, 0);
++    nl_msg_put_genlmsghdr(&request, 0, brc_family,
++            NLM_F_REQUEST, BRC_GENL_C_QUERY_MC, 1);
++    retval = nl_sock_transact(sock, &request, &reply);
++    ofpbuf_uninit(&request);
++    if (retval) {
++        nl_sock_destroy(sock);
++        return retval;
++    }
++    if (!nl_policy_parse(reply, NLMSG_HDRLEN + GENL_HDRLEN,
++                         brc_multicast_policy, attrs,
++                         ARRAY_SIZE(brc_multicast_policy))) {
++        nl_sock_destroy(sock);
++        ofpbuf_delete(reply);
++        return EPROTO;
++    }
++    *multicast_group = nl_attr_get_u32(attrs[BRC_GENL_A_MC_GROUP]);
++    nl_sock_destroy(sock);
++    ofpbuf_delete(reply);
++
++    return 0;
++}
++#endif
++/* Opens a socket for brcompat notifications.  Returns 0 if successful,
++ * otherwise a positive errno value. */
++static int
++brc_open(struct nl_sock **sock)
++{
++    int multicast_group = 0;
++    int retval;
++
++    retval = nl_lookup_genl_family(BRC_GENL_FAMILY_NAME, &brc_family);
++    if (retval) {
++        return retval;
++    }
++#ifdef HAVE_GENL_MULTICAST_GROUP_WITH_ID
++    retval = lookup_brc_multicast_group(&multicast_group);
++#else
++    retval = nl_lookup_genl_mcgroup(BRC_GENL_FAMILY_NAME, BRC_GENL_FAMILY_NAME, &multicast_group);
++#endif
++    if (retval) {
++        return retval;
++    }
++
++    retval = nl_sock_create(NETLINK_GENERIC, sock);
++    if (retval) {
++        return retval;
++    }
++
++    retval = nl_sock_join_mcgroup(*sock, multicast_group);
++    if (retval) {
++        nl_sock_destroy(*sock);
++        *sock = NULL;
++    }
++    return retval;
++}
++
++static const struct nl_policy brc_dp_policy[] = {
++    [BRC_GENL_A_DP_NAME] = { .type = NL_A_STRING },
++};
++
++static int
++parse_command(struct ofpbuf *buffer, uint32_t *seq, const char **br_name,
++              const char **port_name, uint64_t *count, uint64_t *skip)
++{
++    static const struct nl_policy policy[] = {
++        [BRC_GENL_A_DP_NAME] = { .type = NL_A_STRING, .optional = true },
++        [BRC_GENL_A_PORT_NAME] = { .type = NL_A_STRING, .optional = true },
++        [BRC_GENL_A_FDB_COUNT] = { .type = NL_A_U64, .optional = true },
++        [BRC_GENL_A_FDB_SKIP] = { .type = NL_A_U64, .optional = true },
++    };
++    struct nlattr *attrs[ARRAY_SIZE(policy)];
++
++    if (!nl_policy_parse(buffer, NLMSG_HDRLEN + GENL_HDRLEN, policy,
++                         attrs, ARRAY_SIZE(policy))
++        || (br_name && !attrs[BRC_GENL_A_DP_NAME])
++        || (port_name && !attrs[BRC_GENL_A_PORT_NAME])
++        || (count && !attrs[BRC_GENL_A_FDB_COUNT])
++        || (skip && !attrs[BRC_GENL_A_FDB_SKIP])) {
++        return EINVAL;
++    }
++
++    *seq = ((struct nlmsghdr *) buffer->data)->nlmsg_seq;
++    if (br_name) {
++        *br_name = nl_attr_get_string(attrs[BRC_GENL_A_DP_NAME]);
++    }
++    if (port_name) {
++        *port_name = nl_attr_get_string(attrs[BRC_GENL_A_PORT_NAME]);
++    }
++    if (count) {
++        *count = nl_attr_get_u64(attrs[BRC_GENL_A_FDB_COUNT]);
++    }
++    if (skip) {
++        *skip = nl_attr_get_u64(attrs[BRC_GENL_A_FDB_SKIP]);
++    }
++    return 0;
++}
++
++/* Composes and returns a reply to a request made by the datapath with error
++ * code 'error'.  The caller may add additional attributes to the message, then
++ * it may send it with send_reply(). */
++static struct ofpbuf *
++compose_reply(int error)
++{
++    struct ofpbuf *reply = ofpbuf_new(4096);
++    nl_msg_put_genlmsghdr(reply, 32, brc_family, NLM_F_REQUEST,
++                          BRC_GENL_C_DP_RESULT, 1);
++    nl_msg_put_u32(reply, BRC_GENL_A_ERR_CODE, error);
++    return reply;
++}
++
++/* Sends 'reply' to the datapath, using sequence number 'nlmsg_seq', and frees
++ * it. */
++static void
++send_reply(struct ofpbuf *reply, uint32_t nlmsg_seq)
++{
++    int retval = nl_sock_send_seq(brc_sock, reply, nlmsg_seq, false);
++    if (retval) {
++        VLOG_WARN_RL(&rl, "replying to brcompat request: %s",
++                     ovs_strerror(retval));
++    }
++    ofpbuf_delete(reply);
++}
++
++/* Composes and sends a reply to a request made by the datapath with Netlink
++ * sequence number 'seq' and error code 'error'. */
++static void
++send_simple_reply(uint32_t seq, int error)
++{
++    send_reply(compose_reply(error), seq);
++}
++
++static int
++handle_bridge_cmd(struct ofpbuf *buffer, bool add)
++{
++    const char *br_name;
++    uint32_t seq;
++    int error;
++
++    error = parse_command(buffer, &seq, &br_name, NULL, NULL, NULL);
++    if (!error) {
++        const char *vsctl_cmd = add ? "add-br" : "del-br";
++        const char *brctl_cmd = add ? "addbr" : "delbr";
++        if (!run_vsctl(vsctl_program, VSCTL_OPTIONS,
++                       "--", vsctl_cmd, br_name,
++                       "--", "comment", "ovs-brcompatd:", brctl_cmd, br_name,
++                       (char *) NULL)) {
++            error = add ? EEXIST : ENXIO;
++        }
++        send_simple_reply(seq, error);
++    }
++    return error;
++}
++
++static const struct nl_policy brc_port_policy[] = {
++    [BRC_GENL_A_DP_NAME] = { .type = NL_A_STRING },
++    [BRC_GENL_A_PORT_NAME] = { .type = NL_A_STRING },
++};
++
++static int
++handle_port_cmd(struct ofpbuf *buffer, bool add)
++{
++    const char *br_name, *port_name;
++    uint32_t seq;
++    int error;
++
++    error = parse_command(buffer, &seq, &br_name, &port_name, NULL, NULL);
++    if (!error) {
++        const char *vsctl_cmd = add ? "add-port" : "del-port";
++        const char *brctl_cmd = add ? "addif" : "delif";
++        if (!run_vsctl(vsctl_program, VSCTL_OPTIONS,
++                       "--", vsctl_cmd, br_name, port_name,
++                       "--", "comment", "ovs-brcompatd:", brctl_cmd,
++                       br_name, port_name, (char *) NULL)) {
++            error = EINVAL;
++        }
++        send_simple_reply(seq, error);
++    }
++    return error;
++}
++
++static char *
++linux_bridge_to_ovs_bridge(const char *linux_name, int *br_vlanp)
++{
++    char *save_ptr = NULL;
++    const char *br_name, *br_vlan;
++    char *br_name_copy;
++    char *output;
++
++    output = capture_vsctl(vsctl_program, VSCTL_OPTIONS,
++                           "--", "br-to-parent", linux_name,
++                           "--", "br-to-vlan", linux_name,
++                           (char *) NULL);
++    if (!output) {
++        return NULL;
++    }
++
++    br_name = strtok_r(output, " \t\r\n", &save_ptr);
++    br_vlan = strtok_r(NULL, " \t\r\n", &save_ptr);
++    if (!br_name || !br_vlan) {
++        free(output);
++        return NULL;
++    }
++    br_name_copy = xstrdup(br_name);
++    *br_vlanp = atoi(br_vlan);
++
++    free(output);
++
++    return br_name_copy;
++}
++
++static void
++get_bridge_ifaces(const char *br_name, struct sset *ifaces)
++{
++    char *save_ptr = NULL;
++    char *output;
++    char *iface;
++
++    output = capture_vsctl(vsctl_program, VSCTL_OPTIONS, "list-ifaces",
++                           br_name, (char *) NULL);
++    if (!output) {
++        return;
++    }
++
++    for (iface = strtok_r(output, " \t\r\n", &save_ptr); iface;
++         iface = strtok_r(NULL, " \t\r\n", &save_ptr)) {
++        sset_add(ifaces, iface);
++    }
++    free(output);
++}
++
++static int
++handle_fdb_query_cmd(struct ofpbuf *buffer)
++{
++    /* This structure is copied directly from the Linux 2.6.30 header files.
++     * It would be more straightforward to #include <linux/if_bridge.h>, but
++     * the 'port_hi' member was only introduced in Linux 2.6.26 and so systems
++     * with old header files won't have it. */
++    struct __fdb_entry {
++        __u8 mac_addr[6];
++        __u8 port_no;
++        __u8 is_local;
++        __u32 ageing_timer_value;
++        __u8 port_hi;
++        __u8 pad0;
++        __u16 unused;
++    };
++
++    struct eth_addr *local_macs;
++    int n_local_macs;
++    int i;
++
++    /* Impedance matching between the vswitchd and Linux kernel notions of what
++     * a bridge is.  The kernel only handles a single VLAN per bridge, but
++     * vswitchd can deal with all the VLANs on a single bridge.  We have to
++     * pretend that the former is the case even though the latter is the
++     * implementation. */
++    const char *linux_name;   /* Name used by brctl. */
++    int br_vlan;                /* VLAN tag. */
++    struct sset ifaces;
++
++    struct ofpbuf query_data;
++    const char *iface_name;
++    struct ofpbuf *reply;
++    uint64_t count, skip;
++    char *br_name;
++    char *output;
++    char *save_ptr;
++    uint32_t seq;
++    int error;
++
++    /* Parse the command received from brcompat. */
++    error = parse_command(buffer, &seq, &linux_name, NULL, &count, &skip);
++    if (error) {
++        return error;
++    }
++
++    /* Figure out vswitchd bridge and VLAN. */
++    br_name = linux_bridge_to_ovs_bridge(linux_name, &br_vlan);
++    if (!br_name) {
++        error = EINVAL;
++        send_simple_reply(seq, error);
++        return error;
++    }
++
++    /* Fetch the forwarding database using ovs-appctl. */
++    output = capture_vsctl(appctl_program, "fdb/show", br_name,
++                           (char *) NULL);
++    if (!output) {
++        error = ECHILD;
++        send_simple_reply(seq, error);
++        return error;
++    }
++
++    /* Fetch the MAC address for each interface on the bridge, so that we can
++     * fill in the is_local field in the response. */
++    sset_init(&ifaces);
++    get_bridge_ifaces(linux_name, &ifaces);
++    local_macs = xmalloc(sset_count(&ifaces) * sizeof *local_macs);
++    n_local_macs = 0;
++    SSET_FOR_EACH (iface_name, &ifaces) {
++        struct eth_addr *mac = &local_macs[n_local_macs];
++        struct netdev *netdev;
++
++        error = netdev_open(iface_name, "system", &netdev);
++        if (!error) {
++            if (!netdev_get_etheraddr(netdev, mac)) {
++                n_local_macs++;
++            }
++            netdev_close(netdev);
++        }
++    }
++    sset_destroy(&ifaces);
++
++    /* Parse the response from ovs-appctl and convert it to binary format to
++     * pass back to the kernel. */
++    ofpbuf_init(&query_data, sizeof(struct __fdb_entry) * 8);
++    save_ptr = NULL;
++    strtok_r(output, "\n", &save_ptr); /* Skip header line. */
++    while (count > 0) {
++        struct __fdb_entry *entry;
++        int port, vlan, age;
++        struct eth_addr mac;
++        char *line;
++        bool is_local;
++
++        line = strtok_r(NULL, "\n", &save_ptr);
++        if (!line) {
++            break;
++        }
++
++        if (sscanf(line, "%d %d "ETH_ADDR_SCAN_FMT" %d",
++                   &port, &vlan, ETH_ADDR_SCAN_ARGS(mac), &age)
++            != 2 + ETH_ADDR_SCAN_COUNT + 1) {
++            static struct vlog_rate_limit rl_l = VLOG_RATE_LIMIT_INIT(1, 1);
++            VLOG_INFO_RL(&rl_l, "fdb/show output has invalid format: %s", line);
++            continue;
++        }
++
++        if (vlan != br_vlan) {
++            continue;
++        }
++
++        if (skip > 0) {
++            skip--;
++            continue;
++        }
++
++        /* Is this the MAC address of an interface on the bridge? */
++        is_local = false;
++        for (i = 0; i < n_local_macs; i++) {
++            if (eth_addr_equals(local_macs[i], mac)) {
++                is_local = true;
++                break;
++            }
++        }
++
++        entry = ofpbuf_put_uninit(&query_data, sizeof *entry);
++        memcpy(entry->mac_addr, mac.ea, ETH_ADDR_LEN);
++        entry->port_no = port & 0xff;
++        entry->is_local = is_local;
++        entry->ageing_timer_value = age * HZ;
++        entry->port_hi = (port & 0xff00) >> 8;
++        entry->pad0 = 0;
++        entry->unused = 0;
++        count--;
++    }
++    free(output);
++
++    /* Compose and send reply to datapath. */
++    reply = compose_reply(0);
++    nl_msg_put_unspec(reply, BRC_GENL_A_FDB_DATA,
++                      query_data.data, query_data.size);
++    send_reply(reply, seq);
++
++    /* Free memory. */
++    ofpbuf_uninit(&query_data);
++    free(local_macs);
++
++    return 0;
++}
++
++static void
++send_ifindex_reply(uint32_t seq, char *output)
++{
++    size_t allocated_indices;
++    char *save_ptr = NULL;
++    struct ofpbuf *reply;
++    const char *iface;
++    size_t n_indices;
++    int *indices;
++
++    indices = NULL;
++    n_indices = allocated_indices = 0;
++    for (iface = strtok_r(output, " \t\r\n", &save_ptr); iface;
++         iface = strtok_r(NULL, " \t\r\n", &save_ptr)) {
++        int ifindex;
++
++        if (n_indices >= allocated_indices) {
++            indices = x2nrealloc(indices, &allocated_indices, sizeof *indices);
++        }
++
++        ifindex = if_nametoindex(iface);
++        if (ifindex) {
++            indices[n_indices++] = ifindex;
++        }
++    }
++
++    /* Compose and send reply. */
++    reply = compose_reply(0);
++    nl_msg_put_unspec(reply, BRC_GENL_A_IFINDEXES,
++                      indices, n_indices * sizeof *indices);
++    send_reply(reply, seq);
++
++    /* Free memory. */
++    free(indices);
++}
++
++static int
++handle_get_bridges_cmd(struct ofpbuf *buffer)
++{
++    char *output;
++    uint32_t seq;
++    int error;
++
++    /* Parse Netlink command.
++     *
++     * The command doesn't actually have any arguments, but we need the
++     * sequence number to send the reply. */
++    error = parse_command(buffer, &seq, NULL, NULL, NULL, NULL);
++    if (error) {
++        return error;
++    }
++
++    output = capture_vsctl(vsctl_program, VSCTL_OPTIONS, "list-br", (char *) NULL);
++    if (!output) {
++        return ENODEV;
++    }
++
++    send_ifindex_reply(seq, output);
++    free(output);
++    return 0;
++}
++
++static int
++handle_get_ports_cmd(struct ofpbuf *buffer)
++{
++    const char *linux_name;
++    uint32_t seq;
++    char *output;
++    int error;
++
++    /* Parse Netlink command. */
++    error = parse_command(buffer, &seq, &linux_name, NULL, NULL, NULL);
++    if (error) {
++        return error;
++    }
++
++    output = capture_vsctl(vsctl_program, VSCTL_OPTIONS, "list-ports", linux_name,
++                           (char *) NULL);
++    if (!output) {
++        return ENODEV;
++    }
++
++    send_ifindex_reply(seq, output);
++    free(output);
++    return 0;
++}
++
++static bool
++brc_recv_update__(struct ofpbuf *buffer)
++{
++    int net_id;
++
++    for (;;) {
++        int retval = nl_sock_recv(brc_sock, buffer, &net_id, false);
++        switch (retval) {
++        case 0:
++            if (nl_msg_nlmsgerr(buffer, NULL)
++                || nl_msg_nlmsghdr(buffer)->nlmsg_type == NLMSG_DONE) {
++                break;
++            }
++            return true;
++
++        case ENOBUFS:
++            break;
++
++        case EAGAIN:
++            return false;
++
++        default:
++            VLOG_WARN_RL(&rl, "brc_recv_update: %s", ovs_strerror(retval));
++            return false;
++        }
++    }
++}
++
++static void
++brc_recv_update(void)
++{
++    struct genlmsghdr *genlmsghdr;
++    uint64_t buffer_stub[1024 / 8];
++    struct ofpbuf buffer;
++
++    ofpbuf_use_stub(&buffer, buffer_stub, sizeof buffer_stub);
++    if (!brc_recv_update__(&buffer)) {
++        goto error;
++    }
++
++    genlmsghdr = nl_msg_genlmsghdr(&buffer);
++    if (!genlmsghdr) {
++        VLOG_WARN_RL(&rl, "received packet too short for generic NetLink");
++        goto error;
++    }
++
++    if (nl_msg_nlmsghdr(&buffer)->nlmsg_type != brc_family) {
++        VLOG_DBG_RL(&rl, "received type (%"PRIu16") != brcompat family (%d)",
++                nl_msg_nlmsghdr(&buffer)->nlmsg_type, brc_family);
++        goto error;
++    }
++
++    /* Service all pending network device notifications before executing the
++     * command.  This is very important to avoid a race in a scenario like the
++     * following, which is what happens with XenServer Tools version 5.0.0
++     * during boot of a Windows VM:
++     *
++     *      1. Create tap1.0 and vif1.0.
++     *      2. Delete tap1.0.
++     *      3. Delete vif1.0.
++     *      4. Re-create vif1.0.
++     *
++     * We must process the network device notification from step 3 before we
++     * process the brctl command from step 4.  If we process them in the
++     * reverse order, then step 4 completes as a no-op but step 3 then deletes
++     * the port that was just added.
++     *
++     * (XenServer Tools 5.5.0 does not exhibit this behavior, and neither does
++     * a VM without Tools installed at all.)
++     */
++    rtnetlink_run();
++
++    switch (genlmsghdr->cmd) {
++    case BRC_GENL_C_DP_ADD:
++        handle_bridge_cmd(&buffer, true);
++        break;
++
++    case BRC_GENL_C_DP_DEL:
++        handle_bridge_cmd(&buffer, false);
++        break;
++
++    case BRC_GENL_C_PORT_ADD:
++        handle_port_cmd(&buffer, true);
++        break;
++
++    case BRC_GENL_C_PORT_DEL:
++        handle_port_cmd(&buffer, false);
++        break;
++
++    case BRC_GENL_C_FDB_QUERY:
++        handle_fdb_query_cmd(&buffer);
++        break;
++
++    case BRC_GENL_C_GET_BRIDGES:
++        handle_get_bridges_cmd(&buffer);
++        break;
++
++    case BRC_GENL_C_GET_PORTS:
++        handle_get_ports_cmd(&buffer);
++        break;
++
++    default:
++        VLOG_WARN_RL(&rl, "received unknown brc netlink command: %d\n",
++                     genlmsghdr->cmd);
++        break;
++    }
++
++error:
++    ofpbuf_uninit(&buffer);
++}
++
++static void
++netdev_changed_cb(const struct rtnetlink_change *change,
++                  void *aux OVS_UNUSED)
++{
++    char br_name[IFNAMSIZ];
++    const char *port_name;
++
++    if (!change) {
++        VLOG_WARN_RL(&rl, "network monitor socket overflowed");
++        return;
++    }
++
++    if (change->nlmsg_type != RTM_DELLINK || !change->master_ifindex) {
++        return;
++    }
++
++    port_name = change->ifname;
++    if (!if_indextoname(change->master_ifindex, br_name)) {
++        return;
++    }
++
++    VLOG_INFO("network device %s destroyed, removing from bridge %s",
++              port_name, br_name);
++
++    run_vsctl(vsctl_program, VSCTL_OPTIONS,
++              "--", "--if-exists", "del-port", port_name,
++              "--", "comment", "ovs-brcompatd:", port_name, "disappeared",
++              (char *) NULL);
++}
++
++int
++main(int argc, char *argv[])
++{
++    extern struct vlog_module VLM_reconnect;
++    struct nln_notifier *link_notifier;
++    struct unixctl_server *unixctl;
++    int retval;
++
++    ovs_cmdl_proctitle_init(argc, argv);
++    set_program_name(argv[0]);
++    vlog_set_levels(&VLM_reconnect, VLF_ANY_DESTINATION, VLL_WARN);
++
++    VLOG_WARN("Bridge compatibility is deprecated and may be removed "
++              "no earlier than February 2013");
++    parse_options(argc, argv);
++    signal(SIGPIPE, SIG_IGN);
++    process_init();
++
++    daemonize_start(false);
++
++    retval = unixctl_server_create(NULL, &unixctl);
++    if (retval) {
++        exit(EXIT_FAILURE);
++    }
++
++    if (brc_open(&brc_sock)) {
++        VLOG_FATAL("could not open brcompat socket.  Check "
++                   "\"brcompat\" kernel module.");
++    }
++
++    link_notifier = rtnetlink_notifier_create(netdev_changed_cb, NULL);
++
++    daemonize_complete();
++
++    for (;;) {
++        unixctl_server_run(unixctl);
++        rtnetlink_run();
++        brc_recv_update();
++
++        netdev_run();
++
++        nl_sock_wait(brc_sock, POLLIN);
++        unixctl_server_wait(unixctl);
++        rtnetlink_wait();
++        netdev_wait();
++        poll_block();
++    }
++
++    rtnetlink_notifier_destroy(link_notifier);
++
++    return 0;
++}
++
++static void
++parse_options(int argc, char *argv[])
++{
++    enum {
++        OPT_APPCTL,
++        OPT_VSCTL,
++        VLOG_OPTION_ENUMS,
++//        LEAK_CHECKER_OPTION_ENUMS,
++        DAEMON_OPTION_ENUMS
++    };
++    static struct option long_options[] = {
++        {"help",             no_argument, NULL, 'h'},
++        {"version",          no_argument, NULL, 'V'},
++        {"appctl",           required_argument, NULL, OPT_APPCTL},
++        {"vsctl",            required_argument, NULL, OPT_VSCTL},
++        DAEMON_LONG_OPTIONS,
++        VLOG_LONG_OPTIONS,
++//        LEAK_CHECKER_LONG_OPTIONS,
++        {NULL, 0, NULL, 0},
++    };
++    char *short_options = ovs_cmdl_long_options_to_short_options(long_options);
++    const char *appctl = "ovs-appctl";
++    const char *vsctl = "ovs-vsctl";
++
++    for (;;) {
++        int c;
++
++        c = getopt_long(argc, argv, short_options, long_options, NULL);
++        if (c == -1) {
++            break;
++        }
++
++        switch (c) {
++        case 'h':
++            usage();
++
++        case 'V':
++            ovs_print_version(0, 0);
++            exit(EXIT_SUCCESS);
++
++        case OPT_APPCTL:
++            appctl = optarg;
++            break;
++
++        case OPT_VSCTL:
++            vsctl = optarg;
++            break;
++
++        VLOG_OPTION_HANDLERS
++        DAEMON_OPTION_HANDLERS
++//        LEAK_CHECKER_OPTION_HANDLERS
++
++        case '?':
++            exit(EXIT_FAILURE);
++
++        default:
++            abort();
++        }
++    }
++    free(short_options);
++
++    appctl_program = process_search_path(appctl);
++    if (!appctl_program) {
++        VLOG_FATAL("%s: not found in $PATH (use --appctl to specify an "
++                   "alternate location)", appctl);
++    }
++
++    vsctl_program = process_search_path(vsctl);
++    if (!vsctl_program) {
++        VLOG_FATAL("%s: not found in $PATH (use --vsctl to specify an "
++                   "alternate location)", vsctl);
++    }
++
++    if (argc != optind) {
++        VLOG_FATAL("no non-option arguments are supported; "
++                   "use --help for usage");
++    }
++}
++
++static void
++usage(void)
++{
++    printf("%s: bridge compatibility front-end for ovs-vswitchd\n"
++           "usage: %s [OPTIONS]\n",
++           program_name, program_name);
++    printf("\nConfiguration options:\n"
++           "  --appctl=PROGRAM        overrides $PATH for finding ovs-appctl\n"
++           "  --vsctl=PROGRAM         overrides $PATH for finding ovs-vsctl\n"
++          );
++    daemon_usage();
++    vlog_usage();
++    printf("\nOther options:\n"
++           "  -h, --help              display this help message\n"
++           "  -V, --version           display version information\n");
++//    leak_checker_usage();
++    exit(EXIT_SUCCESS);
++}

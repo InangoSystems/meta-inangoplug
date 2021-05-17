@@ -1,0 +1,1252 @@
+From 4fb64c0d123c25f85c5cfadd522f1a2865f741a2 Mon Sep 17 00:00:00 2001
+From: "Puz, Dmytro" <d.puz@inango-systems.com>
+Date: Mon, 29 Mar 2021 13:26:06 +0300
+Subject: [PATCH] Commit Title: Implement missing sysfs to brcompat module
+
+BugID: 23050
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description: added implementation for missing sysfs
+---
+ datapath/brcompat_main.c               |  79 +++++++
+ datapath/datapath.c                    |  20 +-
+ datapath/datapath.h                    |   7 +
+ datapath/dp_sysfs_dp.c                 | 412 ++++++++++++++++++++++++---------
+ datapath/dp_sysfs_if.c                 |  48 +++-
+ include/openvswitch/brcompat-netlink.h |  19 ++
+ vswitchd/ovs-brcompatd.c               | 205 +++++++++++++++-
+ 7 files changed, 659 insertions(+), 131 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 7e8b58b24..30c99ee91 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -16,6 +16,11 @@
+  * 02110-1301, USA
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
+ #include <linux/module.h>
+@@ -170,6 +175,45 @@ exit:
+ 	return ret;
+ }
+ 
++static int brc_get_string(struct net_device *dev, int oper, char *ustring)
++{
++	struct nlattr *attrs[BRC_GENL_A_MAX + 1];
++	struct sk_buff *request, *reply;
++	char *string;
++	int ret;
++	int len;
++
++	request = brc_make_request(oper, dev->name, NULL);
++	if (!request)
++		return -ENOMEM;
++
++	reply = brc_send_command(dev_net(dev), request, attrs);
++	ret = PTR_ERR(reply);
++	if (IS_ERR(reply))
++		goto exit;
++
++	ret = -nla_get_u32(attrs[BRC_GENL_A_ERR_CODE]);
++	if (ret < 0)
++		goto exit_free_skb;
++
++	ret = -EINVAL;
++	if (!attrs[BRC_GENL_A_GET_STRING])
++		goto exit_free_skb;
++
++	len = nla_len(attrs[BRC_GENL_A_GET_STRING]);
++	string = nla_data(attrs[BRC_GENL_A_GET_STRING]);
++
++	if(string == NULL)
++		goto exit_free_skb;
++	else
++		memcpy(ustring, string, len);
++
++exit_free_skb:
++	kfree_skb(reply);
++exit:
++	return ret;
++}
++
+ /* Called with br_ioctl_mutex. */
+ static int brc_get_bridges(struct net *net, int __user *uindices, int n)
+ {
+@@ -576,6 +620,37 @@ static int brc_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+ 	return err;
+ }
+ 
++/* Called with the rtnl_lock. */
++static int brc_dev_sysfs(struct net_device *dev, unsigned long *ul_value, int cmd, int oper)
++{
++	int err = 0;
++
++	if (oper == GET_PARAMETER)
++		return brc_get_ulong_val_cmd(dev, cmd, ul_value);
++	else if (oper == SET_PARAMETER)
++		return brc_set_ulong_val_cmd(dev, cmd, *ul_value);
++	else
++		err = -1;
++
++	return err;
++}
++
++/* Called with the rtnl_lock. */
++static int brc_dev_sysfs_string(struct net_device *dev, char *ustring, int cmd)
++{
++	int err = 0;
++
++	switch (cmd) {
++	case BRC_GENL_C_GET_BRIDGE_ROOT_ID:
++		return brc_get_string(dev, BRC_GENL_C_GET_BRIDGE_ROOT_ID, ustring);
++
++	default:
++		err = -1;
++		break;
++	}
++
++	return err;
++}
+ 
+ static int brc_genl_query(struct sk_buff *skb, struct genl_info *info)
+ {
+@@ -751,6 +826,10 @@ static int __init brc_init(void)
+ 	/* Set the openvswitch device ioctl handler */
+ 	ovs_dp_ioctl_hook = brc_dev_ioctl;
+ 
++	/* Set the openvswitch device sysfs handler */
++	ovs_dp_sysfs_hook = brc_dev_sysfs;
++	ovs_dp_sysfs_string_hook = brc_dev_sysfs_string;
++
+ 	/*For transfering a pair bridge - interface to datapath*/
+ 	ovs_dp_getHead = getHead;
+ 
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 32b118d4e..e8bff88a9 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -16,6 +16,11 @@
+  * 02110-1301, USA
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
+ #include <linux/init.h>
+@@ -71,6 +76,12 @@ EXPORT_SYMBOL(ovs_dp_ioctl_hook);
+ br_pair_t* (*ovs_dp_getHead)(void);
+ EXPORT_SYMBOL(ovs_dp_getHead);
+ 
++int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
++EXPORT_SYMBOL(ovs_dp_sysfs_hook);
++
++int (*ovs_dp_sysfs_string_hook)(struct net_device *dev, char *ustring, int cmd);
++EXPORT_SYMBOL(ovs_dp_sysfs_string_hook);
++
+ static struct genl_family dp_packet_genl_family;
+ static struct genl_family dp_flow_genl_family;
+ static struct genl_family dp_datapath_genl_family;
+@@ -1748,8 +1759,6 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 	ovs_net = net_generic(ovs_dp_get_net(dp), ovs_net_id);
+ 	list_add_tail_rcu(&dp->list_node, &ovs_net->dps);
+ 
+-	ovs_dp_sysfs_add_dp(dp, vport);
+-
+ 	ovs_unlock();
+ 
+ 	ovs_notify(&dp_datapath_genl_family, &ovs_dp_datapath_multicast_group, reply, info);
+@@ -2204,21 +2213,22 @@ restart:
+ 		head = ovs_dp_getHead();
+ 
+ 		if (head == NULL)
+-			return -1;
++			goto cont_wo_sysfs;
+ 
+ 		bridgeName = get_bridge_by_port(head, parms.name);
+ 
+ 		if (bridgeName == NULL)
+-			return -1;
++			goto cont_wo_sysfs;
+ 
+ 		br = get_vport_by_bridge(vport->dp, bridgeName);
+ 
+ 		if (br == NULL)
+-			return -1;
++			goto cont_wo_sysfs;
+ 
+ 		ovs_dp_sysfs_add_if(vport, br);
+ 	}
+ 
++cont_wo_sysfs:
+ 	err = ovs_vport_cmd_fill_info(vport, reply, genl_info_net(info),
+ 				      info->snd_portid, info->snd_seq, 0,
+ 				      OVS_VPORT_CMD_NEW);
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index da6a16fcd..b647496d7 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -16,6 +16,11 @@
+  * 02110-1301, USA
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #ifndef DATAPATH_H
+ #define DATAPATH_H 1
+ 
+@@ -255,6 +260,8 @@ extern struct genl_family dp_vport_genl_family;
+ extern struct genl_multicast_group ovs_dp_vport_multicast_group;
+ extern int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
+ extern br_pair_t* (*ovs_dp_getHead)(void);
++extern int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
++extern int (*ovs_dp_sysfs_string_hook)(struct net_device *dev, char *ustring, int cmd);
+ 
+ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key);
+ void ovs_dp_detach_port(struct vport *);
+diff --git a/datapath/dp_sysfs_dp.c b/datapath/dp_sysfs_dp.c
+index 83c6f8040..a8d131120 100644
+--- a/datapath/dp_sysfs_dp.c
++++ b/datapath/dp_sysfs_dp.c
+@@ -16,6 +16,11 @@
+  * 02110-1301, USA
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
+ #include <linux/version.h>
+@@ -37,6 +42,7 @@
+ #include "dp_sysfs.h"
+ #include "datapath.h"
+ #include "vport-internal_dev.h"
++#include "openvswitch/brcompat-netlink.h"
+ 
+ #ifdef CONFIG_SYSFS
+ 
+@@ -53,22 +59,17 @@
+ #define DEV_ATTR(NAME) dev_attr_##NAME
+ #endif
+ 
+-static struct datapath *sysfs_get_dp(struct net_device *netdev)
+-{
+-	struct vport *vport = ovs_internal_dev_get_vport(netdev);
+-	return vport ? vport->dp : NULL;
+-}
+ /*
+  * Common code for storing bridge parameters.
+  */
+ static ssize_t store_bridge_parm(DEVICE_PARAMS,
+ 				 const char *buf, size_t len,
+-				 void (*set)(struct datapath *, unsigned long))
++				 int (*set)(struct net_device *, unsigned long))
+ {
+ 	char *endp;
+ 	unsigned long val;
+-	ssize_t result = len;
+-
++	int err;
++	
+ 	if (!capable(CAP_NET_ADMIN))
+ 		return -EPERM;
+ 
+@@ -76,37 +77,56 @@ static ssize_t store_bridge_parm(DEVICE_PARAMS,
+ 	if (endp == buf)
+ 		return -EINVAL;
+ 
+-	/* xxx We use a default value of 0 for all fields.  If the caller is
+-	 * xxx attempting to set the value to our default, just silently
+-	 * xxx ignore the request.
+-	 */
+ 	if (val != 0) {
+-		struct datapath *dp;
+-
+-		rcu_read_lock();
+-
+-		dp = sysfs_get_dp(to_net_dev(d));
+-		if (dp)
+-			pr_warning("%s: xxx writing dp parms not supported yet!\n",
+-			       ovs_dp_name(dp));
++		if (!rtnl_trylock())
++                return restart_syscall();
++		if (to_net_dev(d))
++			err = (*set)(to_net_dev(d), val);
+ 		else
+-			result = -ENODEV;
++			err = -ENODEV;
++
++		rtnl_unlock();
+ 
+-		rcu_read_unlock();
+ 	}
+ 
+-	return result;
++	return err ? err : len;
++}
++
++static ssize_t show_ageing_time(DEVICE_PARAMS, char *buf)
++{
++	unsigned long value;
++
++	ovs_dp_sysfs_hook((to_net_dev(d)), &value, BRC_GENL_C_GET_AGEING_TIME, GET_PARAMETER);
++	return sprintf(buf, "%lu\n", value);
++}
++
++static int set_ageing_time(struct net_device *dev, unsigned long val)
++{
++	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_AGEING_TIME, SET_PARAMETER);
++	return 0;
++}
++
++static ssize_t store_ageing_time(DEVICE_PARAMS,
++				 const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_ageing_time);
+ }
+ 
++static INTERNAL_DEVICE_ATTR(ageing_time, S_IRUGO | S_IWUSR, show_ageing_time,
++		   store_ageing_time);
+ 
+ static ssize_t show_forward_delay(DEVICE_PARAMS, char *buf)
+ {
+-	return sprintf(buf, "%d\n", 0);
++	unsigned long value;
++
++	ovs_dp_sysfs_hook((to_net_dev(d)), &value, BRC_GENL_C_GET_BRIDGE_FORWARD_DELAY, GET_PARAMETER);
++	return sprintf(buf, "%lu\n", value);
+ }
+ 
+-static void set_forward_delay(struct datapath *dp, unsigned long val)
++static int set_forward_delay(struct net_device *dev, unsigned long val)
+ {
+-	pr_info("%s: xxx attempt to set_forward_delay()\n", ovs_dp_name(dp));
++	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_BRIDGE_FORWARD_DELAY, SET_PARAMETER);
++	return 0;
+ }
+ 
+ static ssize_t store_forward_delay(DEVICE_PARAMS,
+@@ -119,12 +139,16 @@ static INTERNAL_DEVICE_ATTR(forward_delay, S_IRUGO | S_IWUSR,
+ 
+ static ssize_t show_hello_time(DEVICE_PARAMS, char *buf)
+ {
+-	return sprintf(buf, "%d\n", 0);
++	unsigned long value;
++
++	ovs_dp_sysfs_hook((to_net_dev(d)), &value, BRC_GENL_C_GET_BRIDGE_HELLO_TIME, GET_PARAMETER);
++	return sprintf(buf, "%lu\n", value);
+ }
+ 
+-static void set_hello_time(struct datapath *dp, unsigned long val)
++static int set_hello_time(struct net_device *dev, unsigned long val)
+ {
+-	pr_info("%s: xxx attempt to set_hello_time()\n", ovs_dp_name(dp));
++	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_BRIDGE_HELLO_TIME, SET_PARAMETER);
++	return 0;
+ }
+ 
+ static ssize_t store_hello_time(DEVICE_PARAMS,
+@@ -138,12 +162,16 @@ static INTERNAL_DEVICE_ATTR(hello_time, S_IRUGO | S_IWUSR, show_hello_time,
+ 
+ static ssize_t show_max_age(DEVICE_PARAMS, char *buf)
+ {
+-	return sprintf(buf, "%d\n", 0);
++	unsigned long value;
++
++	ovs_dp_sysfs_hook((to_net_dev(d)), &value, BRC_GENL_C_GET_BRIDGE_MAX_AGE, GET_PARAMETER);
++	return sprintf(buf, "%lu\n", value);
+ }
+ 
+-static void set_max_age(struct datapath *dp, unsigned long val)
++static int set_max_age(struct net_device *dev, unsigned long val)
+ {
+-	pr_info("%s: xxx attempt to set_max_age()\n", ovs_dp_name(dp));
++	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_BRIDGE_MAX_AGE, SET_PARAMETER);
++	return 0;
+ }
+ 
+ static ssize_t store_max_age(DEVICE_PARAMS,
+@@ -153,72 +181,79 @@ static ssize_t store_max_age(DEVICE_PARAMS,
+ }
+ static INTERNAL_DEVICE_ATTR(max_age, S_IRUGO | S_IWUSR, show_max_age, store_max_age);
+ 
+-static ssize_t show_ageing_time(DEVICE_PARAMS, char *buf)
++static ssize_t show_multicast_snooping(DEVICE_PARAMS, char *buf)
+ {
+-	return sprintf(buf, "%d\n", 0);
+-}
++	unsigned long value;
+ 
+-static void set_ageing_time(struct datapath *dp, unsigned long val)
+-{
+-	pr_info("%s: xxx attempt to set_ageing_time()\n", ovs_dp_name(dp));
++	ovs_dp_sysfs_hook((to_net_dev(d)), &value, BRC_GENL_C_GET_BRIDGE_MULTICAST_SNOOPING, GET_PARAMETER);
++	return sprintf(buf, "%lu\n", value);
+ }
+ 
+-static ssize_t store_ageing_time(DEVICE_PARAMS,
+-				 const char *buf, size_t len)
++static int set_multicast_snooping(struct net_device *dev, unsigned long val)
+ {
+-	return store_bridge_parm(DEVICE_ARGS, buf, len, set_ageing_time);
++	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_BRIDGE_MULTICAST_SNOOPING, SET_PARAMETER);
++	return 0;
+ }
+-static INTERNAL_DEVICE_ATTR(ageing_time, S_IRUGO | S_IWUSR, show_ageing_time,
+-		   store_ageing_time);
+ 
+-static ssize_t show_stp_state(DEVICE_PARAMS, char *buf)
++static ssize_t store_multicast_snooping(DEVICE_PARAMS,
++			     const char *buf, size_t len)
+ {
+-	return sprintf(buf, "%d\n", 0);
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_multicast_snooping);
+ }
+ 
++static INTERNAL_DEVICE_ATTR(multicast_snooping, S_IRUGO | S_IWUSR, show_multicast_snooping, store_multicast_snooping);
+ 
+-static ssize_t store_stp_state(DEVICE_PARAMS,
+-			       const char *buf,
+-			       size_t len)
++static ssize_t show_priority(DEVICE_PARAMS, char *buf)
+ {
+-	struct datapath *dp;
+-	ssize_t result = len;
+-
+-	rcu_read_lock();
++	unsigned long value;
+ 
+-	dp = sysfs_get_dp(to_net_dev(d));
+-	if (dp)
+-		pr_info("%s: xxx attempt to set_stp_state()\n", ovs_dp_name(dp));
+-	else
+-		result = -ENODEV;
++	ovs_dp_sysfs_hook((to_net_dev(d)), &value, BRC_GENL_C_GET_BRIDGE_PRIORITY, GET_PARAMETER);
++	return sprintf(buf, "%lu\n", value);
++}
+ 
+-	rcu_read_unlock();
++static int set_priority(struct net_device *dev, unsigned long val)
++{
++	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_BRIDGE_PRIORITY, SET_PARAMETER);
++	return 0;
++}
+ 
+-	return result;
++static ssize_t store_priority(DEVICE_PARAMS,
++			       const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_priority);
+ }
+-static INTERNAL_DEVICE_ATTR(stp_state, S_IRUGO | S_IWUSR, show_stp_state,
+-		   store_stp_state);
+ 
+-static ssize_t show_priority(DEVICE_PARAMS, char *buf)
++static INTERNAL_DEVICE_ATTR(priority, S_IRUGO | S_IWUSR, show_priority, store_priority);
++
++static ssize_t show_stp_state(DEVICE_PARAMS, char *buf)
+ {
+-	return sprintf(buf, "%d\n", 0);
++	unsigned long value;
++
++	ovs_dp_sysfs_hook((to_net_dev(d)), &value, BRC_GENL_C_GET_BRIDGE_STP_STATE, GET_PARAMETER);
++	return sprintf(buf, "%lu\n", value);
+ }
+ 
+-static void set_priority(struct datapath *dp, unsigned long val)
++
++static int set_stp_state(struct net_device *dev, unsigned long val)
+ {
+-	pr_info("%s: xxx attempt to set_priority()\n", ovs_dp_name(dp));
++	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_BRIDGE_STP_STATE, SET_PARAMETER);
++	return 0;
+ }
+ 
+-static ssize_t store_priority(DEVICE_PARAMS,
++static ssize_t store_stp_state(DEVICE_PARAMS,
+ 			       const char *buf, size_t len)
+ {
+-	return store_bridge_parm(DEVICE_ARGS, buf, len, set_priority);
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_stp_state);
+ }
+-static INTERNAL_DEVICE_ATTR(priority, S_IRUGO | S_IWUSR, show_priority, store_priority);
++
++static INTERNAL_DEVICE_ATTR(stp_state, S_IRUGO | S_IWUSR, show_stp_state, store_stp_state);
+ 
+ static ssize_t show_root_id(DEVICE_PARAMS, char *buf)
+ {
+-	return sprintf(buf, "0000.010203040506\n");
++	char value[32];
++	memset(value, 0, 32);
++	ovs_dp_sysfs_string_hook(to_net_dev(d), value, BRC_GENL_C_GET_BRIDGE_ROOT_ID);
++	return sprintf(buf, "%s\n", value);
+ }
+ static INTERNAL_DEVICE_ATTR(root_id, S_IRUGO, show_root_id, NULL);
+ 
+@@ -226,6 +261,10 @@ static ssize_t show_bridge_id(DEVICE_PARAMS, char *buf)
+ {
+ 	struct vport *vport;
+ 	ssize_t result;
++	unsigned long u_value;
++	u8 *prio = (u8 *)&u_value;
++
++	ovs_dp_sysfs_hook((to_net_dev(d)), &u_value, BRC_GENL_C_GET_BRIDGE_PRIORITY, GET_PARAMETER);
+ 
+ 	rcu_read_lock();
+ 
+@@ -235,7 +274,7 @@ static ssize_t show_bridge_id(DEVICE_PARAMS, char *buf)
+ 
+ 		addr = vport->ops->get_addr(vport);
+ 		result = sprintf(buf, "%.2x%.2x.%.2x%.2x%.2x%.2x%.2x%.2x\n",
+-				 0, 0, addr[0], addr[1], addr[2], addr[3],
++				 prio[1], prio[0], addr[0], addr[1], addr[2], addr[3],
+ 				 addr[4], addr[5]);
+ 	} else
+ 		result = -ENODEV;
+@@ -246,6 +285,8 @@ static ssize_t show_bridge_id(DEVICE_PARAMS, char *buf)
+ }
+ static INTERNAL_DEVICE_ATTR(bridge_id, S_IRUGO, show_bridge_id, NULL);
+ 
++/* At the moment next sysfs are not implemented in the openvswitch, we make a stub from the value as in Linux bridge. */
++
+ static ssize_t show_root_port(DEVICE_PARAMS, char *buf)
+ {
+ 	return sprintf(buf, "%d\n", 0);
+@@ -258,90 +299,231 @@ static ssize_t show_root_path_cost(DEVICE_PARAMS, char *buf)
+ }
+ static INTERNAL_DEVICE_ATTR(root_path_cost, S_IRUGO, show_root_path_cost, NULL);
+ 
+-static ssize_t show_topology_change(DEVICE_PARAMS, char *buf)
++static int show_hash_max(DEVICE_PARAMS, char *buf)
+ {
+-	return sprintf(buf, "%d\n", 0);
++	unsigned long value;
++	value = 512;
++	return sprintf(buf, "%lu\n", value);
+ }
+-static INTERNAL_DEVICE_ATTR(topology_change, S_IRUGO, show_topology_change, NULL);
+ 
+-static ssize_t show_topology_change_detected(DEVICE_PARAMS, char *buf)
++static ssize_t store_hash_max(DEVICE_PARAMS, const char *buf, size_t len)
+ {
+-	return sprintf(buf, "%d\n", 0);
++	return 0;
+ }
+-static INTERNAL_DEVICE_ATTR(topology_change_detected, S_IRUGO,
+-		   show_topology_change_detected, NULL);
+ 
+-static ssize_t show_hello_timer(DEVICE_PARAMS, char *buf)
++static INTERNAL_DEVICE_ATTR(hash_max, S_IRUGO | S_IWUSR, show_hash_max, store_hash_max);
++
++static int show_multicast_last_member_count(DEVICE_PARAMS, char *buf)
+ {
+-	return sprintf(buf, "%d\n", 0);
++	unsigned long value;
++	value = 2;
++	return sprintf(buf, "%lu\n", value);
+ }
+-static INTERNAL_DEVICE_ATTR(hello_timer, S_IRUGO, show_hello_timer, NULL);
+ 
+-static ssize_t show_tcn_timer(DEVICE_PARAMS, char *buf)
++static ssize_t store_multicast_last_member_count(DEVICE_PARAMS, const char *buf, size_t len)
+ {
+-	return sprintf(buf, "%d\n", 0);
++	return 0;
+ }
+-static INTERNAL_DEVICE_ATTR(tcn_timer, S_IRUGO, show_tcn_timer, NULL);
+ 
+-static ssize_t show_topology_change_timer(DEVICE_PARAMS, char *buf)
++static INTERNAL_DEVICE_ATTR(multicast_last_member_count, S_IRUGO | S_IWUSR, show_multicast_last_member_count, store_multicast_last_member_count);
++
++
++static int show_multicast_last_member_interval(DEVICE_PARAMS, char *buf)
+ {
+-	return sprintf(buf, "%d\n", 0);
++	unsigned long value;
++	value = 100;
++	return sprintf(buf, "%lu\n", value);
+ }
+-static INTERNAL_DEVICE_ATTR(topology_change_timer, S_IRUGO, show_topology_change_timer,
+-		   NULL);
+ 
+-static ssize_t show_gc_timer(DEVICE_PARAMS, char *buf)
++static ssize_t store_multicast_last_member_interval(DEVICE_PARAMS, const char *buf, size_t len)
+ {
+-	return sprintf(buf, "%d\n", 0);
++	return 0;
+ }
+-static INTERNAL_DEVICE_ATTR(gc_timer, S_IRUGO, show_gc_timer, NULL);
+ 
+-static ssize_t show_group_addr(DEVICE_PARAMS, char *buf)
++static INTERNAL_DEVICE_ATTR(multicast_last_member_interval, S_IRUGO | S_IWUSR, show_multicast_last_member_interval, store_multicast_last_member_interval);
++
++static int show_multicast_membership_interval(DEVICE_PARAMS, char *buf)
+ {
+-	return sprintf(buf, "00:01:02:03:04:05\n");
++	unsigned long value;
++	value = 26000;
++	return sprintf(buf, "%lu\n", value);
+ }
+ 
+-static ssize_t store_group_addr(DEVICE_PARAMS,
+-				const char *buf, size_t len)
++static ssize_t store_multicast_membership_interval(DEVICE_PARAMS, const char *buf, size_t len)
+ {
+-	struct datapath *dp;
+-	ssize_t result = len;
++	return 0;
++}
+ 
+-	rcu_read_lock();
++static INTERNAL_DEVICE_ATTR(multicast_membership_interval, S_IRUGO | S_IWUSR, show_multicast_membership_interval, store_multicast_membership_interval);
+ 
+-	dp = sysfs_get_dp(to_net_dev(d));
+-	if (dp)
+-		pr_info("%s: xxx attempt to store_group_addr()\n",
+-		       ovs_dp_name(dp));
+-	else
+-		result = -ENODEV;
++static int show_multicast_querier(DEVICE_PARAMS, char *buf)
++{
++	unsigned long value;
++	value = 0;
++	return sprintf(buf, "%lu\n", value);
++}
+ 
+-	rcu_read_unlock();
++static ssize_t store_multicast_querier(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return 0;
++}
+ 
+-	return result;
++static INTERNAL_DEVICE_ATTR(multicast_querier, S_IRUGO | S_IWUSR, show_multicast_querier, store_multicast_querier);
++
++static int show_multicast_querier_interval(DEVICE_PARAMS, char *buf)
++{
++	unsigned long value;
++	value = 25500;
++	return sprintf(buf, "%lu\n", value);
++}
++
++static ssize_t store_multicast_querier_interval(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return 0;
++}
++
++static INTERNAL_DEVICE_ATTR(multicast_querier_interval, S_IRUGO | S_IWUSR, show_multicast_querier_interval, store_multicast_querier_interval);
++
++
++static int show_multicast_query_interval(DEVICE_PARAMS, char *buf)
++{
++	unsigned long value;
++	value = 12500;
++	return sprintf(buf, "%lu\n", value);
++}
++
++static ssize_t store_multicast_query_interval(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return 0;
++}
++
++static INTERNAL_DEVICE_ATTR(multicast_query_interval, S_IRUGO | S_IWUSR, show_multicast_query_interval, store_multicast_query_interval);
++
++static int show_multicast_query_response_interval(DEVICE_PARAMS, char *buf)
++{
++	unsigned long value;
++	value = 1000;
++	return sprintf(buf, "%lu\n", value);
++}
++
++static ssize_t store_multicast_query_response_interval(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return 0;
++}
++
++static INTERNAL_DEVICE_ATTR(multicast_query_response_interval, S_IRUGO | S_IWUSR, show_multicast_query_response_interval, store_multicast_query_response_interval);
++
++static int show_multicast_router(DEVICE_PARAMS, char *buf)
++{
++	unsigned long value;
++	value = 1;
++	return sprintf(buf, "%lu\n", value);
++}
++
++static ssize_t store_multicast_router(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return 0;
++}
++
++static INTERNAL_DEVICE_ATTR(multicast_router, S_IRUGO | S_IWUSR, show_multicast_router, store_multicast_router);
++
++static int show_multicast_startup_query_count(DEVICE_PARAMS, char *buf)
++{
++	unsigned long value;
++	value = 2;
++	return sprintf(buf, "%lu\n", value);
+ }
+ 
+-static INTERNAL_DEVICE_ATTR(group_addr, S_IRUGO | S_IWUSR,
+-		   show_group_addr, store_group_addr);
++static ssize_t store_multicast_startup_query_count(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return 0;
++}
++
++static INTERNAL_DEVICE_ATTR(multicast_startup_query_count, S_IRUGO | S_IWUSR, show_multicast_startup_query_count, store_multicast_startup_query_count);
++
++static int show_multicast_startup_query_interval(DEVICE_PARAMS, char *buf)
++{
++	unsigned long value;
++	value = 3125;
++	return sprintf(buf, "%lu\n", value);
++}
++
++static ssize_t store_multicast_startup_query_interval(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return 0;
++}
++
++static INTERNAL_DEVICE_ATTR(multicast_startup_query_interval, S_IRUGO | S_IWUSR, show_multicast_startup_query_interval, store_multicast_startup_query_interval);
++
++static int show_nf_call_iptables(DEVICE_PARAMS, char *buf)
++{
++	unsigned long value;
++	value = 0;
++	return sprintf(buf, "%lu\n", value);
++}
++
++static ssize_t store_nf_call_iptables(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return 0;
++}
++
++static INTERNAL_DEVICE_ATTR(nf_call_iptables, S_IRUGO | S_IWUSR, show_nf_call_iptables, store_nf_call_iptables);
++
++static int show_nf_call_arptables(DEVICE_PARAMS, char *buf)
++{
++	unsigned long value;
++	value = 0;
++	return sprintf(buf, "%lu\n", value);
++}
++
++static ssize_t store_nf_call_arptables(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return 0;
++}
++
++static INTERNAL_DEVICE_ATTR(nf_call_arptables, S_IRUGO | S_IWUSR, show_nf_call_arptables, store_nf_call_arptables);
++
++static ssize_t show_topology_change(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static INTERNAL_DEVICE_ATTR(topology_change, S_IRUGO, show_topology_change, NULL);
++
++static ssize_t show_topology_change_timer(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", 0);
++}
++static INTERNAL_DEVICE_ATTR(topology_change_timer, S_IRUGO, show_topology_change_timer,
++		   NULL);
++
+ 
+ static struct attribute *bridge_attrs[] = {
++	&DEV_ATTR(ageing_time).attr,
+ 	&DEV_ATTR(forward_delay).attr,
+ 	&DEV_ATTR(hello_time).attr,
+ 	&DEV_ATTR(max_age).attr,
+-	&DEV_ATTR(ageing_time).attr,
+-	&DEV_ATTR(stp_state).attr,
++	&DEV_ATTR(multicast_snooping).attr,
+ 	&DEV_ATTR(priority).attr,
+-	&DEV_ATTR(bridge_id).attr,
++	&DEV_ATTR(stp_state).attr,
+ 	&DEV_ATTR(root_id).attr,
++	&DEV_ATTR(bridge_id).attr,
+ 	&DEV_ATTR(root_path_cost).attr,
+ 	&DEV_ATTR(root_port).attr,
++	&DEV_ATTR(hash_max).attr,
++	&DEV_ATTR(multicast_last_member_count).attr,
++	&DEV_ATTR(multicast_last_member_interval).attr,
++	&DEV_ATTR(multicast_membership_interval).attr,
++	&DEV_ATTR(multicast_querier).attr,
++	&DEV_ATTR(multicast_querier_interval).attr,
++	&DEV_ATTR(multicast_query_interval).attr,
++	&DEV_ATTR(multicast_query_response_interval).attr,
++	&DEV_ATTR(multicast_router).attr,
++	&DEV_ATTR(multicast_startup_query_count).attr,
++	&DEV_ATTR(multicast_startup_query_interval).attr,
++	&DEV_ATTR(nf_call_arptables).attr,
++	&DEV_ATTR(nf_call_iptables).attr,
+ 	&DEV_ATTR(topology_change).attr,
+-	&DEV_ATTR(topology_change_detected).attr,
+-	&DEV_ATTR(hello_timer).attr,
+-	&DEV_ATTR(tcn_timer).attr,
+ 	&DEV_ATTR(topology_change_timer).attr,
+-	&DEV_ATTR(gc_timer).attr,
+-	&DEV_ATTR(group_addr).attr,
+ 	NULL
+ };
+ 
+diff --git a/datapath/dp_sysfs_if.c b/datapath/dp_sysfs_if.c
+index 02197d8ea..d26d1f107 100644
+--- a/datapath/dp_sysfs_if.c
++++ b/datapath/dp_sysfs_if.c
+@@ -16,6 +16,11 @@
+  * 02110-1301, USA
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
+ #include <linux/capability.h>
+@@ -27,6 +32,7 @@
+ #include "datapath.h"
+ #include "dp_sysfs.h"
+ #include "vport.h"
++#include "openvswitch/brcompat-netlink.h"
+ 
+ #ifdef CONFIG_SYSFS
+ 
+@@ -57,10 +63,14 @@ struct brport_attribute brport_attr_##_name = {			\
+ 
+ static ssize_t show_path_cost(struct vport *p, char *buf)
+ {
+-	return sprintf(buf, "%d\n", 0);
++	unsigned long value;
++
++	ovs_dp_sysfs_hook(p->dev, &value, BRC_GENL_C_GET_PORT_PATH_COST, GET_PARAMETER);
++	return sprintf(buf, "%lu\n", value);
+ }
+ static ssize_t store_path_cost(struct vport *p, unsigned long v)
+ {
++	ovs_dp_sysfs_hook(p->dev, &v, BRC_GENL_C_SET_PORT_PATH_COST, SET_PARAMETER);
+ 	return 0;
+ }
+ static BRPORT_ATTR(path_cost, S_IRUGO | S_IWUSR,
+@@ -109,7 +119,10 @@ static BRPORT_ATTR(port_id, S_IRUGO, show_port_id, NULL);
+ 
+ static ssize_t show_port_no(struct vport *p, char *buf)
+ {
+-	return sprintf(buf, "0x%x\n", p->port_no);
++	unsigned long value;
++
++	ovs_dp_sysfs_hook(p->dev, &value, BRC_GENL_C_GET_PORT_PORT_NO, GET_PARAMETER);
++	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static BRPORT_ATTR(port_no, S_IRUGO, show_port_no, NULL);
+@@ -128,7 +141,10 @@ static BRPORT_ATTR(config_pending, S_IRUGO, show_config_pending, NULL);
+ 
+ static ssize_t show_port_state(struct vport *p, char *buf)
+ {
+-	return sprintf(buf, "%d\n", 0);
++	unsigned long value;
++
++	ovs_dp_sysfs_hook(p->dev, &value, BRC_GENL_C_GET_PORT_STATE, GET_PARAMETER);
++	return sprintf(buf, "%lu\n", value);
+ }
+ static BRPORT_ATTR(state, S_IRUGO, show_port_state, NULL);
+ 
+@@ -176,7 +192,6 @@ static ssize_t brport_show(struct kobject *kobj,
+ {
+ 	struct brport_attribute *brport_attr = to_vport_attr(attr);
+ 	struct vport *p = to_vport(kobj);
+-
+ 	return brport_attr->show(p, buf);
+ }
+ 
+@@ -185,15 +200,30 @@ static ssize_t brport_store(struct kobject *kobj,
+ 			    const char *buf, size_t count)
+ {
+ 	struct vport *p = to_vport(kobj);
+-	ssize_t ret = -EINVAL;
++	ssize_t err = -EINVAL;
++	unsigned long val;
++	char *endp;
++	struct brport_attribute *brport_attr = to_vport_attr(attr);
+ 
+ 	if (!capable(CAP_NET_ADMIN))
+ 		return -EPERM;
++	
++	val = simple_strtoul(buf, &endp, 0);
++	if (endp == buf)
++		return -EINVAL;
++
++	if (val != 0) {
++		if (!rtnl_trylock())
++                return restart_syscall();
++		if (p)
++			err = brport_attr->store(p, val);
++		else
++			err = -ENODEV;
++
++		rtnl_unlock();
++	}
+ 
+-	pr_warning("%s: xxx writing port parms not supported yet!\n",
+-		   ovs_dp_name(p->dp));
+-
+-	return ret;
++	return err ? err : count;
+ }
+ 
+ struct sysfs_ops ovs_brport_sysfs_ops = {
+diff --git a/include/openvswitch/brcompat-netlink.h b/include/openvswitch/brcompat-netlink.h
+index 49e14785f..ef73ba286 100644
+--- a/include/openvswitch/brcompat-netlink.h
++++ b/include/openvswitch/brcompat-netlink.h
+@@ -37,10 +37,17 @@
+  * ----------------------------------------------------------------------
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #ifndef OPENVSWITCH_BRCOMPAT_NETLINK_H
+ #define OPENVSWITCH_BRCOMPAT_NETLINK_H 1
+ 
+ #define BRC_GENL_FAMILY_NAME "brcompat"
++#define GET_PARAMETER 0
++#define SET_PARAMETER 1
+ 
+ /* Attributes that can be attached to the datapath's netlink messages. */
+ enum {
+@@ -73,6 +80,7 @@ enum {
+     BRC_GENL_A_IFINDEXES,   /* U: "int" ifindexes of bridges or ports. */
+     BRC_GENL_A_ULONG_VAL,   /* K: "unsigned long" Use in order to send parametrs to user space. */
+     BRC_GENL_A_GET_ULONG,   /* U: "ulong" value of bridges parameters. */
++    BRC_GENL_A_GET_STRING,  /* U: "string" value of bridges parameters. */
+     BRC_GENL_A_PAD,
+     __BRC_GENL_A_MAX,
+     BRC_GENL_A_MAX = __BRC_GENL_A_MAX - 1
+@@ -103,6 +111,17 @@ enum brc_genl_command {
+     BRC_GENL_C_SET_BRIDGE_STP_STATE,   /* K: Set  the  bridge stp state. */
+     BRC_GENL_C_GET_BRIDGE_PRIORITY,   /* K: Get the bridge’s relative priority value. */
+     BRC_GENL_C_GET_BRIDGE_STP_STATE,   /* K: Get the bridge stp state. */
++    BRC_GENL_C_GET_BRIDGE_HELLO_TIME,   /* K: Get  the  bridge  the hello interval. */
++    BRC_GENL_C_GET_BRIDGE_FORWARD_DELAY,   /* K: Get  the time that is spent in the listening and learning state. */
++    BRC_GENL_C_GET_AGEING_TIME, /* K: Get  the  bridge  ageing  time. */
++    BRC_GENL_C_GET_BRIDGE_MAX_AGE, /* K: Get  the  bridge  max  age. */
++    BRC_GENL_C_GET_BRIDGE_MULTICAST_SNOOPING, /* K: Get  the  bridge  multicast snooping enabled. */
++    BRC_GENL_C_SET_BRIDGE_MULTICAST_SNOOPING, /* K: Set  the  bridge  multicast snooping enabled. */
++    BRC_GENL_C_GET_BRIDGE_ROOT_ID, /* K: Get the bridge root id. */
++    BRC_GENL_C_GET_PORT_STATE, /* K: Get the port root id. */
++    BRC_GENL_C_GET_PORT_PORT_NO, /* K: Get the port number. */
++    BRC_GENL_C_GET_PORT_PATH_COST, /* K: Get the port path cost. */
++    BRC_GENL_C_SET_PORT_PATH_COST, /* K: Set the port path cost. */
+ 
+     __BRC_GENL_C_MAX,
+     BRC_GENL_C_MAX = __BRC_GENL_C_MAX - 1
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index c544e1dc3..aec3e3266 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -13,6 +13,11 @@
+  * limitations under the License.
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #include <config.h>
+ 
+ #include <asm/param.h>
+@@ -68,10 +73,14 @@ VLOG_DEFINE_THIS_MODULE(brcompatd);
+ #define STP_DEFAULT_MAX_AGE    20
+ #define STP_DEFAULT_HELLO_TIME 2
+ #define STP_DEFAULT_FWD_DELAY  15
++/* Default mac-aging-time is y 300 seconds (5 minutes)*/
++#define DEFAULT_MAC_AGING_TIME 300
++#define STP_PATH_COST   100
+ 
+ /* xxx Just hangs if datapath is rmmod/insmod.  Learn to reconnect? */
+ 
+ static void set_default_parameters(const char *br_name);
++static void set_default_port_parameters(const char *port_name);
+ static void parse_options(int argc, char *argv[]);
+ static void usage(void) OVS_NO_RETURN;
+ 
+@@ -393,6 +402,8 @@ handle_port_cmd(struct ofpbuf *buffer, bool add)
+                        br_name, port_name, (char *) NULL)) {
+             error = EINVAL;
+         }
++        if (add && !error)
++            set_default_port_parameters(port_name);
+         send_simple_reply(seq, error);
+     }
+     return error;
+@@ -686,6 +697,48 @@ handle_get_ports_cmd(struct ofpbuf *buffer)
+     return 0;
+ }
+ 
++static int
++handle_get_string_value(struct ofpbuf *buffer, const char *sub_cmd)
++{
++    const char *br_name;
++    uint32_t seq;
++    char *output, *result;
++    int error, size;
++    struct ofpbuf *reply;
++
++    /* Parse Netlink command.
++     *
++     * The command doesn't actually have any arguments, but we need the
++     * sequence number to send the reply. */
++    /* Parse Netlink command. */
++    error = parse_command(buffer, &seq, &br_name, NULL, NULL, NULL, NULL);
++    if (error) {
++        return error;
++    }
++
++    output = capture_vsctl(vsctl_program, VSCTL_OPTIONS, "get", "Bridge", br_name, xasprintf("%s", sub_cmd),
++                           (char *) NULL);
++    if (!output) {
++            VLOG_ERR("handle_get_string_value get output error!\n");
++            result = "";
++            size = strlen(result);
++            error = EINVAL;
++    } else {
++        result = output;
++        result++;
++        size = (strchr(result, '\"') - result);
++    }
++
++    /* Compose and send reply. */
++    reply = compose_reply(0);
++    nl_msg_put_unspec(reply, BRC_GENL_A_GET_STRING,
++                      result, size * sizeof *result);
++    send_reply(reply, seq);
++
++    free(output);
++    return 0;
++}
++
+ static int
+ handle_set_ulong_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+ {
+@@ -708,6 +761,28 @@ handle_set_ulong_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+     return error;
+ }
+ 
++static int
++handle_set_ulong_val_port_cmd(struct ofpbuf *buffer, const char *sub_cmd)
++{
++    const char *pr_name;
++    uint64_t param;
++    uint32_t seq;
++    int error;
++
++    error = parse_command(buffer, &seq, &pr_name, NULL, NULL, NULL, &param);
++
++    if (!error) {
++        if (!run_vsctl(vsctl_program, VSCTL_OPTIONS,
++                       "--", "set", "Port", pr_name, xasprintf("other_config:%s=%llu", sub_cmd, param),
++                       "--", "comment", "ovs-brcompatd:", xasprintf("%s", sub_cmd),
++                       pr_name, xasprintf("%llu", param), (char *) NULL)) {
++            error = EINVAL;
++        }
++        send_simple_reply(seq, error);
++    }
++    return error;
++}
++
+ static int
+ handle_set_boolean_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+ {
+@@ -749,7 +824,8 @@ handle_get_ulong_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+     output = capture_vsctl(vsctl_program, VSCTL_OPTIONS, "get", "Bridge", br_name, xasprintf("%s", sub_cmd),
+                            (char *) NULL);
+     if (!output) {
+-        return EINVAL;
++        result = 0;
++        goto send_reply;
+     }
+ 
+     if (strcmp(output, "true\n") == 0) {
+@@ -759,7 +835,75 @@ handle_get_ulong_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+     } else {
+         if (*output != '\"') {
+             VLOG_ERR("%s\n", output);
+-            return EINVAL;
++            result = 0;
++            goto send_reply;
++        }
++        output++;
++        errno = 0;
++        result = strtoul(output, &end_p, 10);
++        if (end_p == output || *end_p != '\"' || (result == ULONG_MAX && (errno == ERANGE))) {
++            VLOG_ERR("Error occurred during converting string to int cmd\n");
++            result = 0;
++            goto send_reply;
++        }
++        output--;
++    }
++
++send_reply:
++    /* Compose and send reply. */
++    reply = compose_reply(0);
++    nl_msg_put_u32(reply, BRC_GENL_A_GET_ULONG, result);
++    send_reply(reply, seq);
++
++    free(output);
++    return 0;
++}
++
++static int
++handle_get_ulong_val_port_cmd(struct ofpbuf *buffer, const char *sub_cmd)
++{
++    const char *br_name;
++    uint32_t seq;
++    char *output, *end_p = NULL;
++    int error;
++    unsigned long result;
++    struct ofpbuf *reply;
++
++    /* Parse Netlink command. */
++    error = parse_command(buffer, &seq, &br_name, NULL, NULL, NULL, NULL);
++    if (error) {
++        return error;
++    }
++
++    output = capture_vsctl(vsctl_program, VSCTL_OPTIONS, "get", "Port", br_name, xasprintf("%s", sub_cmd),
++                           (char *) NULL);
++
++ 
++    if (!output) {
++        VLOG_ERR("handle_get_ulong_val_port_cmd %s\n", output);
++        result = 0;
++        goto send_reply;
++    }
++
++    if (strcmp(output, "true\n") == 0) {
++        result = 1;
++    } else if (strcmp(output, "false\n") == 0) {
++        result = 0;
++    } else if (strcmp(output, "blocking\n") == 0) {
++        result = 0;
++    } else if (strcmp(output, "listening\n") == 0) {
++        result = 1;
++    } else if (strcmp(output, "learning\n") == 0) {
++        result = 2;
++    } else if (strcmp(output, "forwarding\n") == 0) {
++        result = 3;
++    } else if (strcmp(output, "disabled\n") == 0) {
++        result = 4;
++    } else {
++        if (*output != '\"') {
++            VLOG_ERR("handle_get_ulong_val_port_cmd %s\n", output);
++            result = 0;
++            goto send_reply;
+         }
+         output++;
+         errno = 0;
+@@ -770,6 +914,8 @@ handle_get_ulong_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+         }
+         output--;
+     }
++
++send_reply:
+     /* Compose and send reply. */
+     reply = compose_reply(0);
+     nl_msg_put_u32(reply, BRC_GENL_A_GET_ULONG, result);
+@@ -784,12 +930,23 @@ static void set_bridge_parameter(const char *br_name, const char *param, unsigne
+     run_vsctl(vsctl_program, VSCTL_OPTIONS, "--", "set", "Bridge", br_name, xasprintf("%s=%lu", param, value), (char *) NULL);
+ }
+ 
++static void set_port_parameter(const char *pr_name, const char *param, unsigned long value)
++{
++    run_vsctl(vsctl_program, VSCTL_OPTIONS, "--", "set", "Port", pr_name, xasprintf("%s=%lu", param, value), (char *) NULL);
++}
++
+ static void set_default_parameters(const char *br_name)
+ {
+     set_bridge_parameter(br_name, "other_config:stp-priority", STP_DEFAULT_BRIDGE_PRIORITY);
+     set_bridge_parameter(br_name, "other_config:stp-max-age", STP_DEFAULT_MAX_AGE);
+     set_bridge_parameter(br_name, "other_config:stp-hello-time", STP_DEFAULT_HELLO_TIME);
+     set_bridge_parameter(br_name, "other_config:stp-forward-delay", STP_DEFAULT_FWD_DELAY);
++    set_bridge_parameter(br_name, "other_config:mac-aging-time", DEFAULT_MAC_AGING_TIME);
++}
++
++static void set_default_port_parameters(const char *pr_name)
++{
++    set_port_parameter(pr_name, "other_config:stp-path-cost", STP_PATH_COST);
+ }
+ 
+ static bool
+@@ -925,6 +1082,50 @@ brc_recv_update(void)
+         handle_get_ulong_val_cmd(&buffer, "stp_enable");
+         break;
+ 
++    case BRC_GENL_C_GET_BRIDGE_HELLO_TIME:
++        handle_get_ulong_val_cmd(&buffer, "other_config:stp-hello-time");
++        break;
++
++    case BRC_GENL_C_GET_BRIDGE_FORWARD_DELAY:
++        handle_get_ulong_val_cmd(&buffer, "other_config:stp-forward-delay");
++        break;
++
++    case BRC_GENL_C_GET_BRIDGE_MAX_AGE:
++        handle_get_ulong_val_cmd(&buffer, "other_config:stp-max-age");
++        break;
++
++    case BRC_GENL_C_GET_BRIDGE_MULTICAST_SNOOPING:
++        handle_get_ulong_val_cmd(&buffer, "mcast_snooping_enable");
++        break;
++
++    case BRC_GENL_C_SET_BRIDGE_MULTICAST_SNOOPING:
++        handle_set_boolean_val_cmd(&buffer, "mcast_snooping_enable");
++        break;
++
++    case BRC_GENL_C_GET_AGEING_TIME:
++        handle_get_ulong_val_cmd(&buffer, "other_config:mac-aging-time");
++        break;
++
++    case BRC_GENL_C_GET_BRIDGE_ROOT_ID:
++        handle_get_string_value(&buffer, "status:stp_designated_root");
++        break;
++
++    case BRC_GENL_C_GET_PORT_STATE:
++        handle_get_ulong_val_port_cmd(&buffer, "status:stp_state");
++        break;
++
++    case BRC_GENL_C_GET_PORT_PORT_NO:
++        handle_get_ulong_val_port_cmd(&buffer, "other_config:stp-port-num");
++        break;
++
++    case BRC_GENL_C_GET_PORT_PATH_COST:
++        handle_get_ulong_val_port_cmd(&buffer, "other_config:stp-path-cost");
++        break;
++
++    case BRC_GENL_C_SET_PORT_PATH_COST:
++        handle_set_ulong_val_port_cmd(&buffer, "stp-path-cost");
++        break;
++
+     default:
+         VLOG_WARN_RL(&rl, "received unknown brc netlink command: %d\n",
+                      genlmsghdr->cmd);

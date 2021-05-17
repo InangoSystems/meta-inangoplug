@@ -1,0 +1,155 @@
+From ca9e86d32e3c6f87f1e6d5138310f73450e774c3 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Fri, 26 Feb 2021 17:16:38 +0200
+Subject: [PATCH] Commit Title: Capability of simultaneously work both linux
+ bridge and OVS bridge
+
+BugID: 23119
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description: Added changes related to integration the filter for compatibility's work both bridges - linux and OVS.
+---
+ datapath/brcompat_main.c | 70 +++++++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 64 insertions(+), 6 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 337d36236..a4b58b5d4 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -19,6 +19,7 @@
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
+ #include <linux/module.h>
++#include <linux/moduleparam.h>
+ #include <linux/kernel.h>
+ #include <linux/uaccess.h>
+ #include <linux/completion.h>
+@@ -31,6 +32,13 @@
+ #include "openvswitch/brcompat-netlink.h"
+ #include "datapath.h"
+ 
++#define BRIDGE_LIST_MAX 16
++
++static char *br_list[BRIDGE_LIST_MAX];
++static unsigned int size_list = BRIDGE_LIST_MAX;
++module_param_array_named(bridges, br_list, charp, &size_list, 0);
++static br_ioctl_hook_t bridge_ioctl_hook;
++
+ static struct genl_family brc_genl_family;
+ static struct genl_multicast_group brc_mc_group = {
+ 	.name = "brcompat"
+@@ -51,6 +59,7 @@ static DECLARE_COMPLETION(brc_done); /* Userspace signaled operation done? */
+ static struct sk_buff *brc_reply;    /* Reply from userspace. */
+ static u32 brc_seq;		     /* Sequence number for current op. */
+ 
++static bool check_bridge_list(const char *name);
+ static struct sk_buff *brc_send_command(struct net *,
+ 					struct sk_buff *,
+ 					struct nlattr **attrs);
+@@ -168,6 +177,7 @@ static int brc_get_bridges(struct net *net, int __user *uindices, int n)
+ /* Legacy deviceless bridge ioctl's.  Called with br_ioctl_mutex. */
+ static int old_deviceless(struct net *net, void __user *uarg)
+ {
++	int brc_ret, lbr_ret;
+ 	unsigned long args[3];
+ 
+ 	if (copy_from_user(args, uarg, sizeof(args)))
+@@ -175,12 +185,31 @@ static int old_deviceless(struct net *net, void __user *uarg)
+ 
+ 	switch (args[0]) {
+ 	case BRCTL_GET_BRIDGES:
+-		return brc_get_bridges(net, (int __user *)args[1], args[2]);
++	{
++		lbr_ret = bridge_ioctl_hook(net, SIOCGIFBR, uarg);
++		if (lbr_ret < 0)
++			return lbr_ret;
+ 
++		brc_ret = brc_get_bridges(net, ((int __user *)args[1]) + lbr_ret , args[2] - lbr_ret);
++		if (brc_ret < 0)
++			return brc_ret;
++
++		return lbr_ret + brc_ret;
++	}
+ 	case BRCTL_ADD_BRIDGE:
+-		return brc_add_del_bridge(net, (void __user *)args[1], 1);
++	{
++		if (check_bridge_list((char __user *)args[1]))
++			return brc_add_del_bridge(net, (void __user *)args[1], 1);
++		else
++			return bridge_ioctl_hook(net, SIOCSIFBR, uarg);
++	}
+ 	case BRCTL_DEL_BRIDGE:
+-		return brc_add_del_bridge(net, (void __user *)args[1], 0);
++	{
++		if (check_bridge_list((char __user *)args[1]))
++			return brc_add_del_bridge(net, (void __user *)args[1], 0);
++		else
++			return bridge_ioctl_hook(net, SIOCSIFBR, uarg);
++	}
+ 	}
+ 
+ 	return -EOPNOTSUPP;
+@@ -202,9 +231,19 @@ brc_ioctl_deviceless_stub(struct net *net, unsigned int cmd, void __user *uarg)
+ 		return old_deviceless(net, uarg);
+ 
+ 	case SIOCBRADDBR:
+-		return brc_add_del_bridge(net, uarg, 1);
++	{
++		if (check_bridge_list((char __user *)uarg))
++			return brc_add_del_bridge(net, uarg, 1);
++		else
++			return bridge_ioctl_hook(net, cmd, uarg);
++	}
+ 	case SIOCBRDELBR:
+-		return brc_add_del_bridge(net, uarg, 0);
++	{
++		if (check_bridge_list((char __user *)uarg))
++			return brc_add_del_bridge(net, uarg, 0);
++		else
++			return bridge_ioctl_hook(net, cmd, uarg);
++	}
+ 	}
+ 
+ 	return -EOPNOTSUPP;
+@@ -564,6 +603,18 @@ error:
+ 	return ERR_PTR(error);
+ }
+ 
++static bool check_bridge_list(const char *name)
++{
++	int i;
++	for (i = 0; i < size_list; i++) {
++		if (!br_list[i])
++			break;
++		if (strcmp(name, br_list[i]) == 0)
++			return true;
++	}
++	return false;
++}
++
+ static int __init brc_init(void)
+ {
+ 	int err;
+@@ -571,6 +622,11 @@ static int __init brc_init(void)
+ 	pr_info("Open vSwitch Bridge Compatibility\n");
+ 
+ 	/* Set the bridge ioctl handler */
++	bridge_ioctl_hook = brioctl_get();
++	if (!bridge_ioctl_hook) {
++		pr_info("error: bridge_ioctl_hook is NULL!\n");
++		goto error;
++	}
+ 	brioctl_set(brc_ioctl_deviceless_stub);
+ 
+ 	/* Set the openvswitch device ioctl handler */
+@@ -598,7 +654,9 @@ static void brc_cleanup(void)
+ {
+ 	/* Unregister ioctl hooks */
+ 	ovs_dp_ioctl_hook = NULL;
+-	brioctl_set(NULL);
++
++	/* Back the hook of the linux bridge to socket module */
++	brioctl_set(bridge_ioctl_hook);
+ 
+ 	genl_unregister_family(&brc_genl_family);
+ }

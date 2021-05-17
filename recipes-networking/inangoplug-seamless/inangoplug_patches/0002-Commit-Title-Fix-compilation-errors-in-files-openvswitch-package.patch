@@ -1,0 +1,59 @@
+From b5576db161cba89bd59f5409188d239c1ba789f0 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Tue, 2 Mar 2021 23:38:33 +0200
+Subject: [PATCH] Commit Title: Fix compilation errors in files openvswitch
+ package
+
+BugID: 23185
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description: Fixed compilation errors in ip6_gre.c and ip_tunnel.c files.
+---
+ datapath/linux/compat/ip6_gre.c   | 8 ++++----
+ datapath/linux/compat/ip_tunnel.c | 6 +++---
+ 2 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/datapath/linux/compat/ip6_gre.c b/datapath/linux/compat/ip6_gre.c
+index 96743b10a..2ffdda5e1 100644
+--- a/datapath/linux/compat/ip6_gre.c
++++ b/datapath/linux/compat/ip6_gre.c
+@@ -1096,7 +1096,7 @@ static netdev_tx_t ip6erspan_tunnel_xmit(struct sk_buff *skb,
+ 					 struct net_device *dev)
+ {
+ 	struct ip6_tnl *t = netdev_priv(dev);
+-//	struct dst_entry *dst = skb_dst(skb);
++	struct dst_entry *dst = skb_dst(skb);
+ 	struct ip_tunnel_info *tun_info;
+ 	const struct ip_tunnel_key *key;
+ 	struct net_device_stats *stats;
+@@ -1193,10 +1193,10 @@ static netdev_tx_t ip6erspan_tunnel_xmit(struct sk_buff *skb,
+ 
+ 	/* Push GRE header. */
+ 	gre_build_header(skb, &tpi, 8);
+-// fixed compiler error: too few arguments to function ‘dst->ops->update_pmtu’, don't relate to brcompate.
++
+ 	/* TooBig packet may have updated dst->dev's mtu */
+-//	if (!t->parms.collect_md && dst && dst_mtu(dst) > dst->dev->mtu)
+-//		dst->ops->update_pmtu(dst, NULL, skb, dst->dev->mtu);
++	if (!t->parms.collect_md && dst && dst_mtu(dst) > dst->dev->mtu)
++		dst->ops->update_pmtu(dst, NULL, skb, dst->dev->mtu);
+ 
+ 	err = ip6_tnl_xmit(skb, dev, dsfield, &fl6, encap_limit, &mtu,
+ 			   NEXTHDR_GRE);
+diff --git a/datapath/linux/compat/ip_tunnel.c b/datapath/linux/compat/ip_tunnel.c
+index d1de24f7e..d16e60fbf 100644
+--- a/datapath/linux/compat/ip_tunnel.c
++++ b/datapath/linux/compat/ip_tunnel.c
+@@ -264,9 +264,9 @@ static int rpl_tnl_update_pmtu(struct net_device *dev, struct sk_buff *skb,
+ 					- sizeof(struct iphdr) - tunnel->hlen;
+ 	else
+ 		mtu = skb_dst(skb) ? dst_mtu(skb_dst(skb)) : dev->mtu;
+-// fixed compiler error: too few arguments to function skb_dst, don't relate to brcompate.
+-//	if (skb_dst(skb))
+-//		skb_dst(skb)->ops->update_pmtu(skb_dst(skb), NULL, skb, mtu);
++
++	if (skb_dst(skb))
++		skb_dst(skb)->ops->update_pmtu(skb_dst(skb), NULL, skb, mtu);
+ 
+ 	if (skb->protocol == htons(ETH_P_IP)) {
+ 		if (!skb_is_gso(skb) &&

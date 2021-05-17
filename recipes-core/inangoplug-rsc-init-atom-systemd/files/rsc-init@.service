@@ -1,0 +1,7 @@
+[Unit]
+Description=RSC init for starting rsc-server and rsc-proxy for the particular bridge.
+BindsTo=rsc-server@%i.service rsc-proxy@%i.service
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c "exit 0"

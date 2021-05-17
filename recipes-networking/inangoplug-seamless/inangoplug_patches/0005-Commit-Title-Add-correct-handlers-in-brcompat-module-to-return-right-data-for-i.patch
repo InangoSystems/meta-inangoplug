@@ -1,0 +1,276 @@
+From ca6e9878c938763104c6152585a196c8d6fe35f5 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Thu, 11 Mar 2021 00:46:14 +0200
+Subject: [PATCH] Commit Title: Add correct handlers in brcompat module to
+ return right data for ioctl calls
+
+BugID: 23258
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description: Added support get's operation for int value in brcompat module and userspace daemon.
+---
+ datapath/brcompat_main.c               | 71 +++++++++++++++++++++++++++--
+ include/openvswitch/brcompat-netlink.h |  3 ++
+ vswitchd/ovs-brcompatd.c               | 83 +++++++++++++++++++++++++++++++++-
+ 3 files changed, 150 insertions(+), 7 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index a4b58b5d4..0356ceced 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -64,6 +64,7 @@ static struct sk_buff *brc_send_command(struct net *,
+ 					struct sk_buff *,
+ 					struct nlattr **attrs);
+ static int brc_send_simple_command(struct net *, struct sk_buff *);
++static int brc_get_ulong_val_cmd(struct net_device *dev, int oper, unsigned long *uvalue);
+ 
+ static struct sk_buff *brc_make_request(int op, const char *bridge,
+ 					const char *port)
+@@ -279,15 +280,27 @@ static int brc_add_del_port(struct net_device *dev, int port_ifindex, int add)
+ static int brc_get_bridge_info(struct net_device *dev,
+ 			       struct __bridge_info __user *ub)
+ {
++	int ret;
+ 	struct __bridge_info b;
++	unsigned long u_value;
++	u8 *prio = (u8 *)&u_value;
++	u8 *bridge_id = (u8 *)&b.bridge_id;
+ 
+ 	memset(&b, 0, sizeof(struct __bridge_info));
+ 
+-	/* First two bytes are the priority, which we should skip.  This comes
+-	 * from struct bridge_id in br_private.h, which is unavailable to us.
+-	 */
+-	memcpy((u8 *)&b.bridge_id + 2, dev->dev_addr, ETH_ALEN);
+-	b.stp_enabled = 0;
++	ret = brc_get_ulong_val_cmd(dev, BRC_GENL_C_GET_BRIDGE_PRIORITY, &u_value);
++	if (ret < 0)
++		return ret;
++
++	bridge_id[0] = prio[1];
++	bridge_id[1] = prio[0];
++	memcpy(bridge_id + 2, dev->dev_addr, ETH_ALEN);
++
++	ret = brc_get_ulong_val_cmd(dev, BRC_GENL_C_GET_BRIDGE_STP_STATE, &u_value);
++	if (ret < 0)
++		return ret;
++
++	b.stp_enabled = (u8)u_value;
+ 
+ 	if (copy_to_user(ub, &b, sizeof(struct __bridge_info)))
+ 		return -EFAULT;
+@@ -295,6 +308,19 @@ static int brc_get_bridge_info(struct net_device *dev,
+ 	return 0;
+ }
+ 
++static int brc_get_port_info(struct net_device *dev,
++			       struct __port_info __user *up, int index)
++{
++	struct __port_info p;
++
++	memset(&p, 0, sizeof(struct __port_info));
++
++	if (copy_to_user(up, &p, sizeof(struct __port_info)))
++		return -EFAULT;
++
++	return 0;
++}
++
+ static int brc_get_port_list(struct net_device *dev, int __user *uindices,
+ 			     int num)
+ {
+@@ -389,6 +415,38 @@ nla_put_failure:
+ 	return -ENOMEM;
+ }
+ 
++static int brc_get_ulong_val_cmd(struct net_device *dev, int oper, unsigned long *uvalue)
++{
++	struct nlattr *attrs[BRC_GENL_A_MAX + 1];
++	struct sk_buff *request, *reply;
++	int ret;
++
++	request = brc_make_request(oper, dev->name, NULL);
++	if (!request)
++		return -ENOMEM;
++
++	reply = brc_send_command(dev_net(dev), request, attrs);
++	ret = PTR_ERR(reply);
++	if (IS_ERR(reply))
++		goto exit;
++
++	ret = -nla_get_u32(attrs[BRC_GENL_A_ERR_CODE]);
++	if (ret < 0)
++		goto exit_free_skb;
++
++	if (!attrs[BRC_GENL_A_GET_ULONG]) {
++		ret = -EINVAL;
++		goto exit_free_skb;
++	}
++
++	*uvalue = nla_get_u32(attrs[BRC_GENL_A_GET_ULONG]);
++
++exit_free_skb:
++	kfree_skb(reply);
++exit:
++	return ret;
++}
++
+ /* Legacy ioctl's through SIOCDEVPRIVATE.  Called with rtnl_lock. */
+ static int old_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+ {
+@@ -406,6 +464,9 @@ static int old_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+ 	case BRCTL_GET_BRIDGE_INFO:
+ 		return brc_get_bridge_info(dev, (struct __bridge_info __user *)args[1]);
+ 
++	case BRCTL_GET_PORT_INFO:
++		return brc_get_port_info(dev, (struct __port_info __user *)args[1], args[2]);
++
+ 	case BRCTL_GET_PORT_LIST:
+ 		return brc_get_port_list(dev, (int __user *)args[1], args[2]);
+ 
+diff --git a/include/openvswitch/brcompat-netlink.h b/include/openvswitch/brcompat-netlink.h
+index a1155e5d1..49e14785f 100644
+--- a/include/openvswitch/brcompat-netlink.h
++++ b/include/openvswitch/brcompat-netlink.h
+@@ -72,6 +72,7 @@ enum {
+     BRC_GENL_A_FDB_DATA,    /* U: FDB records. */
+     BRC_GENL_A_IFINDEXES,   /* U: "int" ifindexes of bridges or ports. */
+     BRC_GENL_A_ULONG_VAL,   /* K: "unsigned long" Use in order to send parametrs to user space. */
++    BRC_GENL_A_GET_ULONG,   /* U: "ulong" value of bridges parameters. */
+     BRC_GENL_A_PAD,
+     __BRC_GENL_A_MAX,
+     BRC_GENL_A_MAX = __BRC_GENL_A_MAX - 1
+@@ -100,6 +101,8 @@ enum brc_genl_command {
+     BRC_GENL_C_SET_BRIDGE_MAX_AGE,   /* K: Set  the  bridge  max  age. */
+     BRC_GENL_C_SET_BRIDGE_PRIORITY,   /* K: The bridge’s relative priority value for determining the root bridge. */
+     BRC_GENL_C_SET_BRIDGE_STP_STATE,   /* K: Set  the  bridge stp state. */
++    BRC_GENL_C_GET_BRIDGE_PRIORITY,   /* K: Get the bridge’s relative priority value. */
++    BRC_GENL_C_GET_BRIDGE_STP_STATE,   /* K: Get the bridge stp state. */
+ 
+     __BRC_GENL_C_MAX,
+     BRC_GENL_C_MAX = __BRC_GENL_C_MAX - 1
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 495166d9c..1c6357c7f 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -62,9 +62,16 @@
+ VLOG_DEFINE_THIS_MODULE(brcompatd);
+ 
+ #define ETH_ADDR_SCAN_COUNT 6
++/* Bridge and port priorities that should be used by default. */
++#define STP_DEFAULT_BRIDGE_PRIORITY 32768
++/* Default time values. */
++#define STP_DEFAULT_MAX_AGE    20
++#define STP_DEFAULT_HELLO_TIME 2
++#define STP_DEFAULT_FWD_DELAY  15
+ 
+ /* xxx Just hangs if datapath is rmmod/insmod.  Learn to reconnect? */
+ 
++static void set_default_parameters(const char *br_name);
+ static void parse_options(int argc, char *argv[]);
+ static void usage(void) OVS_NO_RETURN;
+ 
+@@ -340,6 +347,8 @@ handle_bridge_cmd(struct ofpbuf *buffer, bool add)
+                        (char *) NULL)) {
+             error = add ? EEXIST : ENXIO;
+         }
++        if (add && !error)
++            set_default_parameters(br_name);
+         send_simple_reply(seq, error);
+     }
+     return error;
+@@ -704,6 +713,68 @@ handle_set_boolean_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+     return error;
+ }
+ 
++static int
++handle_get_ulong_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
++{
++    const char *br_name;
++    uint32_t seq;
++    char *output, *end_p = NULL;
++    int error;
++    unsigned long result;
++    struct ofpbuf *reply;
++
++    /* Parse Netlink command. */
++    error = parse_command(buffer, &seq, &br_name, NULL, NULL, NULL, NULL);
++    if (error) {
++        return error;
++    }
++
++    output = capture_vsctl(vsctl_program, VSCTL_OPTIONS, "get", "Bridge", br_name, xasprintf("%s", sub_cmd),
++                           (char *) NULL);
++    if (!output) {
++        return EINVAL;
++    }
++
++    if (strcmp(output, "true\n") == 0) {
++        result = 1;
++    } else if (strcmp(output, "false\n") == 0) {
++        result = 0;
++    } else {
++        if (*output != '\"') {
++            VLOG_ERR("%s\n", output);
++            return EINVAL;
++        }
++        output++;
++        errno = 0;
++        result = strtoul(output, &end_p, 10);
++        if (end_p == output || *end_p != '\"' || (result == ULONG_MAX && (errno == ERANGE))) {
++            VLOG_ERR("Error occurred during converting string to int cmd\n");
++            return EINVAL;
++        }
++        output--;
++    }
++    /* Compose and send reply. */
++    reply = compose_reply(0);
++    nl_msg_put_u32(reply, BRC_GENL_A_GET_ULONG, result);
++    send_reply(reply, seq);
++
++    free(output);
++    return 0;
++}
++
++static void set_bridge_parameter(const char *br_name, const char *param, unsigned long value)
++{
++    run_vsctl(vsctl_program, VSCTL_OPTIONS, "--", "set", "Bridge", br_name, xasprintf("%s=%lu", param, value), (char *) NULL);
++}
++
++static void set_default_parameters(const char *br_name)
++{
++    set_bridge_parameter(br_name, "other_config:stp-priority", STP_DEFAULT_BRIDGE_PRIORITY);
++    set_bridge_parameter(br_name, "other_config:stp-max-age", STP_DEFAULT_MAX_AGE);
++    set_bridge_parameter(br_name, "other_config:stp-hello-time", STP_DEFAULT_HELLO_TIME);
++    set_bridge_parameter(br_name, "other_config:stp-forward-delay", STP_DEFAULT_FWD_DELAY);
++}
++
+ static bool
+ brc_recv_update__(struct ofpbuf *buffer)
+ {
+@@ -829,6 +900,14 @@ brc_recv_update(void)
+         handle_set_boolean_val_cmd(&buffer, "stp_enable");
+         break;
+ 
++    case BRC_GENL_C_GET_BRIDGE_PRIORITY:
++        handle_get_ulong_val_cmd(&buffer, "other_config:stp-priority");
++        break;
++
++    case BRC_GENL_C_GET_BRIDGE_STP_STATE:
++        handle_get_ulong_val_cmd(&buffer, "stp_enable");
++        break;
++
+     default:
+         VLOG_WARN_RL(&rl, "received unknown brc netlink command: %d\n",
+                      genlmsghdr->cmd);
+@@ -881,8 +960,8 @@ main(int argc, char *argv[])
+     set_program_name(argv[0]);
+     vlog_set_levels(&VLM_reconnect, VLF_ANY_DESTINATION, VLL_WARN);
+ 
+-    VLOG_WARN("Bridge compatibility is deprecated and may be removed "
+-              "no earlier than February 2013");
++    VLOG_INFO("\nBridge compatibility daemon is starting ...\n");
++
+     parse_options(argc, argv);
+     signal(SIGPIPE, SIG_IGN);
+     process_init();

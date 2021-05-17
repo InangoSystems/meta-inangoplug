@@ -1,0 +1,106 @@
+From d4e706e6061391108e6fcfe738b6476923c62e68 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Mon, 22 Mar 2021 22:28:50 +0200
+Subject: [PATCH] Commit Title: Fix compilation errors related to old Linux API
+ in openvswitch
+
+BugID: 23202
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description: There was replaced old API with him new prototype API call.
+---
+ datapath/linux/compat/geneve.c | 19 ++++++++-----------
+ datapath/linux/compat/vxlan.c  | 26 +++++++++-----------------
+ 2 files changed, 17 insertions(+), 28 deletions(-)
+
+diff --git a/datapath/linux/compat/geneve.c b/datapath/linux/compat/geneve.c
+index 71c263304..be8682fc4 100644
+--- a/datapath/linux/compat/geneve.c
++++ b/datapath/linux/compat/geneve.c
+@@ -7,6 +7,10 @@
+  * it under the terms of the GNU General Public License version 2 as
+  * published by the Free Software Foundation.
+  */
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
+ 
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
+@@ -961,20 +965,13 @@ static struct dst_entry *geneve_get_v6_dst(struct sk_buff *skb,
+ 		if (dst)
+ 			return dst;
+ 	}
+-#if 0   ///fixed compiler error: ‘const struct ipv6_stub’ has no member named ‘ipv6_dst_lookup’, don't relate to brcompate.
+-#ifdef HAVE_IPV6_DST_LOOKUP_NET
+-	if (ipv6_stub->ipv6_dst_lookup(geneve->net, gs6->sock->sk, &dst, fl6)) {
+-#else
+-#ifdef HAVE_IPV6_STUB
+-	if (ipv6_stub->ipv6_dst_lookup(gs6->sock->sk, &dst, fl6)) {
+-#else
+-	if (ip6_dst_lookup(gs6->sock->sk, &dst, fl6)) {
+-#endif
+-#endif
++
++	dst = ipv6_stub->ipv6_dst_lookup_flow(geneve->net, gs6->sock->sk, fl6,
++					      NULL);
++	if (IS_ERR(dst)) {
+ 		netdev_dbg(dev, "no route to %pI6\n", &fl6->daddr);
+ 		return ERR_PTR(-ENETUNREACH);
+ 	}
+-#endif
+ 	if (dst->dev == dev) { /* is this necessary? */
+ 		netdev_dbg(dev, "circular route to %pI6\n", &fl6->daddr);
+ 		dst_release(dst);
+diff --git a/datapath/linux/compat/vxlan.c b/datapath/linux/compat/vxlan.c
+index 286838cc0..f6cd8b9c5 100644
+--- a/datapath/linux/compat/vxlan.c
++++ b/datapath/linux/compat/vxlan.c
+@@ -7,6 +7,10 @@
+  * it under the terms of the GNU General Public License version 2 as
+  * published by the Free Software Foundation.
+  */
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
+ 
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
+@@ -967,7 +971,6 @@ static struct dst_entry *vxlan6_get_route(struct vxlan_dev *vxlan,
+ 	bool use_cache = (dst_cache && ip_tunnel_dst_cache_usable(skb, info));
+ 	struct dst_entry *ndst;
+ 	struct flowi6 fl6;
+-	int err;
+ 
+ 	if (!sock6)
+ 		return ERR_PTR(-EIO);
+@@ -989,22 +992,11 @@ static struct dst_entry *vxlan6_get_route(struct vxlan_dev *vxlan,
+ 	fl6.flowi6_proto = IPPROTO_UDP;
+ 	fl6.fl6_dport = dport;
+ 	fl6.fl6_sport = sport;
+-#if 0 ///fixed compiler error: ‘const struct ipv6_stub’ has no member named ‘ipv6_dst_lookup’, don't relate to brcompate.
+-#ifdef HAVE_IPV6_DST_LOOKUP_NET
+-	err = ipv6_stub->ipv6_dst_lookup(vxlan->net,
+-					 sock6->sock->sk,
+-					 &ndst, &fl6);
+-#else
+-#ifdef HAVE_IPV6_STUB
+-	err = ipv6_stub->ipv6_dst_lookup(vxlan->vn6_sock->sock->sk,
+-					 &ndst, &fl6);
+-#else
+-	err = ip6_dst_lookup(vxlan->vn6_sock->sock->sk, &ndst, &fl6);
+-#endif
+-#endif
+-#endif
+-	if (err < 0)
+-		return ERR_PTR(err);
++
++	ndst = ipv6_stub->ipv6_dst_lookup_flow(vxlan->net, sock6->sock->sk,
++					       &fl6, NULL);
++	if (unlikely(IS_ERR(ndst)))
++		return ERR_PTR(-ENETUNREACH);
+ 
+ 	*saddr = fl6.saddr;
+ 	if (use_cache)

@@ -1,0 +1,157 @@
+From c1883fdc057e7c3c161bae10cd35229671b059bb Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Thu, 18 Mar 2021 17:31:02 +0200
+Subject: [PATCH] Commit Title: Fix system error when removing bridges or ports
+ from OVS
+
+BugID: 23382
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description: There were commented lines that related to sysfs in datapath and vport files.
+---
+ datapath/datapath.c  | 20 ++++++++++----------
+ datapath/dp_notify.c |  2 ++
+ datapath/vport.c     | 10 +++++-----
+ 3 files changed, 17 insertions(+), 15 deletions(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index c9f2818bd..f64cb1caf 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -261,7 +261,7 @@ err:
+ out:
+ 	kfree_skb(skb);
+ }
+-
++/*
+ static void release_dp(struct kobject *kobj)
+ {
+ 	struct datapath *dp = container_of(kobj, struct datapath, ifobj);
+@@ -271,7 +271,7 @@ static void release_dp(struct kobject *kobj)
+ static struct kobj_type dp_ktype = {
+ 	.release = release_dp
+ };
+-
++*/
+ static void destroy_dp_rcu(struct rcu_head *rcu)
+ {
+ 	struct datapath *dp = container_of(rcu, struct datapath, rcu);
+@@ -279,7 +279,7 @@ static void destroy_dp_rcu(struct rcu_head *rcu)
+ 	ovs_flow_tbl_destroy(&dp->table);
+ 	free_percpu(dp->stats_percpu);
+ 	kfree(dp->ports);
+-	kobject_put(&dp->ifobj);
++//	kobject_put(&dp->ifobj);
+ 	ovs_meters_exit(dp);
+ 	kfree(dp);
+ }
+@@ -324,8 +324,8 @@ void ovs_dp_detach_port(struct vport *p)
+ {
+ 	ASSERT_OVSL();
+ 
+-	if (p->port_no != OVSP_LOCAL)
+-		ovs_dp_sysfs_del_if(p);
++//	if (p->port_no != OVSP_LOCAL)
++//		ovs_dp_sysfs_del_if(p);
+ 
+ 	dp_ifinfo_notify(RTM_DELLINK, p);
+ 
+@@ -1690,8 +1690,8 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 
+ 	/* Initialize kobject for bridge.  This will be added as
+ 	 * /sys/class/net/<devname>/brif later, if sysfs is enabled. */
+-	dp->ifobj.kset = NULL;
+-	kobject_init(&dp->ifobj, &dp_ktype);
++//	dp->ifobj.kset = NULL;
++//	kobject_init(&dp->ifobj, &dp_ktype);
+ 
+ 	ovs_dp_set_net(dp, sock_net(skb->sk));
+ 
+@@ -1758,7 +1758,7 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 
+ 	ovs_net = net_generic(ovs_dp_get_net(dp), ovs_net_id);
+ 	list_add_tail_rcu(&dp->list_node, &ovs_net->dps);
+-	ovs_dp_sysfs_add_dp(dp);
++//	ovs_dp_sysfs_add_dp(dp);
+ 
+ 	ovs_unlock();
+ 
+@@ -1796,7 +1796,7 @@ static void __dp_destroy(struct datapath *dp)
+ 				ovs_dp_detach_port(vport);
+ 	}
+ 
+-	ovs_dp_sysfs_del_dp(dp);
++//	ovs_dp_sysfs_del_dp(dp);
+ 	list_del_rcu(&dp->list_node);
+ 
+ 	/* OVSP_LOCAL is datapath internal port. We need to make sure that
+@@ -2171,7 +2171,7 @@ restart:
+ 		goto exit_unlock_free;
+ 	}
+ 
+-	ovs_dp_sysfs_add_if(vport);
++//	ovs_dp_sysfs_add_if(vport);
+ 
+ 	err = ovs_vport_cmd_fill_info(vport, reply, genl_info_net(info),
+ 				      info->snd_portid, info->snd_seq, 0,
+diff --git a/datapath/dp_notify.c b/datapath/dp_notify.c
+index b4c844100..9bdd86c77 100644
+--- a/datapath/dp_notify.c
++++ b/datapath/dp_notify.c
+@@ -95,12 +95,14 @@ static int dp_device_event(struct notifier_block *unused, unsigned long event,
+ 			queue_work(system_wq, &ovs_net->dp_notify_work);
+ 		}
+ 		break;
++/*
+ 	case NETDEV_CHANGENAME:
+ 		if (vport->port_no != OVSP_LOCAL) {
+ 			ovs_dp_sysfs_del_if(vport);
+ 			ovs_dp_sysfs_add_if(vport);
+ 		}
+ 		break;
++*/
+ 	}
+ 	return NOTIFY_DONE;
+ }
+diff --git a/datapath/vport.c b/datapath/vport.c
+index 02404f045..03a455add 100644
+--- a/datapath/vport.c
++++ b/datapath/vport.c
+@@ -201,7 +201,7 @@ struct vport *ovs_vport_locate(const struct net *net, const char *name)
+ 
+ 	return NULL;
+ }
+-
++/*
+ static void release_vport(struct kobject *kobj)
+ {
+ 	struct vport *p = container_of(kobj, struct vport, kobj);
+@@ -214,7 +214,7 @@ static struct kobj_type brport_ktype = {
+ #endif
+ 	.release = release_vport
+ };
+-
++*/
+ /**
+  *	ovs_vport_alloc - allocate and initialize new vport
+  *
+@@ -249,8 +249,8 @@ struct vport *ovs_vport_alloc(int priv_size, const struct vport_ops *ops,
+ 
+ 	/* Initialize kobject for bridge.  This will be added as
+ 	 * /sys/class/net/<devname>/brport later, if sysfs is enabled. */
+-	vport->kobj.kset = NULL;
+-	kobject_init(&vport->kobj, &brport_ktype);
++//	vport->kobj.kset = NULL;
++//	kobject_init(&vport->kobj, &brport_ktype);
+ 
+ 	if (ovs_vport_set_upcall_portids(vport, parms->upcall_portids)) {
+ 		kfree(vport);
+@@ -277,7 +277,7 @@ void ovs_vport_free(struct vport *vport)
+ 	 * it is safe to use raw dereference.
+ 	 */
+ 	kfree(rcu_dereference_raw(vport->upcall_portids));
+-	kobject_put(&vport->kobj);
++//	kobject_put(&vport->kobj);
+ 	kfree(vport);
+ }
+ EXPORT_SYMBOL_GPL(ovs_vport_free);

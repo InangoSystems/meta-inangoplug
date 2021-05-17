@@ -1,0 +1,100 @@
+From 266993474a9eb3e25e9ab8fb8b1b3da76a51f808 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Thu, 29 Apr 2021 12:17:39 +0300
+Subject: [PATCH] Commit Title: Provide control variables for hw-offload
+ subcomponent
+
+BugID: 23872
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description: There was added the ovs-vsctl call in ovs-ctl.in that enable the flow hardware offload.
+---
+ configure.ac         |  7 ++++++-
+ m4/openvswitch.m4    | 27 +++++++++++++++++++++++++++
+ utilities/ovs-ctl.in |  3 +++
+ 3 files changed, 36 insertions(+), 1 deletion(-)
+
+diff --git a/configure.ac b/configure.ac
+index 407f8c064..afb335fb8 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -11,7 +11,11 @@
+ # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+-
++#
++#
++#Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++#Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++#
+ AC_PREREQ(2.63)
+ AC_INIT(openvswitch, 2.11.0, bugs@openvswitch.org)
+ AC_CONFIG_SRCDIR([datapath/datapath.c])
+@@ -90,6 +94,7 @@ OVS_CHECK_NDEBUG
+ OVS_CHECK_NETLINK
+ OVS_CHECK_OPENSSL
+ OVS_CHECK_LIBCAPNG
++OVS_CHECK_PP_OFFLOAD
+ OVS_CHECK_LOGDIR
+ OVS_CHECK_PYTHON2
+ OVS_CHECK_PYTHON3
+diff --git a/m4/openvswitch.m4 b/m4/openvswitch.m4
+index b4e1f7cf2..a99538d8f 100644
+--- a/m4/openvswitch.m4
++++ b/m4/openvswitch.m4
+@@ -14,6 +14,10 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ #
++#
++#Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++#Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++#
+ m4_include([m4/compat.m4])
+ 
+ dnl Checks for --enable-coverage and updates CFLAGS and LDFLAGS appropriately.
+@@ -252,6 +256,29 @@ AC_DEFUN([OVS_CHECK_LIBCAPNG],
+       AC_SUBST([CAPNG_LDADD])
+    fi])
+ 
++dnl Checks for pp-offload.
++AC_DEFUN([OVS_CHECK_PP_OFFLOAD],
++  [AC_ARG_ENABLE(
++     [pp_offload],
++     [AC_HELP_STRING([--disable-pp-offload], [Disable pp-offload support])],
++     [case "${enableval}" in
++        (yes) pp_offload=true ;;
++        (no)  pp_offload=false ;;
++        (*) AC_MSG_ERROR([bad value ${enableval} for --enable-pp-offload]) ;;
++      esac],
++     [pp_offload=check])
++
++   if test "$pp_offload" != false; then
++       PUMA7_HW_OFFLOAD=yes
++   fi
++
++   AC_SUBST([PUMA7_HW_OFFLOAD])
++   AM_CONDITIONAL([PUMA7_HW_OFFLOAD], [test "$PUMA7_HW_OFFLOAD" = yes])
++   if test "$PUMA7_HW_OFFLOAD" = yes; then
++      AC_DEFINE([PUMA7_HW_OFFLOAD], [1],
++                [Define to 1 if pp-offload is enable.])
++   fi])
++
+ dnl Checks for OpenSSL.
+ AC_DEFUN([OVS_CHECK_OPENSSL],
+   [AC_ARG_ENABLE(
+diff --git a/utilities/ovs-ctl.in b/utilities/ovs-ctl.in
+index e6f62ac10..6c86ac016 100644
+--- a/utilities/ovs-ctl.in
++++ b/utilities/ovs-ctl.in
+@@ -244,6 +244,9 @@ do_start_brcompatd () {
+ 
+         start_daemon "$OVS_BRCOMPATD_PRIORITY" "$OVS_BRCOMPATD_WRAPPER" "$@" ||
+             return 1
++
++        action "Enabling the flow hardware offload" \
++            ovs-vsctl set Open_vSwitch . other_config:hw-offload=true
+     fi
+ }
+ 

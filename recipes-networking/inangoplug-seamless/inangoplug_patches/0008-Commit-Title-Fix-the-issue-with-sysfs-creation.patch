@@ -1,0 +1,511 @@
+From 37a81c695f77146dc82fafb43caf6eef35a7ff49 Mon Sep 17 00:00:00 2001
+From: "Puz, Dmytro" <d.puz@inango-systems.com>
+Date: Mon, 22 Mar 2021 15:45:34 +0200
+Subject: [PATCH] Commit Title: Fix the issue with sysfs creation
+
+BugID: 23187
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description: Fix adding and removing sysfs for interfaces and bridges
+---
+ datapath/brcompat_main.c | 61 ++++++++++++++++++++++++++++++++++
+ datapath/datapath.c      | 86 +++++++++++++++++++++++++++++++++++++-----------
+ datapath/datapath.h      | 13 ++++++++
+ datapath/dp_notify.c     |  6 ++--
+ datapath/dp_sysfs.h      |  4 +--
+ datapath/dp_sysfs_dp.c   | 11 +++----
+ datapath/dp_sysfs_if.c   | 21 ++++--------
+ datapath/vport.c         | 13 ++++----
+ datapath/vport.h         |  4 +++
+ 9 files changed, 166 insertions(+), 53 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 0356ceced..7e8b58b24 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -58,6 +58,7 @@ static DEFINE_SPINLOCK(brc_lock);    /* Ensure atomic access to these vars. */
+ static DECLARE_COMPLETION(brc_done); /* Userspace signaled operation done? */
+ static struct sk_buff *brc_reply;    /* Reply from userspace. */
+ static u32 brc_seq;		     /* Sequence number for current op. */
++static br_pair_t *head = NULL;       /* Bridge-interface pairs sor sysfs*/
+ 
+ static bool check_bridge_list(const char *name);
+ static struct sk_buff *brc_send_command(struct net *,
+@@ -250,6 +251,58 @@ brc_ioctl_deviceless_stub(struct net *net, unsigned int cmd, void __user *uarg)
+ 	return -EOPNOTSUPP;
+ }
+ 
++
++static br_pair_t* getHead(void){
++	return head;
++}
++
++static br_pair_t* getLast(br_pair_t *head) {
++    while (head->next)
++        head = head->next;
++
++    return head;
++}
++
++static void pushBack(br_pair_t **head, char *bridge, char *port) {
++    br_pair_t *tmp = (br_pair_t*)kmalloc(sizeof(br_pair_t),GFP_KERNEL);
++    tmp->brname = bridge;
++    tmp->prname = port;
++    tmp->next = NULL;
++
++    if (*head == NULL) {
++        *head = tmp;
++    }
++    else {
++        br_pair_t *last = getLast(*head);
++        last->next = tmp;
++    }
++}
++
++
++static void delete_node(br_pair_t** head, char * name) {
++    br_pair_t* curr = *head;
++    br_pair_t* prev = NULL;
++
++    if(curr == NULL)
++        return;
++
++    while((strcmp(curr->brname, name))) {
++        if(curr->next == NULL) {
++            return;
++        } else {
++            prev = curr;
++            curr = curr->next;
++        }
++    }
++
++    if(curr == *head)
++        *head = (*head)->next;
++    else
++        prev->next = curr->next;
++
++    kfree(curr);
++}
++
+ static int brc_add_del_port(struct net_device *dev, int port_ifindex, int add)
+ {
+ 	struct sk_buff *request;
+@@ -270,6 +323,11 @@ static int brc_add_del_port(struct net_device *dev, int port_ifindex, int add)
+ 	if (!request)
+ 		return -ENOMEM;
+ 
++	mutex_lock(&brc_serial);
++	if(add == 1) pushBack(&head, dev->name, port->name);
++	else delete_node(&head, dev->name);
++	mutex_unlock(&brc_serial);
++
+ 	rtnl_unlock();
+ 	err = brc_send_simple_command(dev_net(dev), request);
+ 	rtnl_lock();
+@@ -693,6 +751,9 @@ static int __init brc_init(void)
+ 	/* Set the openvswitch device ioctl handler */
+ 	ovs_dp_ioctl_hook = brc_dev_ioctl;
+ 
++	/*For transfering a pair bridge - interface to datapath*/
++	ovs_dp_getHead = getHead;
++
+ 	/* Randomize the initial sequence number.  This is not a security
+ 	 * feature; it only helps avoid crossed wires between userspace and
+ 	 * the kernel when the module is unloaded and reloaded. */
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index f64cb1caf..32b118d4e 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -68,6 +68,8 @@ unsigned int ovs_net_id __read_mostly;
+ int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
+ EXPORT_SYMBOL(ovs_dp_ioctl_hook);
+ 
++br_pair_t* (*ovs_dp_getHead)(void);
++EXPORT_SYMBOL(ovs_dp_getHead);
+ 
+ static struct genl_family dp_packet_genl_family;
+ static struct genl_family dp_flow_genl_family;
+@@ -261,25 +263,14 @@ err:
+ out:
+ 	kfree_skb(skb);
+ }
+-/*
+-static void release_dp(struct kobject *kobj)
+-{
+-	struct datapath *dp = container_of(kobj, struct datapath, ifobj);
+-	kfree(dp);
+-}
+ 
+-static struct kobj_type dp_ktype = {
+-	.release = release_dp
+-};
+-*/
+ static void destroy_dp_rcu(struct rcu_head *rcu)
+ {
+ 	struct datapath *dp = container_of(rcu, struct datapath, rcu);
+-
+ 	ovs_flow_tbl_destroy(&dp->table);
+ 	free_percpu(dp->stats_percpu);
+ 	kfree(dp->ports);
+-//	kobject_put(&dp->ifobj);
++	kobject_put(&dp->ifobj);
+ 	ovs_meters_exit(dp);
+ 	kfree(dp);
+ }
+@@ -324,8 +315,9 @@ void ovs_dp_detach_port(struct vport *p)
+ {
+ 	ASSERT_OVSL();
+ 
+-//	if (p->port_no != OVSP_LOCAL)
+-//		ovs_dp_sysfs_del_if(p);
++	if (p->port_no != OVSP_LOCAL) {
++		ovs_dp_sysfs_del_if(p);
++	}
+ 
+ 	dp_ifinfo_notify(RTM_DELLINK, p);
+ 
+@@ -1690,9 +1682,6 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 
+ 	/* Initialize kobject for bridge.  This will be added as
+ 	 * /sys/class/net/<devname>/brif later, if sysfs is enabled. */
+-//	dp->ifobj.kset = NULL;
+-//	kobject_init(&dp->ifobj, &dp_ktype);
+-
+ 	ovs_dp_set_net(dp, sock_net(skb->sk));
+ 
+ 	/* Allocate table. */
+@@ -1758,7 +1747,8 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 
+ 	ovs_net = net_generic(ovs_dp_get_net(dp), ovs_net_id);
+ 	list_add_tail_rcu(&dp->list_node, &ovs_net->dps);
+-//	ovs_dp_sysfs_add_dp(dp);
++
++	ovs_dp_sysfs_add_dp(dp, vport);
+ 
+ 	ovs_unlock();
+ 
+@@ -1796,7 +1786,7 @@ static void __dp_destroy(struct datapath *dp)
+ 				ovs_dp_detach_port(vport);
+ 	}
+ 
+-//	ovs_dp_sysfs_del_dp(dp);
++	ovs_dp_sysfs_del_dp(dp);
+ 	list_del_rcu(&dp->list_node);
+ 
+ 	/* OVSP_LOCAL is datapath internal port. We need to make sure that
+@@ -2106,6 +2096,38 @@ static void update_headroom(struct datapath *dp)
+ 			netdev_set_rx_headroom(vport->dev, max_headroom);
+ }
+ 
++/* Function to get the name of the bridge through its associated interface*/
++static char* get_bridge_by_port(br_pair_t *head, const char *port)
++{
++	br_pair_t *iter = head;
++	char *bridge;
++
++	while(iter) {
++		if(!(strcmp(iter->prname, port)))
++			bridge = iter->brname;
++		iter = iter->next;
++	}
++	return bridge;
++}
++
++/* Function to get the vport structure through its bridge name*/
++static struct vport* get_vport_by_bridge(struct datapath *dp, char *bridge)
++{
++	int i;
++
++	for (i = 0; i < DP_VPORT_HASH_BUCKETS; i++) {
++		struct vport *vport;
++		struct hlist_node *n;
++
++		hlist_for_each_entry_safe(vport, n, &dp->ports[i], dp_hash_node) {
++			if (!(strcmp(vport->dev->name, bridge)))
++				return vport;
++		}
++	}
++
++	return NULL;
++}
++
+ static int ovs_vport_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ {
+ 	struct nlattr **a = info->attrs;
+@@ -2114,6 +2136,9 @@ static int ovs_vport_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 	struct sk_buff *reply;
+ 	struct vport *vport;
+ 	struct datapath *dp;
++	struct br_pair_t *head;
++	char *bridgeName;
++	struct vport *br;
+ 	u32 port_no;
+ 	int err;
+ 
+@@ -2171,7 +2196,28 @@ restart:
+ 		goto exit_unlock_free;
+ 	}
+ 
+-//	ovs_dp_sysfs_add_if(vport);
++	vport->type = parms.type;
++	if (parms.type == OVS_VPORT_TYPE_INTERNAL) {
++		ovs_dp_sysfs_add_dp(vport->dp, vport);
++	}
++	else{
++		head = ovs_dp_getHead();
++
++		if (head == NULL)
++			return -1;
++
++		bridgeName = get_bridge_by_port(head, parms.name);
++
++		if (bridgeName == NULL)
++			return -1;
++
++		br = get_vport_by_bridge(vport->dp, bridgeName);
++
++		if (br == NULL)
++			return -1;
++
++		ovs_dp_sysfs_add_if(vport, br);
++	}
+ 
+ 	err = ovs_vport_cmd_fill_info(vport, reply, genl_info_net(info),
+ 				      info->snd_portid, info->snd_seq, 0,
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index a270517a9..da6a16fcd 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -102,6 +102,18 @@ struct datapath {
+ 	struct hlist_head *meters;
+ };
+ 
++/**
++ * struct br_pair_t used to save the bridge - interface pairs.
++ * @brname: bridge name
++ * @prname: port name
++ * @next: pointer for the next pair
++ */
++ typedef struct br_pair_t {
++	char *brname;
++	char *prname;
++	struct br_pair_t* next;
++} br_pair_t;
++
+ /**
+  * struct ovs_skb_cb - OVS data in skb CB
+  * @input_vport: The original vport packet came in on. This value is cached
+@@ -242,6 +254,7 @@ extern struct notifier_block ovs_dp_device_notifier;
+ extern struct genl_family dp_vport_genl_family;
+ extern struct genl_multicast_group ovs_dp_vport_multicast_group;
+ extern int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
++extern br_pair_t* (*ovs_dp_getHead)(void);
+ 
+ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key);
+ void ovs_dp_detach_port(struct vport *);
+diff --git a/datapath/dp_notify.c b/datapath/dp_notify.c
+index 9bdd86c77..89e360e92 100644
+--- a/datapath/dp_notify.c
++++ b/datapath/dp_notify.c
+@@ -95,14 +95,14 @@ static int dp_device_event(struct notifier_block *unused, unsigned long event,
+ 			queue_work(system_wq, &ovs_net->dp_notify_work);
+ 		}
+ 		break;
+-/*
++
+ 	case NETDEV_CHANGENAME:
+ 		if (vport->port_no != OVSP_LOCAL) {
+ 			ovs_dp_sysfs_del_if(vport);
+-			ovs_dp_sysfs_add_if(vport);
++			ovs_dp_sysfs_add_if(vport, NULL);
+ 		}
+ 		break;
+-*/
++
+ 	}
+ 	return NOTIFY_DONE;
+ }
+diff --git a/datapath/dp_sysfs.h b/datapath/dp_sysfs.h
+index 526b0a130..eb81c2410 100644
+--- a/datapath/dp_sysfs.h
++++ b/datapath/dp_sysfs.h
+@@ -23,11 +23,11 @@ struct datapath;
+ struct vport;
+ 
+ /* dp_sysfs_dp.c */
+-int ovs_dp_sysfs_add_dp(struct datapath *dp);
++int ovs_dp_sysfs_add_dp(struct datapath *dp, struct vport *vport);
+ int ovs_dp_sysfs_del_dp(struct datapath *dp);
+ 
+ /* dp_sysfs_if.c */
+-int ovs_dp_sysfs_add_if(struct vport *p);
++int ovs_dp_sysfs_add_if(struct vport *p, struct vport *br);
+ int ovs_dp_sysfs_del_if(struct vport *p);
+ 
+ #ifdef CONFIG_SYSFS
+diff --git a/datapath/dp_sysfs_dp.c b/datapath/dp_sysfs_dp.c
+index 9684c8e24..83c6f8040 100644
+--- a/datapath/dp_sysfs_dp.c
++++ b/datapath/dp_sysfs_dp.c
+@@ -360,9 +360,8 @@ static struct attribute_group bridge_group = {
+  *   to hold links.  The ifobj exists in the same data structure
+  *   as its parent the bridge so reference counting works.
+  */
+-int ovs_dp_sysfs_add_dp(struct datapath *dp)
++int ovs_dp_sysfs_add_dp(struct datapath *dp, struct vport *vport)
+ {
+-	struct vport *vport = ovs_vport_ovsl(dp, OVSP_LOCAL);
+ 	struct kobject *kobj = vport->ops->get_kobj(vport);
+ 	int err;
+ 
+@@ -381,13 +380,13 @@ int ovs_dp_sysfs_add_dp(struct datapath *dp)
+ 	}
+ 
+ 	/* Create /sys/class/net/<devname>/brif directory. */
+-	err = kobject_add(&dp->ifobj, kobj, SYSFS_BRIDGE_PORT_SUBDIR);
+-	if (err) {
++	vport->ifobj = kobject_create_and_add(SYSFS_BRIDGE_PORT_SUBDIR, kobj);
++	if (!vport->ifobj) {
+ 		pr_info("%s: can't add kobject (directory) %s/%s\n",
+-			__func__, ovs_dp_name(dp), kobject_name(&dp->ifobj));
++			__func__, ovs_dp_name(dp), kobject_name(vport->ifobj));
+ 		goto out2;
+ 	}
+-	kobject_uevent(&dp->ifobj, KOBJ_ADD);
++	kobject_uevent(vport->ifobj, KOBJ_ADD);
+ 	return 0;
+ 
+  out2:
+diff --git a/datapath/dp_sysfs_if.c b/datapath/dp_sysfs_if.c
+index 38faa1917..02197d8ea 100644
+--- a/datapath/dp_sysfs_if.c
++++ b/datapath/dp_sysfs_if.c
+@@ -206,25 +206,15 @@ struct sysfs_ops ovs_brport_sysfs_ops = {
+  * Creates a brport subdirectory with bridge attributes.
+  * Puts symlink in bridge's brport subdirectory
+  */
+-int ovs_dp_sysfs_add_if(struct vport *p)
++int ovs_dp_sysfs_add_if(struct vport *p, struct vport *br)
+ {
+-	struct datapath *dp = p->dp;
+-	struct vport *local_port = ovs_vport_ovsl(dp, OVSP_LOCAL);
+ 	struct brport_attribute **a;
+ 	int err;
+ 
+ 	/* Create /sys/class/net/<devname>/brport directory. */
+-	if (!p->ops->get_kobj)
++	if (!p->ops->get_kobj(p))
+ 		return -ENOENT;
+ 
+-#ifdef CONFIG_NET_NS
+-	/* Due to bug in 2.6.32 kernel, sysfs_create_group() could panic
+-	 * in other namespace than init_net. Following check is to avoid it. */
+-
+-	if (!p->kobj.sd)
+-		return -ENOENT;
+-#endif
+-
+ 	err = kobject_add(&p->kobj, p->ops->get_kobj(p),
+ 			  SYSFS_BRIDGE_PORT_ATTR);
+ 	if (err)
+@@ -232,7 +222,7 @@ int ovs_dp_sysfs_add_if(struct vport *p)
+ 
+ 	/* Create symlink from /sys/class/net/<devname>/brport/bridge to
+ 	 * /sys/class/net/<bridgename>. */
+-	err = sysfs_create_link(&p->kobj, local_port->ops->get_kobj(local_port),
++	err = sysfs_create_link(&p->kobj, br->ops->get_kobj(br),
+ 		SYSFS_BRIDGE_PORT_LINK); /* "bridge" */
+ 	if (err)
+ 		goto err_del;
+@@ -246,11 +236,12 @@ int ovs_dp_sysfs_add_if(struct vport *p)
+ 
+ 	/* Create symlink from /sys/class/net/<bridgename>/brif/<devname> to
+ 	 * /sys/class/net/<devname>/brport.  */
+-	err = sysfs_create_link(&dp->ifobj, &p->kobj, p->ops->get_name(p));
++	err = sysfs_create_link(br->ifobj, &p->kobj, p->ops->get_name(p));
+ 	if (err)
+ 		goto err_del;
+ 	strcpy(p->linkname, p->ops->get_name(p));
+ 
++	p->ifobj = br->ifobj;
+ 	kobject_uevent(&p->kobj, KOBJ_ADD);
+ 
+ 	return 0;
+@@ -265,7 +256,7 @@ err:
+ int ovs_dp_sysfs_del_if(struct vport *p)
+ {
+ 	if (p->linkname[0]) {
+-		sysfs_remove_link(&p->dp->ifobj, p->linkname);
++		sysfs_remove_link(p->ifobj, p->linkname);
+ 		kobject_uevent(&p->kobj, KOBJ_REMOVE);
+ 		kobject_del(&p->kobj);
+ 		p->linkname[0] = '\0';
+diff --git a/datapath/vport.c b/datapath/vport.c
+index 03a455add..29b91b175 100644
+--- a/datapath/vport.c
++++ b/datapath/vport.c
+@@ -201,11 +201,10 @@ struct vport *ovs_vport_locate(const struct net *net, const char *name)
+ 
+ 	return NULL;
+ }
+-/*
++
+ static void release_vport(struct kobject *kobj)
+ {
+-	struct vport *p = container_of(kobj, struct vport, kobj);
+-	kfree(p);
++	pr_info("Open vSwitch release_vport\n");
+ }
+ 
+ static struct kobj_type brport_ktype = {
+@@ -214,7 +213,7 @@ static struct kobj_type brport_ktype = {
+ #endif
+ 	.release = release_vport
+ };
+-*/
++
+ /**
+  *	ovs_vport_alloc - allocate and initialize new vport
+  *
+@@ -249,8 +248,8 @@ struct vport *ovs_vport_alloc(int priv_size, const struct vport_ops *ops,
+ 
+ 	/* Initialize kobject for bridge.  This will be added as
+ 	 * /sys/class/net/<devname>/brport later, if sysfs is enabled. */
+-//	vport->kobj.kset = NULL;
+-//	kobject_init(&vport->kobj, &brport_ktype);
++	vport->kobj.kset = NULL;
++	kobject_init(&vport->kobj, &brport_ktype);
+ 
+ 	if (ovs_vport_set_upcall_portids(vport, parms->upcall_portids)) {
+ 		kfree(vport);
+@@ -277,7 +276,7 @@ void ovs_vport_free(struct vport *vport)
+ 	 * it is safe to use raw dereference.
+ 	 */
+ 	kfree(rcu_dereference_raw(vport->upcall_portids));
+-//	kobject_put(&vport->kobj);
++	kobject_put(&vport->kobj);
+ 	kfree(vport);
+ }
+ EXPORT_SYMBOL_GPL(ovs_vport_free);
+diff --git a/datapath/vport.h b/datapath/vport.h
+index a4a10e685..7cfa67000 100644
+--- a/datapath/vport.h
++++ b/datapath/vport.h
+@@ -73,6 +73,8 @@ struct vport_portids {
+  * @dev: Pointer to net_device.
+  * @dp: Datapath to which this port belongs.
+  * @kobj: Represents /sys/class/net/<devname>/brport.
++ * @ifobj: Use for bridges. Represents /sys/class/net/<devname>/brif.
++ * @type: serves for storing information about vport type. OVS_VPORT_TYPE_INTERNAL and so on.
+  * @upcall_portids: RCU protected 'struct vport_portids'.
+  * @port_no: Index into @dp's @ports array.
+  * @hash_node: Element in @dev_table hash table in vport.c.
+@@ -85,6 +87,8 @@ struct vport {
+ 	struct net_device *dev;
+ 	struct datapath	*dp;
+ 	struct kobject kobj;
++	struct kobject *ifobj;
++	int type;
+ 	char linkname[IFNAMSIZ];
+ 	struct vport_portids __rcu *upcall_portids;
+ 	u16 port_no;

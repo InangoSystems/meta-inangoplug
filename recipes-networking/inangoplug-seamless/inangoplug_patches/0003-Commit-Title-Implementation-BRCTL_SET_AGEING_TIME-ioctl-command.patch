@@ -1,0 +1,265 @@
+From 7288f1bf431b9c0e862d4a89c5a272f063c42f2a Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Tue, 2 Mar 2021 00:43:50 +0200
+Subject: [PATCH] Commit Title: Implementation BRCTL_SET_AGEING_TIME ioctl
+ command
+
+BugID: 23155
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description: Added support of functionality for 6 ioctl commands in brcompat module.
+---
+ datapath/brcompat_main.c               | 39 +++++++++++++++
+ include/openvswitch/brcompat-netlink.h |  7 +++
+ vswitchd/ovs-brcompatd.c               | 87 +++++++++++++++++++++++++++++++---
+ 3 files changed, 126 insertions(+), 7 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 316da65bf..337d36236 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -328,6 +328,28 @@ nla_put_failure:
+ 	return -ENOMEM;
+ }
+ 
++static int brc_set_ulong_val_cmd(struct net_device *dev, int oper, unsigned long param)
++{
++	struct sk_buff *request;
++	int err;
++
++	request = brc_make_request(oper, dev->name, NULL);
++	if (!request)
++		return -ENOMEM;
++	if (nla_put_u64_64bit(request, BRC_GENL_A_ULONG_VAL, param, BRC_GENL_A_PAD))
++		goto nla_put_failure;
++
++	rtnl_unlock();
++	err = brc_send_simple_command(dev_net(dev), request);
++	rtnl_lock();
++
++	return err;
++
++nla_put_failure:
++	kfree_skb(request);
++	return -ENOMEM;
++}
++
+ /* Legacy ioctl's through SIOCDEVPRIVATE.  Called with rtnl_lock. */
+ static int old_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+ {
+@@ -351,6 +373,23 @@ static int old_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+ 	case BRCTL_GET_FDB_ENTRIES:
+ 		return brc_get_fdb_entries(dev, (void __user *)args[1],
+ 					   args[2], args[3]);
++	case BRCTL_SET_AGEING_TIME:
++		return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_AGEING_TIME, args[1] / 100);
++
++	case BRCTL_SET_BRIDGE_FORWARD_DELAY:
++		return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_BRIDGE_FORWARD_DELAY, args[1] / 100);
++
++	case BRCTL_SET_BRIDGE_HELLO_TIME:
++		return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_BRIDGE_HELLO_TIME, args[1] / 100);
++
++	case BRCTL_SET_BRIDGE_MAX_AGE:
++		return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_BRIDGE_MAX_AGE, args[1] / 100);
++
++	case BRCTL_SET_BRIDGE_PRIORITY:
++		return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_BRIDGE_PRIORITY, args[1]);
++
++	case BRCTL_SET_BRIDGE_STP_STATE:
++		return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_BRIDGE_STP_STATE, args[1]);
+ 	}
+ 
+ 	return -EOPNOTSUPP;
+diff --git a/include/openvswitch/brcompat-netlink.h b/include/openvswitch/brcompat-netlink.h
+index 3bf42c58d..a1155e5d1 100644
+--- a/include/openvswitch/brcompat-netlink.h
++++ b/include/openvswitch/brcompat-netlink.h
+@@ -71,6 +71,7 @@ enum {
+     /* BRC_GENL_C_DP_RESULT. */
+     BRC_GENL_A_FDB_DATA,    /* U: FDB records. */
+     BRC_GENL_A_IFINDEXES,   /* U: "int" ifindexes of bridges or ports. */
++    BRC_GENL_A_ULONG_VAL,   /* K: "unsigned long" Use in order to send parametrs to user space. */
+     BRC_GENL_A_PAD,
+     __BRC_GENL_A_MAX,
+     BRC_GENL_A_MAX = __BRC_GENL_A_MAX - 1
+@@ -93,6 +94,12 @@ enum brc_genl_command {
+     BRC_GENL_C_FDB_QUERY,    /* K: Read records from forwarding database. */
+     BRC_GENL_C_GET_BRIDGES, /* K: Get ifindexes of all bridges. */
+     BRC_GENL_C_GET_PORTS,   /* K: Get ifindexes of all ports on a bridge. */
++    BRC_GENL_C_SET_AGEING_TIME,   /* K: Set  the  bridge  ageing  time. */
++    BRC_GENL_C_SET_BRIDGE_FORWARD_DELAY,   /* K: Set the bridge forward delay. */
++    BRC_GENL_C_SET_BRIDGE_HELLO_TIME,   /* K: Set  the  bridge  the hello interval. */
++    BRC_GENL_C_SET_BRIDGE_MAX_AGE,   /* K: Set  the  bridge  max  age. */
++    BRC_GENL_C_SET_BRIDGE_PRIORITY,   /* K: The bridge’s relative priority value for determining the root bridge. */
++    BRC_GENL_C_SET_BRIDGE_STP_STATE,   /* K: Set  the  bridge stp state. */
+ 
+     __BRC_GENL_C_MAX,
+     BRC_GENL_C_MAX = __BRC_GENL_C_MAX - 1
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index a7c5e4383..495166d9c 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -249,13 +249,14 @@ static const struct nl_policy brc_dp_policy[] = {
+ 
+ static int
+ parse_command(struct ofpbuf *buffer, uint32_t *seq, const char **br_name,
+-              const char **port_name, uint64_t *count, uint64_t *skip)
++              const char **port_name, uint64_t *count, uint64_t *skip, uint64_t *ulong_param)
+ {
+     static const struct nl_policy policy[] = {
+         [BRC_GENL_A_DP_NAME] = { .type = NL_A_STRING, .optional = true },
+         [BRC_GENL_A_PORT_NAME] = { .type = NL_A_STRING, .optional = true },
+         [BRC_GENL_A_FDB_COUNT] = { .type = NL_A_U64, .optional = true },
+         [BRC_GENL_A_FDB_SKIP] = { .type = NL_A_U64, .optional = true },
++        [BRC_GENL_A_ULONG_VAL] = { .type = NL_A_U64, .optional = true },
+     };
+     struct nlattr *attrs[ARRAY_SIZE(policy)];
+ 
+@@ -264,7 +265,8 @@ parse_command(struct ofpbuf *buffer, uint32_t *seq, const char **br_name,
+         || (br_name && !attrs[BRC_GENL_A_DP_NAME])
+         || (port_name && !attrs[BRC_GENL_A_PORT_NAME])
+         || (count && !attrs[BRC_GENL_A_FDB_COUNT])
+-        || (skip && !attrs[BRC_GENL_A_FDB_SKIP])) {
++        || (skip && !attrs[BRC_GENL_A_FDB_SKIP])
++        || (ulong_param && !attrs[BRC_GENL_A_ULONG_VAL])) {
+         return EINVAL;
+     }
+ 
+@@ -281,6 +283,9 @@ parse_command(struct ofpbuf *buffer, uint32_t *seq, const char **br_name,
+     if (skip) {
+         *skip = nl_attr_get_u64(attrs[BRC_GENL_A_FDB_SKIP]);
+     }
++    if (ulong_param) {
++        *ulong_param = nl_attr_get_u64(attrs[BRC_GENL_A_ULONG_VAL]);
++    }
+     return 0;
+ }
+ 
+@@ -325,7 +330,7 @@ handle_bridge_cmd(struct ofpbuf *buffer, bool add)
+     uint32_t seq;
+     int error;
+ 
+-    error = parse_command(buffer, &seq, &br_name, NULL, NULL, NULL);
++    error = parse_command(buffer, &seq, &br_name, NULL, NULL, NULL, NULL);
+     if (!error) {
+         const char *vsctl_cmd = add ? "add-br" : "del-br";
+         const char *brctl_cmd = add ? "addbr" : "delbr";
+@@ -352,7 +357,7 @@ handle_port_cmd(struct ofpbuf *buffer, bool add)
+     uint32_t seq;
+     int error;
+ 
+-    error = parse_command(buffer, &seq, &br_name, &port_name, NULL, NULL);
++    error = parse_command(buffer, &seq, &br_name, &port_name, NULL, NULL, NULL);
+     if (!error) {
+         const char *vsctl_cmd = add ? "add-port" : "del-port";
+         const char *brctl_cmd = add ? "addif" : "delif";
+@@ -458,7 +463,7 @@ handle_fdb_query_cmd(struct ofpbuf *buffer)
+     int error;
+ 
+     /* Parse the command received from brcompat. */
+-    error = parse_command(buffer, &seq, &linux_name, NULL, &count, &skip);
++    error = parse_command(buffer, &seq, &linux_name, NULL, &count, &skip, NULL);
+     if (error) {
+         return error;
+     }
+@@ -615,7 +620,7 @@ handle_get_bridges_cmd(struct ofpbuf *buffer)
+      *
+      * The command doesn't actually have any arguments, but we need the
+      * sequence number to send the reply. */
+-    error = parse_command(buffer, &seq, NULL, NULL, NULL, NULL);
++    error = parse_command(buffer, &seq, NULL, NULL, NULL, NULL, NULL);
+     if (error) {
+         return error;
+     }
+@@ -639,7 +644,7 @@ handle_get_ports_cmd(struct ofpbuf *buffer)
+     int error;
+ 
+     /* Parse Netlink command. */
+-    error = parse_command(buffer, &seq, &linux_name, NULL, NULL, NULL);
++    error = parse_command(buffer, &seq, &linux_name, NULL, NULL, NULL, NULL);
+     if (error) {
+         return error;
+     }
+@@ -655,6 +660,50 @@ handle_get_ports_cmd(struct ofpbuf *buffer)
+     return 0;
+ }
+ 
++static int
++handle_set_ulong_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
++{
++    const char *br_name;
++    uint64_t param;
++    uint32_t seq;
++    int error;
++
++    error = parse_command(buffer, &seq, &br_name, NULL, NULL, NULL, &param);
++
++    if (!error) {
++        if (!run_vsctl(vsctl_program, VSCTL_OPTIONS,
++                       "--", "set", "Bridge", br_name, xasprintf("other_config:%s=%llu", sub_cmd, param),
++                       "--", "comment", "ovs-brcompatd:", xasprintf("%s", sub_cmd),
++                       br_name, xasprintf("%llu", param), (char *) NULL)) {
++            error = EINVAL;
++        }
++        send_simple_reply(seq, error);
++    }
++    return error;
++}
++
++static int
++handle_set_boolean_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
++{
++    const char *br_name;
++    uint64_t param;
++    uint32_t seq;
++    int error;
++
++    error = parse_command(buffer, &seq, &br_name, NULL, NULL, NULL, &param);
++
++    if (!error) {
++        if (!run_vsctl(vsctl_program, VSCTL_OPTIONS,
++                       "--", "set", "Bridge", br_name, xasprintf("%s=%s", sub_cmd, param ? "true" : "false"),
++                       "--", "comment", "ovs-brcompatd:", xasprintf("%s", sub_cmd),
++                       br_name, xasprintf("%s", param ? "true" : "false"), (char *) NULL)) {
++            error = EINVAL;
++        }
++        send_simple_reply(seq, error);
++    }
++    return error;
++}
++
+ static bool
+ brc_recv_update__(struct ofpbuf *buffer)
+ {
+@@ -756,6 +805,30 @@ brc_recv_update(void)
+         handle_get_ports_cmd(&buffer);
+         break;
+ 
++    case BRC_GENL_C_SET_AGEING_TIME:
++        handle_set_ulong_val_cmd(&buffer, "mac-aging-time");
++        break;
++
++    case BRC_GENL_C_SET_BRIDGE_FORWARD_DELAY:
++        handle_set_ulong_val_cmd(&buffer, "stp-forward-delay");
++        break;
++
++    case BRC_GENL_C_SET_BRIDGE_HELLO_TIME:
++        handle_set_ulong_val_cmd(&buffer, "stp-hello-time");
++        break;
++
++    case BRC_GENL_C_SET_BRIDGE_MAX_AGE:
++        handle_set_ulong_val_cmd(&buffer, "stp-max-age");
++        break;
++
++    case BRC_GENL_C_SET_BRIDGE_PRIORITY:
++        handle_set_ulong_val_cmd(&buffer, "stp-priority");
++        break;
++
++    case BRC_GENL_C_SET_BRIDGE_STP_STATE:
++        handle_set_boolean_val_cmd(&buffer, "stp_enable");
++        break;
++
+     default:
+         VLOG_WARN_RL(&rl, "received unknown brc netlink command: %d\n",
+                      genlmsghdr->cmd);

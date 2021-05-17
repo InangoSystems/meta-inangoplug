@@ -1,0 +1,10 @@
+[Unit]
+Description=Catastrophic Handler application
+Requires=openvswitch.service
+After=openvswitch.service
+
+[Service]
+ExecStart=/usr/bin/chandler
+
+[Install]
+WantedBy=multi-user.target
