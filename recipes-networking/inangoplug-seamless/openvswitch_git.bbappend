@@ -6,7 +6,8 @@ RDEPENDS_${PN} += " ${PN}-brcompat ${PN}-testcontroller "
 FILESEXTRAPATHS_append := "${THISDIR}/inangoplug_files:"
 
 SRC_URI_append = " file://0001-launch-rsc-server-arm.patch \
-                  file://ovs-brcompatd.service \
+                   file://ovs-brcompatd.service \
+                   file://ovsdb-idlc.in-fix-dict-change-during-iteration.patch \
                  "
 
 PACKAGECONFIG += "pp-offload"
@@ -54,5 +55,14 @@ do_install_append_class-target() {
     rm -rf ${D}${libdir}/libovn-2.11.so.*
 }
 
-do_configure[depends] += "virtual/kernel:do_shared_workdir"
-do_configure[depends] += "ppdrv-mod:do_make_scripts"
+# We don't need run-time configuration, since rootfs is read-only.
+# Moreover, we remove 'ovs-pki'.
+unset pkg_postinst_ontarget_${PN}-pki
+unset pkg_postinst_ontarget_${PN}-testcontroller
+
+inherit module-base
+do_make_scripts ??= ":"
+do_make_scripts[func] = "1"
+addtask make_scripts after do_patch before do_compile
+do_make_scripts[lockfiles] = "${TMPDIR}/kernel-scripts.lock"
+do_make_scripts[depends] += "virtual/kernel:do_shared_workdir"
