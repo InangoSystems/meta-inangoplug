@@ -1,0 +1,28 @@
+From bc13b1858f27d3349181d4036adeb33d0c4820ed Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Wed, 9 Jun 2021 22:49:37 +0500
+Subject: [PATCH] Commit Title          : Fix exact match checker
+
+BugID                 : 23903
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Fix validation of nw_frag option in exactl matches (for exact match
+it's should be non zero)
+---
+ ofproto/ofproto.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ofproto/ofproto.c b/ofproto/ofproto.c
+index 6665c9f83..535fc6a30 100644
+--- a/ofproto/ofproto.c
++++ b/ofproto/ofproto.c
+@@ -9155,7 +9155,7 @@ is_exact_match(struct rule *rule, const struct rule_actions *actions)
+      * result = result && IS_ALL_ONES(masks->nw_tos);
+      */
+ 
+-    result = result && IS_ALL_ONES(masks->nw_frag);
++    result = result && (bool) masks->nw_frag;
+ 
+     if (!result) {
+         return false;

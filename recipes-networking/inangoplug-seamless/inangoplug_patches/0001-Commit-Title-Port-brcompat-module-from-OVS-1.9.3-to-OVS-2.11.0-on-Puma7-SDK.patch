@@ -1,4 +1,4 @@
-From 9bb258db9b7408563f2e66d7920e90c18a46ba7e Mon Sep 17 00:00:00 2001
+From f4cf78670a5a9653db4e556ac77ad540643c694d Mon Sep 17 00:00:00 2001
 From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
 Date: Wed, 17 Feb 2021 13:46:31 +0200
 Subject: [PATCH] Commit Title: Port brcompat module from OVS 1.9.3 to OVS
@@ -14,22 +14,20 @@ Description: Added new module brcompat, user space daemon ovs-brcompatd and chan
  datapath/Modules.mk                             |   7 +
  datapath/brcompat_main.c                        | 579 +++++++++++++++
  datapath/compat.h                               |  20 +
- datapath/conntrack.c                            |   1 +
  datapath/datapath.c                             | 116 +++
- datapath/datapath.h                             |   4 +
+ datapath/datapath.h                             |   3 +
  datapath/dp_notify.c                            |  26 +-
  datapath/dp_sysfs.h                             |  38 +
  datapath/dp_sysfs_dp.c                          | 419 +++++++++++
  datapath/dp_sysfs_if.c                          | 275 +++++++
  datapath/linux/Makefile.main.in                 |   1 +
- datapath/linux/Modules.mk                       |   4 +-
+ datapath/linux/Modules.mk                       |   1 +
  datapath/linux/compat/genetlink-brcompat.c      |  10 +
  datapath/linux/compat/genetlink.inc             | 148 ++++
  datapath/linux/compat/geneve.c                  |   3 +-
  datapath/linux/compat/include/linux/netdevice.h |   6 +
- datapath/linux/compat/ip6_gre.c                 |   8 +-
- datapath/linux/compat/ip_tunnel.c               |   6 +-
- datapath/linux/compat/nf_conntrack_reasm.c      |  15 +-
+ datapath/linux/compat/ip6_gre.c                 |   4 +-
+ datapath/linux/compat/nf_conntrack_reasm.c      |  11 +-
  datapath/linux/compat/vxlan.c                   |   3 +-
  datapath/vport-internal_dev.c                   |  19 +
  datapath/vport-netdev.c                         |  70 ++
@@ -51,15 +49,15 @@ Description: Added new module brcompat, user space daemon ovs-brcompatd and chan
  vswitchd/automake.mk                            |  14 +-
  vswitchd/ovs-brcompatd.8.in                     |  52 ++
  vswitchd/ovs-brcompatd.c                        | 948 ++++++++++++++++++++++++
- 42 files changed, 3193 insertions(+), 51 deletions(-)
+ 40 files changed, 3182 insertions(+), 43 deletions(-)
 
 diff --git a/acinclude.m4 b/acinclude.m4
-index 9d6b68226..9d7f0f003 100644
+index c1470ccc6..02cb09e82 100644
 --- a/acinclude.m4
 +++ b/acinclude.m4
-@@ -683,7 +683,10 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
- 
-   OVS_GREP_IFELSE([$KSRC/include/linux/random.h], [prandom_u32])
+@@ -765,7 +765,10 @@ AC_DEFUN([OVS_CHECK_LINUX_COMPAT], [
+                   [prandom_u32[[\(]]],
+                   [OVS_DEFINE([HAVE_PRANDOM_U32])])
    OVS_GREP_IFELSE([$KSRC/include/linux/random.h], [prandom_u32_max])
 -
 +  OVS_GREP_IFELSE([$KSRC/include/linux/prandom.h],
@@ -70,7 +68,7 @@ index 9d6b68226..9d7f0f003 100644
    OVS_GREP_IFELSE([$KSRC/include/net/rtnetlink.h], [name_assign_type])
    OVS_GREP_IFELSE([$KSRC/include/net/rtnetlink.h], [rtnl_create_link.*src_net],
 diff --git a/configure.ac b/configure.ac
-index 8a05870a4..407f8c064 100644
+index 92b52f671..1db8c049b 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -123,6 +123,7 @@ OVS_CHECK_VALGRIND
@@ -736,20 +734,8 @@ index b820251a4..a26358a76 100644
  #ifdef HAVE_NF_IPV6_OPS_FRAGMENT
  static inline int __init ip6_output_init(void) { return 0; }
  static inline void ip6_output_exit(void) { }
-diff --git a/datapath/conntrack.c b/datapath/conntrack.c
-index a7dc9e0c3..69bda5a9c 100644
---- a/datapath/conntrack.c
-+++ b/datapath/conntrack.c
-@@ -31,6 +31,7 @@
- #include <net/netfilter/nf_conntrack_seqadj.h>
- #include <net/netfilter/nf_conntrack_zones.h>
- #include <net/netfilter/ipv6/nf_defrag_ipv6.h>
-+#include <net/ipv6_frag.h>
- 
- #ifdef CONFIG_NF_NAT_NEEDED
- #include <linux/netfilter/nf_nat.h>
 diff --git a/datapath/datapath.c b/datapath/datapath.c
-index 2febcb3f2..c9f2818bd 100644
+index 853bfb5af..b2226a215 100644
 --- a/datapath/datapath.c
 +++ b/datapath/datapath.c
 @@ -65,6 +65,10 @@
@@ -763,7 +749,7 @@ index 2febcb3f2..c9f2818bd 100644
  static struct genl_family dp_packet_genl_family;
  static struct genl_family dp_flow_genl_family;
  static struct genl_family dp_datapath_genl_family;
-@@ -172,6 +176,102 @@ static int get_dpifindex(const struct datapath *dp)
+@@ -173,6 +177,102 @@ static int get_dpifindex(const struct datapath *dp)
  	return ifindex;
  }
  
@@ -866,7 +852,7 @@ index 2febcb3f2..c9f2818bd 100644
  static void destroy_dp_rcu(struct rcu_head *rcu)
  {
  	struct datapath *dp = container_of(rcu, struct datapath, rcu);
-@@ -179,6 +279,7 @@ static void destroy_dp_rcu(struct rcu_head *rcu)
+@@ -180,6 +280,7 @@ static void destroy_dp_rcu(struct rcu_head *rcu)
  	ovs_flow_tbl_destroy(&dp->table);
  	free_percpu(dp->stats_percpu);
  	kfree(dp->ports);
@@ -874,7 +860,7 @@ index 2febcb3f2..c9f2818bd 100644
  	ovs_meters_exit(dp);
  	kfree(dp);
  }
-@@ -214,6 +315,7 @@ static struct vport *new_vport(const struct vport_parms *parms)
+@@ -215,6 +316,7 @@ static struct vport *new_vport(const struct vport_parms *parms)
  		struct hlist_head *head = vport_hash_bucket(dp, vport->port_no);
  
  		hlist_add_head_rcu(&vport->dp_hash_node, head);
@@ -882,7 +868,7 @@ index 2febcb3f2..c9f2818bd 100644
  	}
  	return vport;
  }
-@@ -222,6 +324,11 @@ void ovs_dp_detach_port(struct vport *p)
+@@ -223,6 +325,11 @@ void ovs_dp_detach_port(struct vport *p)
  {
  	ASSERT_OVSL();
  
@@ -894,7 +880,7 @@ index 2febcb3f2..c9f2818bd 100644
  	/* First drop references to device. */
  	hlist_del_rcu(&p->dp_hash_node);
  
-@@ -1581,6 +1688,11 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
+@@ -1611,6 +1718,11 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
  	if (dp == NULL)
  		goto err_free_reply;
  
@@ -906,7 +892,7 @@ index 2febcb3f2..c9f2818bd 100644
  	ovs_dp_set_net(dp, sock_net(skb->sk));
  
  	/* Allocate table. */
-@@ -1646,6 +1758,7 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
+@@ -1676,6 +1788,7 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
  
  	ovs_net = net_generic(ovs_dp_get_net(dp), ovs_net_id);
  	list_add_tail_rcu(&dp->list_node, &ovs_net->dps);
@@ -914,7 +900,7 @@ index 2febcb3f2..c9f2818bd 100644
  
  	ovs_unlock();
  
-@@ -1683,6 +1796,7 @@ static void __dp_destroy(struct datapath *dp)
+@@ -1713,6 +1826,7 @@ static void __dp_destroy(struct datapath *dp)
  				ovs_dp_detach_port(vport);
  	}
  
@@ -922,7 +908,7 @@ index 2febcb3f2..c9f2818bd 100644
  	list_del_rcu(&dp->list_node);
  
  	/* OVSP_LOCAL is datapath internal port. We need to make sure that
-@@ -2057,6 +2171,8 @@ restart:
+@@ -2099,6 +2213,8 @@ restart:
  		goto exit_unlock_free;
  	}
  
@@ -932,7 +918,7 @@ index 2febcb3f2..c9f2818bd 100644
  				      info->snd_portid, info->snd_seq, 0,
  				      OVS_VPORT_CMD_NEW);
 diff --git a/datapath/datapath.h b/datapath/datapath.h
-index ee7666215..a270517a9 100644
+index 3bffa1dcb..ebca953a8 100644
 --- a/datapath/datapath.h
 +++ b/datapath/datapath.h
 @@ -29,6 +29,7 @@
@@ -959,14 +945,6 @@ index ee7666215..a270517a9 100644
  
  	/* Flow table. */
  	struct flow_table table;
-@@ -238,6 +241,7 @@ static inline struct datapath *get_dp(struct net *net, int dp_ifindex)
- extern struct notifier_block ovs_dp_device_notifier;
- extern struct genl_family dp_vport_genl_family;
- extern struct genl_multicast_group ovs_dp_vport_multicast_group;
-+extern int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
- 
- void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key);
- void ovs_dp_detach_port(struct vport *);
 diff --git a/datapath/dp_notify.c b/datapath/dp_notify.c
 index 932a37ed2..b4c844100 100644
 --- a/datapath/dp_notify.c
@@ -1756,7 +1734,7 @@ index 000000000..38faa1917
 +}
 +#endif /* CONFIG_SYSFS */
 diff --git a/datapath/linux/Makefile.main.in b/datapath/linux/Makefile.main.in
-index 328bbfbb6..9b16d2bc2 100644
+index 6db4aa3ab..d3d3a5d67 100644
 --- a/datapath/linux/Makefile.main.in
 +++ b/datapath/linux/Makefile.main.in
 @@ -4,6 +4,7 @@ export srcdir = @abs_srcdir@
@@ -1768,16 +1746,12 @@ index 328bbfbb6..9b16d2bc2 100644
  include $(srcdir)/../Modules.mk
  include $(srcdir)/Modules.mk
 diff --git a/datapath/linux/Modules.mk b/datapath/linux/Modules.mk
-index e31d78447..936250c21 100644
+index 63a5cbae4..2fa0f311f 100644
 --- a/datapath/linux/Modules.mk
 +++ b/datapath/linux/Modules.mk
-@@ -112,5 +112,7 @@ openvswitch_headers += \
- 	linux/compat/include/net/netfilter/ipv6/nf_defrag_ipv6.h \
- 	linux/compat/include/net/sctp/checksum.h \
- 	linux/compat/include/net/erspan.h \
--	linux/compat/include/uapi/linux/netfilter.h
-+	linux/compat/include/uapi/linux/netfilter.h \
-+	linux/compat/genetlink.inc
+@@ -121,3 +121,4 @@ openvswitch_headers += \
+ 	linux/compat/include/linux/overflow.h \
+ 	linux/compat/include/linux/rbtree.h
  EXTRA_DIST += linux/compat/build-aux/export-check-whitelist
 +
 diff --git a/datapath/linux/compat/genetlink-brcompat.c b/datapath/linux/compat/genetlink-brcompat.c
@@ -1972,7 +1946,7 @@ index c044b1489..71c263304 100644
  		netdev_dbg(dev, "circular route to %pI6\n", &fl6->daddr);
  		dst_release(dst);
 diff --git a/datapath/linux/compat/include/linux/netdevice.h b/datapath/linux/compat/include/linux/netdevice.h
-index cf68ed523..5d37dfab1 100644
+index 126ff23cf..0bd859c96 100644
 --- a/datapath/linux/compat/include/linux/netdevice.h
 +++ b/datapath/linux/compat/include/linux/netdevice.h
 @@ -26,6 +26,12 @@ struct net;
@@ -1989,10 +1963,10 @@ index cf68ed523..5d37dfab1 100644
  #define to_net_dev(class) container_of(class, struct net_device, NETDEV_DEV_MEMBER)
  #endif
 diff --git a/datapath/linux/compat/ip6_gre.c b/datapath/linux/compat/ip6_gre.c
-index 2ffdda5e1..96743b10a 100644
+index 7fd345309..bbb9731e6 100644
 --- a/datapath/linux/compat/ip6_gre.c
 +++ b/datapath/linux/compat/ip6_gre.c
-@@ -1096,7 +1096,7 @@ static netdev_tx_t ip6erspan_tunnel_xmit(struct sk_buff *skb,
+@@ -989,7 +989,7 @@ static netdev_tx_t ip6erspan_tunnel_xmit(struct sk_buff *skb,
  					 struct net_device *dev)
  {
  	struct ip6_tnl *t = netdev_priv(dev);
@@ -2001,42 +1975,20 @@ index 2ffdda5e1..96743b10a 100644
  	struct ip_tunnel_info *tun_info;
  	const struct ip_tunnel_key *key;
  	struct net_device_stats *stats;
-@@ -1193,10 +1193,10 @@ static netdev_tx_t ip6erspan_tunnel_xmit(struct sk_buff *skb,
+@@ -1086,7 +1086,7 @@ static netdev_tx_t ip6erspan_tunnel_xmit(struct sk_buff *skb,
  
  	/* Push GRE header. */
  	gre_build_header(skb, &tpi, 8);
 -
 +// fixed compiler error: too few arguments to function ‘dst->ops->update_pmtu’, don't relate to brcompate.
  	/* TooBig packet may have updated dst->dev's mtu */
--	if (!t->parms.collect_md && dst && dst_mtu(dst) > dst->dev->mtu)
--		dst->ops->update_pmtu(dst, NULL, skb, dst->dev->mtu);
-+//	if (!t->parms.collect_md && dst && dst_mtu(dst) > dst->dev->mtu)
-+//		dst->ops->update_pmtu(dst, NULL, skb, dst->dev->mtu);
- 
- 	err = ip6_tnl_xmit(skb, dev, dsfield, &fl6, encap_limit, &mtu,
- 			   NEXTHDR_GRE);
-diff --git a/datapath/linux/compat/ip_tunnel.c b/datapath/linux/compat/ip_tunnel.c
-index d16e60fbf..d1de24f7e 100644
---- a/datapath/linux/compat/ip_tunnel.c
-+++ b/datapath/linux/compat/ip_tunnel.c
-@@ -264,9 +264,9 @@ static int rpl_tnl_update_pmtu(struct net_device *dev, struct sk_buff *skb,
- 					- sizeof(struct iphdr) - tunnel->hlen;
- 	else
- 		mtu = skb_dst(skb) ? dst_mtu(skb_dst(skb)) : dev->mtu;
--
--	if (skb_dst(skb))
--		skb_dst(skb)->ops->update_pmtu(skb_dst(skb), NULL, skb, mtu);
-+// fixed compiler error: too few arguments to function skb_dst, don't relate to brcompate.
-+//	if (skb_dst(skb))
-+//		skb_dst(skb)->ops->update_pmtu(skb_dst(skb), NULL, skb, mtu);
- 
- 	if (skb->protocol == htons(ETH_P_IP)) {
- 		if (!skb_is_gso(skb) &&
+ 	if (!t->parms.collect_md && dst && dst_mtu(dst) > dst->dev->mtu)
+ #ifndef HAVE_DST_OPS_CONFIRM_NEIGH
 diff --git a/datapath/linux/compat/nf_conntrack_reasm.c b/datapath/linux/compat/nf_conntrack_reasm.c
-index 9d77d9827..7d0378389 100644
+index ced9fba98..7b97d2984 100644
 --- a/datapath/linux/compat/nf_conntrack_reasm.c
 +++ b/datapath/linux/compat/nf_conntrack_reasm.c
-@@ -51,6 +51,7 @@
+@@ -52,6 +52,7 @@
  #include <linux/netfilter.h>
  #include <linux/netfilter_ipv6.h>
  #include <linux/kernel.h>
@@ -2044,7 +1996,7 @@ index 9d77d9827..7d0378389 100644
  #include <linux/module.h>
  #include <net/netfilter/ipv6/nf_defrag_ipv6.h>
  #include <net/netns/generic.h>
-@@ -70,6 +71,14 @@ struct nf_ct_frag6_skb_cb
+@@ -71,6 +72,14 @@ struct nf_ct_frag6_skb_cb
  
  static struct inet_frags nf_frags;
  
@@ -2059,27 +2011,15 @@ index 9d77d9827..7d0378389 100644
  static struct netns_frags *get_netns_frags6_from_net(struct net *net)
  {
  #ifdef HAVE_INET_FRAG_LRU_MOVE
-@@ -136,9 +145,9 @@ static void nf_ct_frag6_expire(unsigned long data)
+@@ -137,7 +146,7 @@ static void nf_ct_frag6_expire(unsigned long data)
  	net = get_net_from_netns_frags6(fq->q.net);
  
  #ifdef HAVE_INET_FRAGS_RND
 -	ip6_expire_frag_queue(net, fq, &nf_frags);
 +	ip6frag_expire_frag_queue(net, fq, &nf_frags);
  #else
--	ip6_expire_frag_queue(net, fq);
-+	ip6frag_expire_frag_queue(net, fq);
- #endif
- }
- 
-@@ -686,7 +695,7 @@ int rpl_nf_ct_frag6_init(void)
- #else
- 	nf_frags.rhash_params = ip6_rhash_params;
- #endif
--	nf_frags.constructor = ip6_frag_init;
-+	nf_frags.constructor = ip6frag_init;
- 	nf_frags.destructor = NULL;
- 	nf_frags.qsize = sizeof(struct frag_queue);
- 	nf_frags.frag_expire = nf_ct_frag6_expire;
+ #ifdef HAVE_IPV6_FRAG_H
+ 	ip6frag_expire_frag_queue(net, fq);
 diff --git a/datapath/linux/compat/vxlan.c b/datapath/linux/compat/vxlan.c
 index 23118e8b6..286838cc0 100644
 --- a/datapath/linux/compat/vxlan.c
@@ -2102,7 +2042,7 @@ index 23118e8b6..286838cc0 100644
  	if (err < 0)
  		return ERR_PTR(err);
 diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
-index 0318f5852..8ca5e942c 100644
+index dbc200231..a3e9ca238 100644
 --- a/datapath/vport-internal_dev.c
 +++ b/datapath/vport-internal_dev.c
 @@ -109,6 +109,15 @@ static int internal_dev_change_mtu(struct net_device *dev, int new_mtu)
@@ -2258,7 +2198,7 @@ index 04ad190c9..6fb679d6b 100644
 +
  #endif /* vport_netdev.h */
 diff --git a/datapath/vport.c b/datapath/vport.c
-index ed7f23ec8..02404f045 100644
+index f929282dc..cbd2e8bc1 100644
 --- a/datapath/vport.c
 +++ b/datapath/vport.c
 @@ -202,6 +202,19 @@ struct vport *ovs_vport_locate(const struct net *net, const char *name)
@@ -2363,7 +2303,7 @@ index d630c34bc..a4a10e685 100644
  #ifndef USE_UPSTREAM_TUNNEL
  	int  (*fill_metadata_dst)(struct net_device *dev, struct sk_buff *skb);
 diff --git a/include/openvswitch/automake.mk b/include/openvswitch/automake.mk
-index aede51566..ff16e3466 100644
+index 73c346175..b94831cf5 100644
 --- a/include/openvswitch/automake.mk
 +++ b/include/openvswitch/automake.mk
 @@ -1,3 +1,5 @@
@@ -2774,13 +2714,13 @@ index 8c52820f6..1f42e851c 100644
 +
  #endif /* process.h */
 diff --git a/lib/socket-util.c b/lib/socket-util.c
-index 09daa3c90..78b2af877 100644
+index 4f1ffecf5..c8113bf6f 100644
 --- a/lib/socket-util.c
 +++ b/lib/socket-util.c
-@@ -1283,3 +1283,27 @@ wrap_sendmmsg(int fd, struct mmsghdr *msgs, unsigned int n, unsigned int flags)
+@@ -1337,3 +1337,27 @@ wrap_recvmmsg(int fd, struct mmsghdr *msgs, unsigned int n,
  }
  #endif
- #endif
+ #endif /* __linux__ */
 +
 +/* Returns a readable and writable fd for /dev/null, if successful, otherwise
 + * a negative errno value.  The caller must not close the returned fd (because
@@ -2806,7 +2746,7 @@ index 09daa3c90..78b2af877 100644
 +    return null_fd;
 +}
 diff --git a/lib/socket-util.h b/lib/socket-util.h
-index a65433d90..4db58c895 100644
+index 9ccb7d4cc..9f83a0638 100644
 --- a/lib/socket-util.h
 +++ b/lib/socket-util.h
 @@ -68,6 +68,7 @@ int fsync_parent_dir(const char *file_name);
@@ -2818,10 +2758,10 @@ index a65433d90..4db58c895 100644
  /* Default value of dscp bits for connection between controller and manager.
   * Value of IPTOS_PREC_INTERNETCONTROL = 0xc0 which is defined
 diff --git a/m4/openvswitch.m4 b/m4/openvswitch.m4
-index 41042c98e..b4e1f7cf2 100644
+index add3aabcc..e209223b8 100644
 --- a/m4/openvswitch.m4
 +++ b/m4/openvswitch.m4
-@@ -502,6 +502,26 @@ AC_DEFUN([OVS_CHECK_GROFF],
+@@ -429,6 +429,26 @@ AC_DEFUN([OVS_CHECK_GROFF],
       fi])
     AM_CONDITIONAL([HAVE_GROFF], [test "$ovs_cv_groff" = yes])])
  
@@ -2849,10 +2789,10 @@ index 41042c98e..b4e1f7cf2 100644
  dnl
  dnl Checks whether the compiler and linker support the C11
 diff --git a/manpages.mk b/manpages.mk
-index 5f43aa387..d24cc0585 100644
+index dc201484c..3e2cbf8b6 100644
 --- a/manpages.mk
 +++ b/manpages.mk
-@@ -282,6 +282,16 @@ lib/vconn-active.man:
+@@ -205,6 +205,16 @@ lib/vconn-active.man:
  lib/vconn-passive.man:
  lib/vlog.man:
  
@@ -2882,7 +2822,7 @@ index 04eaf9d05..22e307d96 100644
  /ovs-vswitchd.8
  /ovs-vswitchd.conf.db.5
 diff --git a/vswitchd/automake.mk b/vswitchd/automake.mk
-index abdbcc698..589d158fd 100644
+index 595d1e46a..4b7ec2a5d 100644
 --- a/vswitchd/automake.mk
 +++ b/vswitchd/automake.mk
 @@ -1,7 +1,11 @@

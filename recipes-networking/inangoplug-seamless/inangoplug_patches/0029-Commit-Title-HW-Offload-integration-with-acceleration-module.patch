@@ -1,0 +1,375 @@
+From 678ffd16170f57f717fb1bd84d4204927cef22f0 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Mon, 7 Jun 2021 18:51:15 +0300
+Subject: [PATCH] Commit Title          : HW Offload integration with
+ acceleration module
+
+BugID                 : 24389
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : First integration of HW Offload with acceleration module
+---
+ datapath/actions.c         |  9 +++++----
+ datapath/am_pp.c           | 46 ++++++++++++++++++++++------------------------
+ datapath/am_pp.h           | 29 +++--------------------------
+ datapath/flow.h            |  2 +-
+ datapath/linux/Kbuild.in   |  1 +
+ datapath/translate_dp_am.c | 36 +++++++++++++++++++++---------------
+ datapath/translate_dp_am.h | 16 +++-------------
+ 7 files changed, 56 insertions(+), 83 deletions(-)
+
+diff --git a/datapath/actions.c b/datapath/actions.c
+index d8f4e8b1b..e7e28a904 100644
+--- a/datapath/actions.c
++++ b/datapath/actions.c
+@@ -1303,7 +1303,8 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 	int rem;
+ 	bool flood_flow = is_flood_flow(key, attr, len);
+ 
+-	am_skb_preprocessing(SET_UNKNOWN, ufid, skb);
++	// TODO: Set correct action instead of PP_AM_SET_OUTPUT
++	am_skb_preprocessing(PP_AM_SET_OUTPUT, ufid, skb);
+ 
+ 	for (a = attr, rem = len; rem > 0;
+ 	     a = nla_next(a, &rem)) {
+@@ -1315,7 +1316,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			struct sk_buff *clone;
+ 
+ 			if (flood_flow) {
+-				am_skb_postprocessing(SET_FLOOD, ufid, skb);
++				am_skb_postprocessing(PP_AM_SET_FLOOD, ufid, skb);
+ 			}
+ 			/* Every output action needs a separate clone
+ 			 * of 'skb', In case the output action is the
+@@ -1323,7 +1324,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			 */
+ 			if (nla_is_last(a, rem)) {
+ 				if (!flood_flow) {
+-					am_skb_postprocessing(SET_OUTPUT, ufid, skb);
++					am_skb_postprocessing(PP_AM_SET_OUTPUT, ufid, skb);
+ 				}
+ 				do_output(dp, skb, port, key);
+ 				/* 'skb' has been used for output.
+@@ -1480,7 +1481,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			return err;
+ 		}
+ 	}
+-	am_skb_postprocessing(SET_DROP, ufid, skb);
++	am_skb_postprocessing(PP_AM_SET_DROP, ufid, skb);
+ 
+ 	consume_skb(skb);
+ 	return 0;
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index cb202c061..c6c3c0405 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -27,16 +27,16 @@
+ #include "am_pp.h"
+ #include "datapath.h"
+ 
+-static void update_flow_am_stats(struct sw_flow *flow, am_session_stats_t *stats)
++static void update_flow_am_stats(struct sw_flow *flow, struct pp_am_stats *stats)
+ {
+ 	flow->am_stats.packets = stats->packets;
+ 	flow->am_stats.bytes = stats->bytes;
+-	flow->am_stats.jiffies_last_used = stats->jiffies_last_used;
++	flow->am_stats.last_used = stats->last_used;
+ }
+ 
+ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_flag)
+ {
+-	struct am_session new_session;
++	struct pm_am_session new_session;
+ 	int err;
+ 
+ 	err = translate_to_am_session(dp, flow, &new_session);
+@@ -46,9 +46,9 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 	new_session.proactive_session = proactive_flag;
+ 	flow->acl_state = NOT_ACCELERATE;
+ 
+-//	err = send_create_to_am(&new_session);
++	err = pp_am_create_session(&new_session);
+ 
+-	if (err == OK)
++	if (err == PP_AM_OK)
+ 		flow->acl_state = ACCELERATED;
+ 
+ 	return err;
+@@ -56,16 +56,16 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 
+ int am_mod_session(struct datapath *dp, struct sw_flow *flow)
+ {
+-	struct am_session new_session;
++	struct pm_am_session new_session;
+ 	int err;
+ 
+ 	err = translate_to_am_session(dp, flow, &new_session);
+ 	if (err)
+ 		return err;
+ 
+-//	err = send_modify_to_am(&new_session);
++	err = pp_am_modify_session(&new_session);
+ 
+-	if (err != OK)
++	if (err != PP_AM_OK)
+ 		flow->acl_state = NOT_ACCELERATE;
+ 
+ 	return err;
+@@ -73,20 +73,18 @@ int am_mod_session(struct datapath *dp, struct sw_flow *flow)
+ 
+ int am_remove_session(struct sw_flow *flow)
+ {
+-	am_ufid_request_t request;
+-	am_session_stats_t response;
+-	int err = OK;
++	struct pp_am_stats response;
++	int err = PP_AM_OK;
+ 
+ 	if (flow->acl_state != ACCELERATED) {
+ 		return err;
+ 	}
+ 
+-	memcpy(&request.ufid, &flow->id, sizeof(struct sw_flow_id));
+-	memset(&response, 0, sizeof(am_session_stats_t));
++	memset(&response, 0, sizeof(struct pp_am_stats));
+ 
+-//	err = send_remove_to_am(&request, &response);
++	err = pp_am_delete_session((struct pp_am_flow_id *)&flow->id, &response);
+ 
+-	if (err != OK)
++	if (err != PP_AM_OK)
+ 		return err;
+ 
+ 	flow->acl_state = REMOVED;
+@@ -97,29 +95,29 @@ int am_remove_session(struct sw_flow *flow)
+ 
+ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *stats, unsigned long *used)
+ {
+-	am_ufid_request_t request;
+-	am_session_stats_t response;
++	struct pp_am_stats response;
+ 
+ 	if (flow->acl_state == ACCELERATED) {
+-		memcpy(&request.ufid, &flow->id, sizeof(struct sw_flow_id));
+-		memset(&response, 0, sizeof(am_session_stats_t));
++		memset(&response, 0, sizeof(struct pp_am_stats));
+ 
+-//		get_session_stats_from_am(&request, &response);
++		pp_am_get_session_stats((struct pp_am_flow_id *)&flow->id, &response);
+ 
+ 		update_flow_am_stats((struct sw_flow *)flow, &response);
+ 	}
+ 
+ 	stats->n_packets += flow->am_stats.packets;
+ 	stats->n_bytes += flow->am_stats.bytes;
+-	if (!*used || time_after(flow->am_stats.jiffies_last_used, *used)) {
+-			*used = flow->am_stats.jiffies_last_used;
++	if (!*used || time_after(flow->am_stats.last_used, *used)) {
++			*used = flow->am_stats.last_used;
+ 	}
+ }
+ 
+-void am_skb_preprocessing(enum SKB_action action, const struct sw_flow_id *ufid, struct sk_buff *skb)
++void am_skb_preprocessing(pp_am_skb_process_action action, const struct sw_flow_id *ufid, struct sk_buff *skb)
+ {
++	pp_am_skb_preprocess(action, (u32 *)ufid->ufid, skb);
+ }
+ 
+-void am_skb_postprocessing(enum SKB_action action, const struct sw_flow_id *ufid, struct sk_buff *skb)
++void am_skb_postprocessing(pp_am_skb_process_action action, const struct sw_flow_id *ufid, struct sk_buff *skb)
+ {
++	pp_am_skb_postprocess(action, (u32 *)ufid->ufid, skb);
+ }
+diff --git a/datapath/am_pp.h b/datapath/am_pp.h
+index 84705b610..9f01eca0c 100644
+--- a/datapath/am_pp.h
++++ b/datapath/am_pp.h
+@@ -24,17 +24,11 @@
+ #ifndef AM_PP_H
+ #define AM_PP_H 1
+ 
++#include "acceleration_module.h"
+ #include "flow.h"
+ 
+ struct datapath;
+ 
+-enum SKB_action {
+-    SET_UNKNOWN,
+-    SET_OUTPUT,
+-    SET_DROP,
+-    SET_FLOOD,
+-};
+-
+ enum acl_state {
+     ACCELERATED,
+     NOT_ACCELERATE,
+@@ -42,28 +36,11 @@ enum acl_state {
+     UNDEFINED
+ };
+ 
+-enum response_status {
+-    OK,
+-    NO_SESSIONS_LEFT,
+-    UNSUPPORTED_PARAM,
+-    GENERIC_FAIL
+-};
+-
+-typedef struct am_ufid_request {
+-    struct sw_flow_id ufid;
+-} am_ufid_request_t;
+-
+-typedef struct am_session_stats {
+-    u64 bytes;
+-    u64 packets;
+-    unsigned long jiffies_last_used;
+-} am_session_stats_t;
+-
+ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_flag);
+ int am_mod_session(struct datapath *dp, struct sw_flow *flow);
+ int am_remove_session(struct sw_flow *flow);
+ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *stats, unsigned long *used);
+-void am_skb_preprocessing(enum SKB_action action, const struct sw_flow_id *ufid, struct sk_buff *skb);
+-void am_skb_postprocessing(enum SKB_action action, const struct sw_flow_id *ufid, struct sk_buff *skb);
++void am_skb_preprocessing(pp_am_skb_process_action action, const struct sw_flow_id *ufid, struct sk_buff *skb);
++void am_skb_postprocessing(pp_am_skb_process_action action, const struct sw_flow_id *ufid, struct sk_buff *skb);
+ 
+ #endif /* am_pp.h */
+diff --git a/datapath/flow.h b/datapath/flow.h
+index 38c7b5096..a5c0c80e2 100644
+--- a/datapath/flow.h
++++ b/datapath/flow.h
+@@ -234,7 +234,7 @@ struct sw_flow {
+ 	struct {
+ 		u64 bytes;
+ 		u64 packets;
+-		unsigned long jiffies_last_used;
++		unsigned long last_used;
+ 	} am_stats; /* For saving statistics from acceleration module
+ 				 * and retrieving them in the moment of flow deletion
+ 				 */
+diff --git a/datapath/linux/Kbuild.in b/datapath/linux/Kbuild.in
+index 9e3259f19..b558a820a 100644
+--- a/datapath/linux/Kbuild.in
++++ b/datapath/linux/Kbuild.in
+@@ -12,6 +12,7 @@ ccflags-y += -I$(srcdir)/..
+ ccflags-y += -I$(builddir)/..
+ ccflags-y += -g
+ ccflags-y += -include $(builddir)/kcompat.h
++ccflags-y += -I$(PKG_CONFIG_SYSROOT_DIR)/$(includedir)/
+ 
+ # These include directories have to go before -I$(KSRC)/include.
+ # NOSTDINC_FLAGS just happens to be a variable that goes in the
+diff --git a/datapath/translate_dp_am.c b/datapath/translate_dp_am.c
+index 4148df802..1127f7392 100644
+--- a/datapath/translate_dp_am.c
++++ b/datapath/translate_dp_am.c
+@@ -234,19 +234,19 @@ static int tr_masked_set_action(struct sw_flow_key *f_key, const struct nlattr *
+ }
+ 
+ int traslate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *acts,
+-				const struct sw_flow_key *ingr_key, struct s_prop_egress *egr_prop)
++				const struct sw_flow_key *ingr_key, struct pm_am_session *session)
+ {
+ 	const struct nlattr *a;
+ 	int rem;
+-	struct sw_flow_key *egr_key = &egr_prop->egress_key;
++	struct sw_flow_key *egr_key = (struct sw_flow_key *)&session->match.egress;
+ 
+-	memset(egr_prop, 0, sizeof(struct s_prop_egress));
++	memset(egr_key, 0, sizeof(struct sw_flow_key));
+ 
+ 	if (!acts)
+ 		return -EINVAL;
+ 
+ 	if (!acts->actions || acts->actions_len == 0) {
+-		egr_prop->to_drop_flag = true;
++		session->match.egress_port = 0;
+ 		return 0;
+ 	}
+ 
+@@ -258,10 +258,14 @@ int traslate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *acts
+ 
+ 		switch (nla_type(a)) {
+ 		case OVS_ACTION_ATTR_OUTPUT: {
+-			if (egr_prop->len < LIST_OUTPUT_DEV_MAX && dp != NULL) {
+-				egr_prop->out_dev[egr_prop->len] =
+-						ovs_vport_rcu(dp, nla_get_u32(a))->dev;
+-				egr_prop->len++;
++			// TODO support more than one port as egress (for multicast/flood)
++			if (session->match.egress_port != 0 && dp != NULL) {
++				struct vport * port = ovs_vport_rcu(dp, nla_get_u32(a));
++				if (port && port->dev) {
++					session->match.egress_port = port->dev->ifindex;
++				} else {
++					return -EINVAL;
++				}
+ 			} else {
+ 				return -EINVAL;
+ 			}
+@@ -332,19 +336,21 @@ int traslate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *acts
+ }
+ 
+ int translate_to_am_session(struct datapath *dp, struct sw_flow *flow,
+-                                              struct am_session *session)
++                                              struct pm_am_session *session)
+ {
+ 	int err;
+ 
+-	err = traslate_to_egr_prop(dp, flow->sf_acts, &flow->key, &session->prop_egr);
+ 
+-	session->prop_ing.ingress_key = &flow->key;
+-	session->prop_ing.in_dev = ovs_vport_rcu(dp, flow->key.phy.in_port)->dev;
+-	session->wildcard = flow->mask;
+-	session->ufid = &flow->id;
++
++	err = traslate_to_egr_prop(dp, flow->sf_acts, &flow->key, session);
++
++	memcpy(&session->match.ingress, &flow->key, sizeof(struct pp_am_flow_key));
++	session->match.ingress_port = ovs_vport_rcu(dp, flow->key.phy.in_port)->dev->ifindex;
++	session->wildcard = (struct pp_am_flow_mask *)flow->mask;
++	memcpy(&session->ufid, &flow->id, sizeof(struct pp_am_flow_id));
+ 	session->idle_timeout = -1;
+ 	session->hard_timeout = -1;
+-	session->sf_acts = flow->sf_acts;
++	session->actions = (struct pp_am_flow_actions *)flow->sf_acts;
+ 	session->proactive_session = false;
+ 
+ 	return err;
+diff --git a/datapath/translate_dp_am.h b/datapath/translate_dp_am.h
+index be255c3ac..a57386ae2 100644
+--- a/datapath/translate_dp_am.h
++++ b/datapath/translate_dp_am.h
+@@ -25,6 +25,7 @@
+ #ifndef TRANSLATE_DP_AM_H
+ #define TRANSLATE_DP_AM_H 1
+ 
++#include "acceleration_module.h"
+ #include "datapath.h"
+ 
+ #define LIST_OUTPUT_DEV_MAX 100
+@@ -42,23 +43,12 @@ struct s_prop_egress {
+ 	bool to_drop_flag;
+ };
+ 
+-struct am_session{
+-	struct s_prop_ingress prop_ing;
+-	struct s_prop_egress prop_egr;
+-	struct sw_flow_mask *wildcard;
+-	struct sw_flow_id *ufid;
+-	long long int idle_timeout;
+-	long long int hard_timeout;
+-	struct sw_flow_actions *sf_acts;
+-	bool proactive_session;
+-};
+-
+ 
+ int traslate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *acts,
+-				const struct sw_flow_key *ingr_key, struct s_prop_egress *egr_prop);
++				const struct sw_flow_key *ingr_key, struct pm_am_session *session);
+ 
+ int translate_to_am_session(struct datapath *dp, struct sw_flow *flow,
+-                                              struct am_session *session);
++                                              struct pm_am_session *session);
+ 
+ static inline void invalidate_flow_key(struct sw_flow_key *key)
+ {

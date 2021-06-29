@@ -1,0 +1,79 @@
+From d5a203c83f9cd9e286df49717c9e10b80bc8ecbc Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Tue, 8 Jun 2021 18:47:48 +0300
+Subject: [PATCH] Commit Title          : HW Offload flood session detection
+
+BugID                 : 24344
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Implemented flood session detection for HW offload
+---
+ datapath/actions.c | 34 +++++++++++++++++++++++++++++-----
+ 1 file changed, 29 insertions(+), 5 deletions(-)
+
+diff --git a/datapath/actions.c b/datapath/actions.c
+index 0f04ec6e4..d8f4e8b1b 100644
+--- a/datapath/actions.c
++++ b/datapath/actions.c
+@@ -1267,6 +1267,32 @@ static int execute_check_pkt_len(struct datapath *dp, struct sk_buff *skb,
+ 			     nla_len(actions), last, clone_flow_key, ufid);
+ }
+ 
++static bool is_flood_flow(const struct sw_flow_key *key,
++						  const struct nlattr *attr, int len)
++{
++	const struct nlattr *a;
++	int rem;
++	int outputs = 0;
++
++	if (is_multicast_ether_addr(key->eth.src)
++		|| is_broadcast_ether_addr(key->eth.src)) {
++		return true;
++	}
++
++	/* Check for unknown unicast.
++	 * If the packet goes more then to one output, we will not process it.
++	 */
++	for (a = attr, rem = len; rem > 0;
++		a = nla_next(a, &rem)) {
++		if (nla_type(a) == OVS_ACTION_ATTR_OUTPUT) {
++			if (++outputs > 1) {
++				return true;
++			}
++		}
++	}
++	return false;
++}
++
+ /* Execute a list of actions against 'skb'. */
+ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			      struct sw_flow_key *key,
+@@ -1275,9 +1301,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ {
+ 	const struct nlattr *a;
+ 	int rem;
+-	// TODO: Remove this variable and implement a correct logic
+-	// to detect whether this is a flood flow or not
+-	bool is_flood_flow = false;
++	bool flood_flow = is_flood_flow(key, attr, len);
+ 
+ 	am_skb_preprocessing(SET_UNKNOWN, ufid, skb);
+ 
+@@ -1290,7 +1314,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			int port = nla_get_u32(a);
+ 			struct sk_buff *clone;
+ 
+-			if (is_flood_flow) {
++			if (flood_flow) {
+ 				am_skb_postprocessing(SET_FLOOD, ufid, skb);
+ 			}
+ 			/* Every output action needs a separate clone
+@@ -1298,7 +1322,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			 * last action, cloning can be avoided.
+ 			 */
+ 			if (nla_is_last(a, rem)) {
+-				if (!is_flood_flow) {
++				if (!flood_flow) {
+ 					am_skb_postprocessing(SET_OUTPUT, ufid, skb);
+ 				}
+ 				do_output(dp, skb, port, key);

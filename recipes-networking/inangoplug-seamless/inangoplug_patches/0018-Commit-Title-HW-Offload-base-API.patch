@@ -1,0 +1,513 @@
+From 34f99a68d596aea94f6b851ebc85b344be1e17c4 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Tue, 18 May 2021 11:01:13 +0300
+Subject: [PATCH] Commit Title          : HW Offload base API
+
+BugID                 : 23874
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Implemented base API with logs for HW Offload
+---
+ datapath/Modules.mk   |  2 ++
+ datapath/actions.c    | 70 +++++++++++++++++++++++++++++++++++----------------
+ datapath/am_pp.c      | 47 ++++++++++++++++++++++++++++++++++
+ datapath/am_pp.h      | 37 +++++++++++++++++++++++++++
+ datapath/datapath.c   | 11 ++++++--
+ datapath/datapath.h   |  3 ++-
+ datapath/flow_table.c |  7 ++++++
+ 7 files changed, 152 insertions(+), 25 deletions(-)
+
+diff --git a/datapath/Modules.mk b/datapath/Modules.mk
+index cd7148bd9..c1d5916be 100644
+--- a/datapath/Modules.mk
++++ b/datapath/Modules.mk
+@@ -19,6 +19,7 @@ dist_modules = $(both_modules)	# Modules to distribute
+ 
+ openvswitch_sources = \
+ 	actions.c \
++	am_pp.c \
+ 	conntrack.c \
+ 	datapath.c \
+ 	dp_notify.c \
+@@ -41,6 +42,7 @@ vport_stt_sources = vport-stt.c
+ nsh_sources = nsh.c
+ 
+ openvswitch_headers = \
++	am_pp.h \
+ 	compat.h \
+ 	conntrack.h \
+ 	datapath.h \
+diff --git a/datapath/actions.c b/datapath/actions.c
+index fbf445703..0f04ec6e4 100644
+--- a/datapath/actions.c
++++ b/datapath/actions.c
+@@ -16,6 +16,11 @@
+  * 02110-1301, USA
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
+ #include <linux/skbuff.h>
+@@ -38,6 +43,7 @@
+ #include <net/mpls.h>
+ #include <net/sctp/checksum.h>
+ 
++#include "am_pp.h"
+ #include "datapath.h"
+ #include "conntrack.h"
+ #include "gso.h"
+@@ -46,7 +52,8 @@
+ 
+ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			      struct sw_flow_key *key,
+-			      const struct nlattr *attr, int len);
++			      const struct nlattr *attr, int len,
++			      const struct sw_flow_id *ufid);
+ 
+ struct deferred_action {
+ 	struct sk_buff *skb;
+@@ -170,7 +177,8 @@ static int clone_execute(struct datapath *dp, struct sk_buff *skb,
+ 			 struct sw_flow_key *key,
+ 			 u32 recirc_id,
+ 			 const struct nlattr *actions, int len,
+-			 bool last, bool clone_flow_key);
++			 bool last, bool clone_flow_key,
++			 const struct sw_flow_id *ufid);
+ 
+ static void update_ethertype(struct sk_buff *skb, struct ethhdr *hdr,
+ 			     __be16 ethertype)
+@@ -1046,7 +1054,7 @@ static int output_userspace(struct datapath *dp, struct sk_buff *skb,
+  */
+ static int sample(struct datapath *dp, struct sk_buff *skb,
+ 		  struct sw_flow_key *key, const struct nlattr *attr,
+-		  bool last)
++		  bool last, const struct sw_flow_id *ufid)
+ {
+ 	struct nlattr *actions;
+ 	struct nlattr *sample_arg;
+@@ -1068,7 +1076,7 @@ static int sample(struct datapath *dp, struct sk_buff *skb,
+ 
+ 	clone_flow_key = !arg->exec;
+ 	return clone_execute(dp, skb, key, 0, actions, rem, last,
+-			     clone_flow_key);
++			     clone_flow_key, ufid);
+ }
+ 
+ /* When 'last' is true, clone() should always consume the 'skb'.
+@@ -1077,7 +1085,7 @@ static int sample(struct datapath *dp, struct sk_buff *skb,
+  */
+ static int clone(struct datapath *dp, struct sk_buff *skb,
+ 		 struct sw_flow_key *key, const struct nlattr *attr,
+-		 bool last)
++		 bool last, const struct sw_flow_id *ufid)
+ {
+ 	struct nlattr *actions;
+ 	struct nlattr *clone_arg;
+@@ -1090,7 +1098,7 @@ static int clone(struct datapath *dp, struct sk_buff *skb,
+ 	actions = nla_next(clone_arg, &rem);
+ 
+ 	return clone_execute(dp, skb, key, 0, actions, rem, last,
+-			     !dont_clone_flow_key);
++			     !dont_clone_flow_key, ufid);
+ }
+ 
+ static void execute_hash(struct sk_buff *skb, struct sw_flow_key *key,
+@@ -1205,7 +1213,8 @@ static int execute_masked_set_action(struct sk_buff *skb,
+ 
+ static int execute_recirc(struct datapath *dp, struct sk_buff *skb,
+ 			  struct sw_flow_key *key,
+-			  const struct nlattr *a, bool last)
++			  const struct nlattr *a, bool last,
++			  const struct sw_flow_id *ufid)
+ {
+ 	u32 recirc_id;
+ 
+@@ -1219,12 +1228,14 @@ static int execute_recirc(struct datapath *dp, struct sk_buff *skb,
+ 	BUG_ON(!is_flow_key_valid(key));
+ 
+ 	recirc_id = nla_get_u32(a);
+-	return clone_execute(dp, skb, key, recirc_id, NULL, 0, last, true);
++	return clone_execute(dp, skb, key, recirc_id, NULL, 0, last, true, ufid);
+ }
+ 
+ static int execute_check_pkt_len(struct datapath *dp, struct sk_buff *skb,
+ 				 struct sw_flow_key *key,
+-				 const struct nlattr *attr, bool last)
++				 const struct nlattr *attr,
++				 bool last,
++				 const struct sw_flow_id *ufid)
+ {
+ 	const struct nlattr *actions, *cpl_arg;
+ 	const struct check_pkt_len_arg *arg;
+@@ -1253,16 +1264,22 @@ static int execute_check_pkt_len(struct datapath *dp, struct sk_buff *skb,
+ 	}
+ 
+ 	return clone_execute(dp, skb, key, 0, nla_data(actions),
+-			     nla_len(actions), last, clone_flow_key);
++			     nla_len(actions), last, clone_flow_key, ufid);
+ }
+ 
+ /* Execute a list of actions against 'skb'. */
+ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			      struct sw_flow_key *key,
+-			      const struct nlattr *attr, int len)
++			      const struct nlattr *attr, int len,
++			      const struct sw_flow_id *ufid)
+ {
+ 	const struct nlattr *a;
+ 	int rem;
++	// TODO: Remove this variable and implement a correct logic
++	// to detect whether this is a flood flow or not
++	bool is_flood_flow = false;
++
++	am_skb_preprocessing(SET_UNKNOWN, ufid, skb);
+ 
+ 	for (a = attr, rem = len; rem > 0;
+ 	     a = nla_next(a, &rem)) {
+@@ -1273,11 +1290,17 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			int port = nla_get_u32(a);
+ 			struct sk_buff *clone;
+ 
++			if (is_flood_flow) {
++				am_skb_postprocessing(SET_FLOOD, ufid, skb);
++			}
+ 			/* Every output action needs a separate clone
+ 			 * of 'skb', In case the output action is the
+ 			 * last action, cloning can be avoided.
+ 			 */
+ 			if (nla_is_last(a, rem)) {
++				if (!is_flood_flow) {
++					am_skb_postprocessing(SET_OUTPUT, ufid, skb);
++				}
+ 				do_output(dp, skb, port, key);
+ 				/* 'skb' has been used for output.
+ 				 */
+@@ -1328,7 +1351,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 		case OVS_ACTION_ATTR_RECIRC: {
+ 			bool last = nla_is_last(a, rem);
+ 
+-			err = execute_recirc(dp, skb, key, a, last);
++			err = execute_recirc(dp, skb, key, a, last, ufid);
+ 			if (last) {
+ 				/* If this is the last action, the skb has
+ 				 * been consumed or freed.
+@@ -1351,7 +1374,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 		case OVS_ACTION_ATTR_SAMPLE: {
+ 			bool last = nla_is_last(a, rem);
+ 
+-			err = sample(dp, skb, key, a, last);
++			err = sample(dp, skb, key, a, last, ufid);
+ 			if (last)
+ 				return err;
+ 
+@@ -1411,7 +1434,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 		case OVS_ACTION_ATTR_CLONE: {
+ 			bool last = nla_is_last(a, rem);
+ 
+-			err = clone(dp, skb, key, a, last);
++			err = clone(dp, skb, key, a, last, ufid);
+ 			if (last)
+ 				return err;
+ 			break;
+@@ -1420,7 +1443,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 		case OVS_ACTION_ATTR_CHECK_PKT_LEN: {
+                         bool last = nla_is_last(a, rem);
+ 
+-                        err = execute_check_pkt_len(dp, skb, key, a, last);
++                        err = execute_check_pkt_len(dp, skb, key, a, last, ufid);
+                         if (last)
+                                 return err;
+ 
+@@ -1433,6 +1456,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			return err;
+ 		}
+ 	}
++	am_skb_postprocessing(SET_DROP, ufid, skb);
+ 
+ 	consume_skb(skb);
+ 	return 0;
+@@ -1447,7 +1471,8 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ static int clone_execute(struct datapath *dp, struct sk_buff *skb,
+ 			 struct sw_flow_key *key, u32 recirc_id,
+ 			 const struct nlattr *actions, int len,
+-			 bool last, bool clone_flow_key)
++			 bool last, bool clone_flow_key,
++			 const struct sw_flow_id *ufid)
+ {
+ 	struct deferred_action *da;
+ 	struct sw_flow_key *clone;
+@@ -1474,7 +1499,7 @@ static int clone_execute(struct datapath *dp, struct sk_buff *skb,
+ 				__this_cpu_inc(exec_actions_level);
+ 
+ 			err = do_execute_actions(dp, skb, clone,
+-						 actions, len);
++						 actions, len, ufid);
+ 
+ 			if (clone_flow_key)
+ 				__this_cpu_dec(exec_actions_level);
+@@ -1511,7 +1536,7 @@ static int clone_execute(struct datapath *dp, struct sk_buff *skb,
+ 	return 0;
+ }
+ 
+-static void process_deferred_actions(struct datapath *dp)
++static void process_deferred_actions(struct datapath *dp, const struct sw_flow_id *ufid)
+ {
+ 	struct action_fifo *fifo = this_cpu_ptr(action_fifos);
+ 
+@@ -1528,7 +1553,7 @@ static void process_deferred_actions(struct datapath *dp)
+ 		int actions_len = da->actions_len;
+ 
+ 		if (actions)
+-			do_execute_actions(dp, skb, key, actions, actions_len);
++			do_execute_actions(dp, skb, key, actions, actions_len, ufid);
+ 		else
+ 			ovs_dp_process_packet(skb, key);
+ 	} while (!action_fifo_is_empty(fifo));
+@@ -1540,7 +1565,8 @@ static void process_deferred_actions(struct datapath *dp)
+ /* Execute a list of actions against 'skb'. */
+ int ovs_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			const struct sw_flow_actions *acts,
+-			struct sw_flow_key *key)
++			struct sw_flow_key *key,
++			const struct sw_flow_id *ufid)
+ {
+ 	int err, level;
+ 
+@@ -1555,10 +1581,10 @@ int ovs_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 
+ 	OVS_CB(skb)->acts_origlen = acts->orig_len;
+ 	err = do_execute_actions(dp, skb, key,
+-				 acts->actions, acts->actions_len);
++				 acts->actions, acts->actions_len, ufid);
+ 
+ 	if (level == 1)
+-		process_deferred_actions(dp);
++		process_deferred_actions(dp, ufid);
+ 
+ out:
+ 	__this_cpu_dec(exec_actions_level);
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+new file mode 100644
+index 000000000..c3397bda3
+--- /dev/null
++++ b/datapath/am_pp.c
+@@ -0,0 +1,47 @@
++/*
++################################################################################
++#
++#  am_pp.c
++#
++#  Copyright (c) 2021 Inango systems
++#  Proprietary and confidential
++#
++#  Author: Kyrylo Mushta
++#  Creation Date: 20 May 2021
++#
++#  The author may be reached at support@inango-systems.com
++#
++#  THIS PROGRAM IS PROPRIETARY AND CONFIDENTIAL TO INANGO SYSTEMS LTD.
++#  You are only licensed to use this program if you have executed a valid
++#  license agreement with Inango Systems Ltd or with one of its
++#  representatives. You are not licensed to use this program in any way
++#  that is not defined in the above agreement.
++#
++################################################################################
++*/
++
++#include "am_pp.h"
++
++void am_create_session(struct sw_flow *flow)
++{
++}
++
++void am_mod_session(struct sw_flow *flow)
++{
++}
++
++void am_remove_session(struct sw_flow *flow)
++{
++}
++
++void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *stats, unsigned long *used)
++{
++}
++
++void am_skb_preprocessing(enum SKB_action action, const struct sw_flow_id *ufid, struct sk_buff *skb)
++{
++}
++
++void am_skb_postprocessing(enum SKB_action action, const struct sw_flow_id *ufid, struct sk_buff *skb)
++{
++}
+diff --git a/datapath/am_pp.h b/datapath/am_pp.h
+new file mode 100644
+index 000000000..13d78870d
+--- /dev/null
++++ b/datapath/am_pp.h
+@@ -0,0 +1,37 @@
++/*
++################################################################################
++#
++#  am_pp.h
++#
++#  Copyright (c) 2021 Inango systems
++#  Proprietary and confidential
++#
++#  Author: Kyrylo Mushta
++#  Creation Date: 20 May 2021
++#
++#  The author may be reached at support@inango-systems.com
++#
++#  THIS PROGRAM IS PROPRIETARY AND CONFIDENTIAL TO INANGO SYSTEMS LTD.
++#  You are only licensed to use this program if you have executed a valid
++#  license agreement with Inango Systems Ltd or with one of its
++#  representatives. You are not licensed to use this program in any way
++#  that is not defined in the above agreement.
++#
++################################################################################
++*/
++
++#include "flow.h"
++
++enum SKB_action {
++    SET_UNKNOWN,
++    SET_OUTPUT,
++    SET_DROP,
++    SET_FLOOD,
++};
++
++void am_create_session(struct sw_flow *flow);
++void am_mod_session(struct sw_flow *flow);
++void am_remove_session(struct sw_flow *flow);
++void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *stats, unsigned long *used);
++void am_skb_preprocessing(enum SKB_action action, const struct sw_flow_id *ufid, struct sk_buff *skb);
++void am_skb_postprocessing(enum SKB_action action, const struct sw_flow_id *ufid, struct sk_buff *skb);
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 4bbd83a56..5bb1b4d99 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -58,6 +58,7 @@
+ #include <net/netns/generic.h>
+ #include <net/nsh.h>
+ 
++#include "am_pp.h"
+ #include "datapath.h"
+ #include "conntrack.h"
+ #include "flow.h"
+@@ -375,7 +376,7 @@ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key)
+ 
+ 	ovs_flow_stats_update(flow, key->tp.flags, skb);
+ 	sf_acts = rcu_dereference(flow->sf_acts);
+-	ovs_execute_actions(dp, skb, sf_acts, key);
++	ovs_execute_actions(dp, skb, sf_acts, key, &flow->id);
+ 
+ 	stats_counter = &stats->n_hit;
+ 
+@@ -736,7 +737,7 @@ static int ovs_packet_cmd_execute(struct sk_buff *skb, struct genl_info *info)
+ 	sf_acts = rcu_dereference(flow->sf_acts);
+ 
+ 	local_bh_disable();
+-	err = ovs_execute_actions(dp, packet, sf_acts, &flow->key);
++	err = ovs_execute_actions(dp, packet, sf_acts, &flow->key, &flow->id);
+ 	local_bh_enable();
+ 	rcu_read_unlock();
+ 
+@@ -868,6 +869,7 @@ static int ovs_flow_cmd_fill_stats(const struct sw_flow *flow,
+ 	unsigned long used;
+ 
+ 	ovs_flow_stats_get(flow, &stats, &used, &tcp_flags);
++	am_get_session_stats(flow, &stats, &used);
+ 
+ 	if (used &&
+ 	    nla_put_u64_64bit(skb, OVS_FLOW_ATTR_USED, ovs_flow_used_time(used),
+@@ -1110,6 +1112,7 @@ static int ovs_flow_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 			acts = NULL;
+ 			goto err_unlock_ovs;
+ 		}
++		am_create_session(new_flow);
+ 
+ 		if (unlikely(reply)) {
+ 			error = ovs_flow_cmd_fill_info(new_flow,
+@@ -1152,6 +1155,7 @@ static int ovs_flow_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 		/* Update actions. */
+ 		old_acts = ovsl_dereference(flow->sf_acts);
+ 		rcu_assign_pointer(flow->sf_acts, acts);
++		am_mod_session(flow);
+ 
+ 		if (unlikely(reply)) {
+ 			error = ovs_flow_cmd_fill_info(flow,
+@@ -1318,6 +1322,7 @@ static int ovs_flow_cmd_set(struct sk_buff *skb, struct genl_info *info)
+ 	if (likely(acts)) {
+ 		old_acts = ovsl_dereference(flow->sf_acts);
+ 		rcu_assign_pointer(flow->sf_acts, acts);
++		am_mod_session(flow);
+ 
+ 		if (unlikely(reply)) {
+ 			error = ovs_flow_cmd_fill_info(flow,
+@@ -1333,6 +1338,7 @@ static int ovs_flow_cmd_set(struct sk_buff *skb, struct genl_info *info)
+ 		reply = ovs_flow_cmd_build_info(flow, ovs_header->dp_ifindex,
+ 						info, OVS_FLOW_CMD_SET, false,
+ 						ufid_flags);
++		am_mod_session(flow);
+ 
+ 		if (unlikely(IS_ERR(reply))) {
+ 			error = PTR_ERR(reply);
+@@ -1467,6 +1473,7 @@ static int ovs_flow_cmd_del(struct sk_buff *skb, struct genl_info *info)
+ 	}
+ 
+ 	ovs_flow_tbl_remove(&dp->table, flow);
++	am_remove_session(flow);
+ 	ovs_unlock();
+ 
+ 	reply = ovs_flow_cmd_alloc_info(rcu_dereference_raw(flow->sf_acts),
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index 9083ca2bd..8c2d890e0 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -274,7 +274,8 @@ struct sk_buff *ovs_vport_cmd_build_info(struct vport *vport, struct net *net,
+ 					 u32 portid, u32 seq, u8 cmd);
+ 
+ int ovs_execute_actions(struct datapath *dp, struct sk_buff *skb,
+-			const struct sw_flow_actions *, struct sw_flow_key *);
++			const struct sw_flow_actions *, struct sw_flow_key *,
++			const struct sw_flow_id *ufid);
+ 
+ void ovs_dp_notify_wq(struct work_struct *work);
+ 
+diff --git a/datapath/flow_table.c b/datapath/flow_table.c
+index 76b390e9c..2ca823105 100644
+--- a/datapath/flow_table.c
++++ b/datapath/flow_table.c
+@@ -16,6 +16,11 @@
+  * 02110-1301, USA
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #include "flow.h"
+ #include "datapath.h"
+ #include <linux/uaccess.h>
+@@ -45,6 +50,7 @@
+ #include <net/ipv6.h>
+ #include <net/ndisc.h>
+ 
++#include "am_pp.h"
+ #include "flow_netlink.h"
+ 
+ #define TBL_MIN_BUCKETS		1024
+@@ -304,6 +310,7 @@ static void table_instance_destroy(struct table_instance *ti,
+ 			hlist_del_rcu(&flow->flow_table.node[ver]);
+ 			if (ovs_identifier_is_ufid(&flow->id))
+ 				hlist_del_rcu(&flow->ufid_table.node[ufid_ver]);
++			am_remove_session(flow);
+ 			ovs_flow_free(flow, deferred);
+ 		}
+ 	}

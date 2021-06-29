@@ -1,0 +1,164 @@
+From 90676ff750c72c53dec993bcb4878fb51cfa7a1a Mon Sep 17 00:00:00 2001
+From: Oleksandr Shaporov <o.shaporov@inango-systems.com>
+Date: Thu, 6 May 2021 20:19:43 +0300
+Subject: [PATCH] Commit Title          : Add Inango License banners to the
+ project related sources/recipes
+
+BugID                 : 23416
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Added INANGO banner
+---
+ datapath/linux/compat/ip_tunnel.c | 5 +++++
+ datapath/vport.c                  | 5 +++++
+ datapath/vport.h                  | 5 +++++
+ ofproto/automake.mk               | 3 +++
+ ofproto/connmgr.c                 | 5 +++++
+ ofproto/connmgr.h                 | 5 +++++
+ ofproto/port-protection.c         | 5 +++++
+ ofproto/port-protection.h         | 5 +++++
+ vswitchd/bridge.c                 | 5 +++++
+ 9 files changed, 43 insertions(+)
+
+diff --git a/datapath/linux/compat/ip_tunnel.c b/datapath/linux/compat/ip_tunnel.c
+index e7a039358..b296e8e7b 100644
+--- a/datapath/linux/compat/ip_tunnel.c
++++ b/datapath/linux/compat/ip_tunnel.c
+@@ -12,6 +12,11 @@
+  *
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
+ #include <linux/capability.h>
+diff --git a/datapath/vport.c b/datapath/vport.c
+index 3503b0427..4c206a3f7 100644
+--- a/datapath/vport.c
++++ b/datapath/vport.c
+@@ -16,6 +16,11 @@
+  * 02110-1301, USA
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #include <linux/etherdevice.h>
+ #include <linux/if.h>
+ #include <linux/if_vlan.h>
+diff --git a/datapath/vport.h b/datapath/vport.h
+index 7cfa67000..110b877d2 100644
+--- a/datapath/vport.h
++++ b/datapath/vport.h
+@@ -16,6 +16,11 @@
+  * 02110-1301, USA
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #ifndef VPORT_H
+ #define VPORT_H 1
+ 
+diff --git a/ofproto/automake.mk b/ofproto/automake.mk
+index f5394654a..febd59005 100644
+--- a/ofproto/automake.mk
++++ b/ofproto/automake.mk
+@@ -5,6 +5,9 @@
+ # notice and this notice are preserved.  This file is offered as-is,
+ # without warranty of any kind.
+ 
++# Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++# Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++
+ lib_LTLIBRARIES += ofproto/libofproto.la
+ ofproto_libofproto_la_LDFLAGS = \
+         $(OVS_LTINFO) \
+diff --git a/ofproto/connmgr.c b/ofproto/connmgr.c
+index ba9fa77ce..1e95e07cb 100644
+--- a/ofproto/connmgr.c
++++ b/ofproto/connmgr.c
+@@ -14,6 +14,11 @@
+  * limitations under the License.
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #include <config.h>
+ #include <errno.h>
+ #include <ofproto/port-protection.h>
+diff --git a/ofproto/connmgr.h b/ofproto/connmgr.h
+index 248bebaaa..6c0ff4175 100644
+--- a/ofproto/connmgr.h
++++ b/ofproto/connmgr.h
+@@ -14,6 +14,11 @@
+  * limitations under the License.
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #ifndef CONNMGR_H
+ #define CONNMGR_H 1
+ 
+diff --git a/ofproto/port-protection.c b/ofproto/port-protection.c
+index b5353c239..0322a4398 100644
+--- a/ofproto/port-protection.c
++++ b/ofproto/port-protection.c
+@@ -14,6 +14,11 @@
+  * limitations under the License.
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #include <config.h>
+ #include <arpa/inet.h>
+ #include <errno.h>
+diff --git a/ofproto/port-protection.h b/ofproto/port-protection.h
+index af531a715..75d789de2 100644
+--- a/ofproto/port-protection.h
++++ b/ofproto/port-protection.h
+@@ -14,6 +14,11 @@
+  * limitations under the License.
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #ifndef PORT_PROTECTION_H
+ #define PORT_PROTECTION_H 1
+ 
+diff --git a/vswitchd/bridge.c b/vswitchd/bridge.c
+index 12135ed28..4e4c6c10d 100644
+--- a/vswitchd/bridge.c
++++ b/vswitchd/bridge.c
+@@ -13,6 +13,11 @@
+  * limitations under the License.
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #include <config.h>
+ #include "bridge.h"
+ #include <errno.h>

@@ -1,4 +1,4 @@
-From d4e706e6061391108e6fcfe738b6476923c62e68 Mon Sep 17 00:00:00 2001
+From 2467ce74acf3996c95481da280581ae688cdbf43 Mon Sep 17 00:00:00 2001
 From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
 Date: Mon, 22 Mar 2021 22:28:50 +0200
 Subject: [PATCH] Commit Title: Fix compilation errors related to old Linux API

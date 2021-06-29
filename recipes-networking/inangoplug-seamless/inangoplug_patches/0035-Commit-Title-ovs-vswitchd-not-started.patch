@@ -1,0 +1,42 @@
+From b403746decec6bd9b6b2abb47121819d78144f1f Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Tue, 15 Jun 2021 16:52:20 +0300
+Subject: [PATCH] Commit Title          : ovs-vswitchd not started
+
+BugID                 : 24492
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Changed start condition for ovs-vswitchd.service to trigger by exist path.
+---
+ rhel/usr_lib_systemd_system_ovs-vswitchd.service.in | 2 +-
+ utilities/ovs-ctl.in                                | 4 ++++
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in b/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
+index a2977046b..ff3a2c427 100644
+--- a/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
++++ b/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
+@@ -2,7 +2,7 @@
+ Description=Open vSwitch Forwarding Unit
+ After=ovsdb-server.service network-pre.target systemd-udev-settle.service
+ Before=network.target network.service
+-Requires=ovsdb-server.service
++#Requires=ovsdb-server.service
+ ReloadPropagatedFrom=ovsdb-server.service
+ AssertPathIsReadWrite=/var/run/openvswitch/db.sock
+ PartOf=openvswitch.service
+diff --git a/utilities/ovs-ctl.in b/utilities/ovs-ctl.in
+index fedc5947b..01d85d40b 100644
+--- a/utilities/ovs-ctl.in
++++ b/utilities/ovs-ctl.in
+@@ -165,6 +165,10 @@ do_start_ovsdb () {
+         if test X"$DELETE_TRANSIENT_PORTS" = Xyes; then
+             del_transient_ports
+         fi
++
++        # It required for start ovs-vswitchd service
++        touch /tmp/ovsdb_server_started
++
+     fi
+ }
+ 

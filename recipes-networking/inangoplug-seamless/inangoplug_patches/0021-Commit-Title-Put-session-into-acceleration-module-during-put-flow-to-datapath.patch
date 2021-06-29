@@ -1,0 +1,169 @@
+From 8aefdf4ebcf4e0a39341847289f168eb8618ad9e Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Fri, 28 May 2021 16:00:20 +0300
+Subject: [PATCH] Commit Title          : Put session into acceleration module
+ during put flow to datapath
+
+BugID                 : 24106
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Added implementation to functions that put session into acceleration module.
+---
+ datapath/am_pp.c    | 34 ++++++++++++++++++++++++++++++++--
+ datapath/am_pp.h    | 19 +++++++++++++++++--
+ datapath/datapath.c |  8 ++++----
+ datapath/flow.h     |  6 ++++++
+ 4 files changed, 59 insertions(+), 8 deletions(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index a62e035f0..e1175653d 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -21,14 +21,44 @@
+ ################################################################################
+ */
+ 
++#include "translate_dp_am.h"
+ #include "am_pp.h"
++#include "datapath.h"
+ 
+-void am_create_session(struct sw_flow *flow)
++int am_create_session(struct datapath *dp, struct sw_flow *flow)
+ {
++	struct am_session new_session;
++	int err;
++
++	err = translate_to_am_session(dp, flow, &new_session);
++	if (err)
++		return err;
++
++	flow->acl_state = NOT_ACCELERATE;
++
++//	err = send_create_to_am(&new_session);
++
++	if (err == OK)
++		flow->acl_state = ACCELERATED;
++
++	return err;
+ }
+ 
+-void am_mod_session(struct sw_flow *flow)
++int am_mod_session(struct datapath *dp, struct sw_flow *flow)
+ {
++	struct am_session new_session;
++	int err;
++
++	err = translate_to_am_session(dp, flow, &new_session);
++	if (err)
++		return err;
++
++//	err = send_modify_to_am(&new_session);
++
++	if (err != OK)
++		flow->acl_state = NOT_ACCELERATE;
++
++	return err;
+ }
+ 
+ void am_remove_session(struct sw_flow *flow)
+diff --git a/datapath/am_pp.h b/datapath/am_pp.h
+index 8dac7672a..e81188780 100644
+--- a/datapath/am_pp.h
++++ b/datapath/am_pp.h
+@@ -23,6 +23,8 @@
+ 
+ #include "flow.h"
+ 
++struct datapath;
++
+ enum SKB_action {
+     SET_UNKNOWN,
+     SET_OUTPUT,
+@@ -30,8 +32,21 @@ enum SKB_action {
+     SET_FLOOD,
+ };
+ 
+-void am_create_session(struct sw_flow *flow);
+-void am_mod_session(struct sw_flow *flow);
++enum acl_state {
++    ACCELERATED,
++    NOT_ACCELERATE,
++    UNDEFINED
++};
++
++enum response_status {
++    OK,
++    NO_SESSIONS_LEFT,
++    UNSUPPORTED_PARAM,
++    GENERIC_FAIL
++};
++
++int am_create_session(struct datapath *dp, struct sw_flow *flow);
++int am_mod_session(struct datapath *dp, struct sw_flow *flow);
+ void am_remove_session(struct sw_flow *flow);
+ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *stats, unsigned long *used);
+ void am_skb_preprocessing(enum SKB_action action, const struct sw_flow_id *ufid, struct sk_buff *skb);
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 5bb1b4d99..5b7ec00f1 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -1112,7 +1112,7 @@ static int ovs_flow_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 			acts = NULL;
+ 			goto err_unlock_ovs;
+ 		}
+-		am_create_session(new_flow);
++		am_create_session(dp, new_flow);
+ 
+ 		if (unlikely(reply)) {
+ 			error = ovs_flow_cmd_fill_info(new_flow,
+@@ -1155,7 +1155,7 @@ static int ovs_flow_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 		/* Update actions. */
+ 		old_acts = ovsl_dereference(flow->sf_acts);
+ 		rcu_assign_pointer(flow->sf_acts, acts);
+-		am_mod_session(flow);
++		am_mod_session(dp, flow);
+ 
+ 		if (unlikely(reply)) {
+ 			error = ovs_flow_cmd_fill_info(flow,
+@@ -1322,7 +1322,7 @@ static int ovs_flow_cmd_set(struct sk_buff *skb, struct genl_info *info)
+ 	if (likely(acts)) {
+ 		old_acts = ovsl_dereference(flow->sf_acts);
+ 		rcu_assign_pointer(flow->sf_acts, acts);
+-		am_mod_session(flow);
++		am_mod_session(dp, flow);
+ 
+ 		if (unlikely(reply)) {
+ 			error = ovs_flow_cmd_fill_info(flow,
+@@ -1338,7 +1338,7 @@ static int ovs_flow_cmd_set(struct sk_buff *skb, struct genl_info *info)
+ 		reply = ovs_flow_cmd_build_info(flow, ovs_header->dp_ifindex,
+ 						info, OVS_FLOW_CMD_SET, false,
+ 						ufid_flags);
+-		am_mod_session(flow);
++		am_mod_session(dp, flow);
+ 
+ 		if (unlikely(IS_ERR(reply))) {
+ 			error = PTR_ERR(reply);
+diff --git a/datapath/flow.h b/datapath/flow.h
+index 4ad5363e3..9d251d49d 100644
+--- a/datapath/flow.h
++++ b/datapath/flow.h
+@@ -16,6 +16,11 @@
+  * 02110-1301, USA
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #ifndef FLOW_H
+ #define FLOW_H 1
+ 
+@@ -225,6 +230,7 @@ struct sw_flow {
+ 	int stats_last_writer;		/* CPU id of the last writer on
+ 					 * 'stats[0]'.
+ 					 */
++	int acl_state;			/*hold value that say about session is accelerated, not accelerated or undefined.*/
+ 	struct sw_flow_key key;
+ 	struct sw_flow_id id;
+ 	struct cpumask cpu_used_mask;

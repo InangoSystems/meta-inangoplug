@@ -1,0 +1,88 @@
+From 1ce956d202cd04048f009618956a8c3444fe0659 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Fri, 28 May 2021 13:49:30 +0300
+Subject: [PATCH] Commit Title          : HW Offload base API
+
+BugID                 : 23874
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Updated licences inside added files
+---
+ datapath/am_pp.c | 23 ++++++++++++-----------
+ datapath/am_pp.h | 23 ++++++++++++-----------
+ 2 files changed, 24 insertions(+), 22 deletions(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index c3397bda3..a62e035f0 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -2,20 +2,21 @@
+ ################################################################################
+ #
+ #  am_pp.c
++#  Copyright (C) 2021 Inango Systems Ltd.
+ #
+-#  Copyright (c) 2021 Inango systems
+-#  Proprietary and confidential
++#  This program is free software; you can redistribute it and/or
++#  modify it under the terms of the GNU General Public License
++#  as published by the Free Software Foundation; either version 2
++#  of the License, or (at your option) any later version.
+ #
+-#  Author: Kyrylo Mushta
+-#  Creation Date: 20 May 2021
++#  This program is distributed in the hope that it will be useful,
++#  but WITHOUT ANY WARRANTY; without even the implied warranty of
++#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++#  GNU General Public License for more details.
+ #
+-#  The author may be reached at support@inango-systems.com
+-#
+-#  THIS PROGRAM IS PROPRIETARY AND CONFIDENTIAL TO INANGO SYSTEMS LTD.
+-#  You are only licensed to use this program if you have executed a valid
+-#  license agreement with Inango Systems Ltd or with one of its
+-#  representatives. You are not licensed to use this program in any way
+-#  that is not defined in the above agreement.
++#  You should have received a copy of the GNU General Public License
++#  along with this program; if not, write to the Free Software
++#  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ #
+ ################################################################################
+ */
+diff --git a/datapath/am_pp.h b/datapath/am_pp.h
+index 13d78870d..8dac7672a 100644
+--- a/datapath/am_pp.h
++++ b/datapath/am_pp.h
+@@ -2,20 +2,21 @@
+ ################################################################################
+ #
+ #  am_pp.h
++#  Copyright (C) 2021 Inango Systems Ltd.
+ #
+-#  Copyright (c) 2021 Inango systems
+-#  Proprietary and confidential
++#  This program is free software; you can redistribute it and/or
++#  modify it under the terms of the GNU General Public License
++#  as published by the Free Software Foundation; either version 2
++#  of the License, or (at your option) any later version.
+ #
+-#  Author: Kyrylo Mushta
+-#  Creation Date: 20 May 2021
++#  This program is distributed in the hope that it will be useful,
++#  but WITHOUT ANY WARRANTY; without even the implied warranty of
++#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++#  GNU General Public License for more details.
+ #
+-#  The author may be reached at support@inango-systems.com
+-#
+-#  THIS PROGRAM IS PROPRIETARY AND CONFIDENTIAL TO INANGO SYSTEMS LTD.
+-#  You are only licensed to use this program if you have executed a valid
+-#  license agreement with Inango Systems Ltd or with one of its
+-#  representatives. You are not licensed to use this program in any way
+-#  that is not defined in the above agreement.
++#  You should have received a copy of the GNU General Public License
++#  along with this program; if not, write to the Free Software
++#  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ #
+ ################################################################################
+ */

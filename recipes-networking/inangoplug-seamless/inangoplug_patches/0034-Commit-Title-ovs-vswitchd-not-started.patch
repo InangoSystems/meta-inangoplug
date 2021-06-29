@@ -1,0 +1,25 @@
+From a61103f24b9052c1d80b72fdaf5f11246ed6cd27 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Mon, 14 Jun 2021 16:14:47 +0300
+Subject: [PATCH] Commit Title          : ovs-vswitchd not started
+
+BugID                 : 24492
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Changed dependency for ovsdb-server.service to systemd-rpcbind-puma7.service.
+---
+ rhel/usr_lib_systemd_system_ovsdb-server.service | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/rhel/usr_lib_systemd_system_ovsdb-server.service b/rhel/usr_lib_systemd_system_ovsdb-server.service
+index 34517043a..976c9f7aa 100644
+--- a/rhel/usr_lib_systemd_system_ovsdb-server.service
++++ b/rhel/usr_lib_systemd_system_ovsdb-server.service
+@@ -1,6 +1,6 @@
+ [Unit]
+ Description=Open vSwitch Database Unit
+-After=syslog.target network-pre.target
++After=systemd-rpcbind-puma7.service
+ Before=network.target network.service
+ Wants=ovs-delete-transient-ports.service
+ PartOf=openvswitch.service

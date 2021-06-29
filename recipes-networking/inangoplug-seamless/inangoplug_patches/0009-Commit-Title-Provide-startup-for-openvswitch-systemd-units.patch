@@ -1,4 +1,4 @@
-From 5a6899721978c3dfbed92cfb850f54d0aff25c99 Mon Sep 17 00:00:00 2001
+From 7cb0a4c908023ba2209c60ce0a8ebedf1832b8f2 Mon Sep 17 00:00:00 2001
 From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
 Date: Mon, 15 Mar 2021 16:22:21 +0200
 Subject: [PATCH] Commit Title: Provide startup for openvswitch systemd units
@@ -9,13 +9,13 @@ CodeReviewId: 0
 Description: Resolved issue with systemd units for ovs, added new brcompatd service.
 ---
  rhel/usr_lib_systemd_system_openvswitch.service    |  3 +-
- .../usr_lib_systemd_system_ovs-vswitchd.service.in |  8 ++--
- rhel/usr_lib_systemd_system_ovsdb-server.service   |  8 ++--
+ .../usr_lib_systemd_system_ovs-vswitchd.service.in | 13 +++---
+ rhel/usr_lib_systemd_system_ovsdb-server.service   | 19 ++++----
  ...sr_share_openvswitch_scripts_ovs-systemd-reload | 12 ++++++
  utilities/ovs-ctl.in                               | 48 ++++++++++++++++++++-
  utilities/ovs-kmod-ctl.in                          | 50 ++++++++++++++++------
  utilities/ovs-lib.in                               | 12 ++++++
- 7 files changed, 116 insertions(+), 25 deletions(-)
+ 7 files changed, 123 insertions(+), 34 deletions(-)
 
 diff --git a/rhel/usr_lib_systemd_system_openvswitch.service b/rhel/usr_lib_systemd_system_openvswitch.service
 index feaba37d5..61b312b14 100644
@@ -35,57 +35,65 @@ index feaba37d5..61b312b14 100644
  [Service]
  Type=oneshot
 diff --git a/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in b/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
-index 525deae0b..d2c2ce860 100644
+index ff43dae96..a2977046b 100644
 --- a/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
 +++ b/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
-@@ -12,18 +12,18 @@ Type=forking
+@@ -13,19 +13,18 @@ PIDFile=/var/run/openvswitch/ovs-vswitchd.pid
  Restart=on-failure
  Environment=XDG_RUNTIME_DIR=/var/run/openvswitch
  EnvironmentFile=/etc/openvswitch/default.conf
 -EnvironmentFile=-/etc/sysconfig/openvswitch
+-EnvironmentFile=-/run/openvswitch.useropts
+-LimitSTACK=2M
 +EnvironmentFile=-/nvram/openvswitch.conf
- EnvironmentFile=-/run/openvswitch/useropts
++EnvironmentFile=-/run/openvswitch/useropts
  @begin_dpdk@
  ExecStartPre=-/bin/sh -c '/usr/bin/chown :$${OVS_USER_ID##*:} /dev/hugepages'
  ExecStartPre=-/usr/bin/chmod 0775 /dev/hugepages
  @end_dpdk@
  ExecStart=/usr/share/openvswitch/scripts/ovs-ctl \
 -          --no-ovsdb-server --no-monitor --system-id=random \
+-          ${OVS_USER_OPT} \
 +          --no-ovsdb-server --no-ovs-brcompatd --no-monitor --system-id=random \
-           ${OVSUSER} \
++          ${OVSUSER} \
            start $OPTIONS
 -ExecStop=/usr/share/openvswitch/scripts/ovs-ctl --no-ovsdb-server stop
 -ExecReload=/usr/share/openvswitch/scripts/ovs-ctl --no-ovsdb-server \
 +ExecStop=/usr/share/openvswitch/scripts/ovs-ctl --no-ovsdb-server --no-ovs-brcompatd stop
 +ExecReload=/usr/share/openvswitch/scripts/ovs-ctl --no-ovsdb-server --no-ovs-brcompatd \
            --no-monitor --system-id=random \
-           ${OVSUSER} \
+           ${OVS_USER_OPT} \
            restart $OPTIONS
 diff --git a/rhel/usr_lib_systemd_system_ovsdb-server.service b/rhel/usr_lib_systemd_system_ovsdb-server.service
-index 70da1ec95..7c3ce6727 100644
+index 4c170c09b..34517043a 100644
 --- a/rhel/usr_lib_systemd_system_ovsdb-server.service
 +++ b/rhel/usr_lib_systemd_system_ovsdb-server.service
-@@ -9,16 +9,16 @@ PartOf=openvswitch.service
- Type=forking
+@@ -10,16 +10,15 @@ Type=forking
+ PIDFile=/var/run/openvswitch/ovsdb-server.pid
  Restart=on-failure
  EnvironmentFile=/etc/openvswitch/default.conf
 -EnvironmentFile=-/etc/sysconfig/openvswitch
+-ExecStartPre=-/usr/bin/chown ${OVS_USER_ID} /var/run/openvswitch /var/log/openvswitch
+-ExecStartPre=/bin/sh -c 'rm -f /run/openvswitch.useropts; /usr/bin/echo "OVS_USER_ID=${OVS_USER_ID}" > /run/openvswitch.useropts'
+-ExecStartPre=/bin/sh -c 'if [ "$${OVS_USER_ID/:*/}" != "root" ]; then /usr/bin/echo "OVS_USER_OPT=--ovs-user=${OVS_USER_ID}" >> /run/openvswitch.useropts; fi'
+-EnvironmentFile=-/run/openvswitch.useropts
 +EnvironmentFile=-/nvram/openvswitch.conf
- ExecStartPre=/usr/bin/chown ${OVS_USER_ID} /var/run/openvswitch /var/log/openvswitch
- ExecStartPre=/bin/sh -c 'rm -f /run/openvswitch/useropts; if [ "$${OVS_USER_ID/:*/}" != "root" ]; then /usr/bin/echo "OVSUSER=--ovs-user=${OVS_USER_ID}" > /run/openvswitch/useropts; fi'
- EnvironmentFile=-/run/openvswitch/useropts
++ExecStartPre=/usr/bin/chown ${OVS_USER_ID} /var/run/openvswitch /var/log/openvswitch
++ExecStartPre=/bin/sh -c 'rm -f /run/openvswitch/useropts; if [ "$${OVS_USER_ID/:*/}" != "root" ]; then /usr/bin/echo "OVSUSER=--ovs-user=${OVS_USER_ID}" > /run/openvswitch/useropts; fi'
++EnvironmentFile=-/run/openvswitch/useropts
  ExecStart=/usr/share/openvswitch/scripts/ovs-ctl \
 -          --no-ovs-vswitchd --no-monitor --system-id=random \
+-          ${OVS_USER_OPT} \
 +          --no-ovs-vswitchd --no-ovs-brcompatd --no-monitor --system-id=random \
-           ${OVSUSER} \
++          ${OVSUSER} \
            start $OPTIONS
 -ExecStop=/usr/share/openvswitch/scripts/ovs-ctl --no-ovs-vswitchd stop
 -ExecReload=/usr/share/openvswitch/scripts/ovs-ctl --no-ovs-vswitchd \
+-           ${OVS_USER_OPT} \
 +ExecStop=/usr/share/openvswitch/scripts/ovs-ctl --no-ovs-vswitchd --no-ovs-brcompatd stop
 +ExecReload=/usr/share/openvswitch/scripts/ovs-ctl --no-ovs-vswitchd --no-ovs-brcompatd \
-            ${OVSUSER} \
++           ${OVSUSER} \
             --no-monitor restart $OPTIONS
- RuntimeDirectory=openvswitch
 diff --git a/rhel/usr_share_openvswitch_scripts_ovs-systemd-reload b/rhel/usr_share_openvswitch_scripts_ovs-systemd-reload
 index 894df0427..f43319873 100755
 --- a/rhel/usr_share_openvswitch_scripts_ovs-systemd-reload
@@ -117,7 +125,7 @@ index 894df0427..f43319873 100755
      :
  }
 diff --git a/utilities/ovs-ctl.in b/utilities/ovs-ctl.in
-index 9c2a092ea..e6f62ac10 100644
+index 8c5cd7032..f1e649a97 100644
 --- a/utilities/ovs-ctl.in
 +++ b/utilities/ovs-ctl.in
 @@ -12,6 +12,10 @@
@@ -140,7 +148,7 @@ index 9c2a092ea..e6f62ac10 100644
  }
  
  set_hostname () {
-@@ -227,6 +231,30 @@ start_forwarding () {
+@@ -229,6 +233,30 @@ start_forwarding () {
      return 0
  }
  
@@ -171,7 +179,7 @@ index 9c2a092ea..e6f62ac10 100644
  start_ovs_ipsec () {
      ${datadir}/scripts/ovs-monitor-ipsec \
          --pidfile=${rundir}/ovs-monitor-ipsec.pid \
-@@ -251,6 +279,12 @@ stop_forwarding () {
+@@ -253,6 +281,12 @@ stop_forwarding () {
      fi
  }
  
@@ -184,7 +192,7 @@ index 9c2a092ea..e6f62ac10 100644
  stop_ovs_ipsec () {
      ${bindir}/ovs-appctl -t ovs-monitor-ipsec exit || return 1
      return 0
-@@ -322,10 +356,14 @@ set_defaults () {
+@@ -324,12 +358,16 @@ set_defaults () {
      OVS_USER=
      OVSDB_SERVER=yes
      OVS_VSWITCHD=yes
@@ -195,11 +203,13 @@ index 9c2a092ea..e6f62ac10 100644
      OVSDB_SERVER_WRAPPER=
      OVS_VSWITCHD_WRAPPER=
 +    OVS_BRCOMPATD_WRAPPER=
+     OVSDB_SERVER_OPTIONS=
+     OVS_VSWITCHD_OPTIONS=
 +    OVS_BRIDGES=
  
      DB_FILE=$dbdir/conf.db
      DB_SOCK=$rundir/db.sock
-@@ -356,6 +394,10 @@ set_defaults () {
+@@ -360,6 +398,10 @@ set_defaults () {
          SYSTEM_TYPE=unknown
          SYSTEM_VERSION=unknown
      fi
@@ -210,7 +220,7 @@ index 9c2a092ea..e6f62ac10 100644
  }
  
  usage () {
-@@ -454,7 +496,7 @@ set_option () {
+@@ -458,7 +500,7 @@ set_option () {
  }
  
  daemons () {
@@ -219,7 +229,7 @@ index 9c2a092ea..e6f62ac10 100644
  }
  
  set_defaults
-@@ -518,9 +560,11 @@ case $command in
+@@ -522,9 +564,11 @@ case $command in
      start)
          start_ovsdb || exit 1
          start_forwarding || exit 1
@@ -331,7 +341,7 @@ index 19f100964..fee0f0916 100644
  command=
  for arg
 diff --git a/utilities/ovs-lib.in b/utilities/ovs-lib.in
-index 9a0af2e82..c4d6e43e5 100644
+index d646b444a..1300bac9b 100644
 --- a/utilities/ovs-lib.in
 +++ b/utilities/ovs-lib.in
 @@ -16,6 +16,10 @@
@@ -345,7 +355,7 @@ index 9a0af2e82..c4d6e43e5 100644
  
  ## ----------------- ##
  ## configure options ##
-@@ -642,6 +646,10 @@ force_reload_kmod () {
+@@ -647,6 +651,10 @@ force_reload_kmod () {
      flow_restore_wait
      start_forwarding || return 1
  
@@ -356,7 +366,7 @@ index 9a0af2e82..c4d6e43e5 100644
      # Restore saved flows and inform vswitchd that we are done.
      restore_flows
      flow_restore_complete
-@@ -675,6 +683,10 @@ restart () {
+@@ -681,6 +689,10 @@ restart () {
      flow_restore_wait
      start_forwarding || return 1
  

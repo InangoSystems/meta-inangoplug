@@ -1,4 +1,4 @@
-From b5514d52e3e9ff6c5b363d8d075ee629129ef0ba Mon Sep 17 00:00:00 2001
+From 106eab421ce20f79152548898fb4804b4545479b Mon Sep 17 00:00:00 2001
 From: Anastasiia Kononenko <a.hryts@inango-systems.com>
 Date: Tue, 16 Mar 2021 12:22:21 +0200
 Subject: [PATCH] Commit Title: Write systemd service for ATOM side

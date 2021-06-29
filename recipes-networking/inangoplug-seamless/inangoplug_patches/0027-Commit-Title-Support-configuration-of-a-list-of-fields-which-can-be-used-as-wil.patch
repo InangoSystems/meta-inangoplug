@@ -1,0 +1,304 @@
+From 54829a48f6f4ca192c125158d34aed566871a14d Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Tue, 1 Jun 2021 23:10:44 +0500
+Subject: [PATCH] Commit Title          : Support configuration of a list of
+ fields which can be used as wildcard
+
+BugID                 : 24102
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Added 'ovs-appctl upcall/enable-megaflows-mask-fields FIELDS' command to set wildcarded fields
+---
+ ofproto/ofproto-dpif-upcall.c | 225 +++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 224 insertions(+), 1 deletion(-)
+
+diff --git a/ofproto/ofproto-dpif-upcall.c b/ofproto/ofproto-dpif-upcall.c
+index 27f0ccc16..30525ecb6 100644
+--- a/ofproto/ofproto-dpif-upcall.c
++++ b/ofproto/ofproto-dpif-upcall.c
+@@ -190,6 +190,82 @@ struct udpif {
+     long long int offload_rebalance_time;  /* Time of last offload rebalance */
+ };
+ 
++/* metadata, regs, and conj_id wildcarded. */
++/* actset_output wildcarded. */
++
++#define FLOW_MASK_FIELDS                                                        \
++    FLOW_MASK_FIELD(tunnel.tun_id, "tunnel_tun_id")                             \
++    FLOW_MASK_FIELD(tunnel.ip_src, "tunnel_ip_src")                             \
++    FLOW_MASK_FIELD(tunnel.ip_dst, "tunnel_ip_dst")                             \
++    FLOW_MASK_FIELD(tunnel.ipv6_src, "tunnel_ipv6_src")                         \
++    FLOW_MASK_FIELD(tunnel.ipv6_dst, "tunnel_ipv6_dst")                         \
++    FLOW_MASK_FIELD(tunnel.flags,  "tunnel_flags")                              \
++    FLOW_MASK_FIELD(tunnel.ip_tos, "tunnel_ip_tos")                             \
++    FLOW_MASK_FIELD(tunnel.ip_ttl, "tunnel_ip_ttl")                             \
++    FLOW_MASK_FIELD(tunnel.tp_src, "tunnel_tp_src")                             \
++    FLOW_MASK_FIELD(tunnel.tp_dst, "tunnel_tp_dst")                             \
++    FLOW_MASK_FIELD(tunnel.gbp_id, "tunnel_gbp_id")                             \
++    FLOW_MASK_FIELD(tunnel.gbp_flags,  "tunnel_gbp_flags")                      \
++    FLOW_MASK_FIELD(tunnel.erspan_ver, "tunnel_erspan_ver")                     \
++    FLOW_MASK_FIELD(tunnel.erspan_idx, "tunnel_erspan_idx")                     \
++    FLOW_MASK_FIELD(tunnel.erspan_dir, "tunnel_erspan_dir")                     \
++    FLOW_MASK_FIELD(tunnel.erspan_hwid, "tunnel_erspan_hwid")                   \
++    FLOW_MASK_FIELD(tunnel.metadata.present.map, "tunnel_metadata_present_map") \
++    FLOW_MASK_FIELD(tunnel.metadata.opts.u8, "tunnel_metadata_opts_u8")         \
++    FLOW_MASK_FIELD(tunnel.metadata.tab, "tunnel_metadata_tab")                 \
++    FLOW_MASK_FIELD(tunnel.metadata.present.len, "tunnel_metadata_present_len") \
++    FLOW_MASK_FIELD(tunnel.metadata.opts.gnv, "tunnel_metadata_opts_gnv")       \
++    FLOW_MASK_FIELD(skb_priority, "skb_priority")                               \
++    FLOW_MASK_FIELD(pkt_mark, "pkt_mark")                                       \
++    FLOW_MASK_FIELD(ct_state, "ct_state")                                       \
++    FLOW_MASK_FIELD(ct_zone, "ct_zone")                                         \
++    FLOW_MASK_FIELD(ct_mark, "ct_mark")                                         \
++    FLOW_MASK_FIELD(ct_label, "ct_label")                                       \
++    FLOW_MASK_FIELD(recirc_id, "recirc_id")                                     \
++    FLOW_MASK_FIELD(dp_hash, "dp_hash")                                         \
++    FLOW_MASK_FIELD(in_port, "in_port")                                         \
++    FLOW_MASK_FIELD(packet_type, "packet_type")                                 \
++    FLOW_MASK_FIELD(dl_dst, "dl_dst")                                           \
++    FLOW_MASK_FIELD(dl_src, "dl_src")                                           \
++    FLOW_MASK_FIELD(dl_type, "dl_type")                                         \
++    FLOW_MASK_FIELD(vlans, "vlans")                                             \
++    FLOW_MASK_FIELD(nw_src, "nw_src")                                           \
++    FLOW_MASK_FIELD(nw_dst, "nw_dst")                                           \
++    FLOW_MASK_FIELD(ct_nw_src, "ct_nw_src")                                     \
++    FLOW_MASK_FIELD(ct_nw_dst, "ct_nw_dst")                                     \
++    FLOW_MASK_FIELD(ipv6_src, "ipv6_src")                                       \
++    FLOW_MASK_FIELD(ipv6_dst, "ipv6_dst")                                       \
++    FLOW_MASK_FIELD(ipv6_label, "ipv6_label")                                   \
++    FLOW_MASK_FIELD(arp_sha, "arp_sha")                                         \
++    FLOW_MASK_FIELD(arp_tha, "arp_tha")                                         \
++    FLOW_MASK_FIELD(nd_target, "nd_target")                                     \
++    FLOW_MASK_FIELD(ct_ipv6_src, "ct_ipv6_src")                                 \
++    FLOW_MASK_FIELD(ct_ipv6_dst, "ct_ipv6_dst")                                 \
++    FLOW_MASK_FIELD(mpls_lse, "mpls_lse")                                       \
++    FLOW_MASK_FIELD(nsh.flags, "nsh_flags")                                     \
++    FLOW_MASK_FIELD(nsh.ttl, "nsh_ttl")                                         \
++    FLOW_MASK_FIELD(nsh.mdtype, "nsh_mdtype")                                   \
++    FLOW_MASK_FIELD(nsh.np, "nsh_np")                                           \
++    FLOW_MASK_FIELD(nsh.path_hdr, "nsh_path_hdr")                               \
++    FLOW_MASK_FIELD(nsh.context, "nsh_context")                                 \
++    FLOW_MASK_FIELD(nw_frag, "nw_frag")                                         \
++    FLOW_MASK_FIELD(nw_tos, "nw_tos")                                           \
++    FLOW_MASK_FIELD(nw_ttl, "nw_ttl")                                           \
++    FLOW_MASK_FIELD(nw_proto, "nw_proto")                                       \
++    FLOW_MASK_FIELD(ct_nw_proto, "ct_nw_proto")                                 \
++    FLOW_MASK_FIELD(ct_tp_src, "ct_tp_src")                                     \
++    FLOW_MASK_FIELD(ct_tp_dst, "ct_tp_dst")                                     \
++    FLOW_MASK_FIELD(tp_src, "tp_src")                                           \
++    FLOW_MASK_FIELD(tp_dst, "tp_dst")                                           \
++    FLOW_MASK_FIELD(tcp_flags, "tcp_flags")                                     \
++    FLOW_MASK_FIELD(igmp_group_ip4, "igmp_group_ip4")              
++
++#define FLOW_MASK_FIELD_MASK(FLOW__, FIELD__) \
++    memset(&(FLOW__)->FIELD__, 0xff, sizeof (FLOW__)->FIELD__)
++
++#define FLOW_MASK_FIELD_UNMASK(FLOW__, FIELD__) \
++    memset(&(FLOW__)->FIELD__, 0x00, sizeof (FLOW__)->FIELD__)
++
+ enum upcall_type {
+     BAD_UPCALL,                 /* Some kind of bug somewhere. */
+     MISS_UPCALL,                /* A flow miss.  */
+@@ -355,6 +431,10 @@ static void upcall_unixctl_disable_megaflows(struct unixctl_conn *, int argc,
+                                              const char *argv[], void *aux);
+ static void upcall_unixctl_enable_megaflows(struct unixctl_conn *, int argc,
+                                             const char *argv[], void *aux);
++static void upcall_unixctl_disable_megaflows_mask_fields(struct unixctl_conn *, int argc,
++                                             const char *argv[], void *aux);
++static void upcall_unixctl_enable_megaflows_mask_fields(struct unixctl_conn *, int argc,
++                                            const char *argv[], void *aux);
+ static void upcall_unixctl_disable_ufid(struct unixctl_conn *, int argc,
+                                               const char *argv[], void *aux);
+ static void upcall_unixctl_enable_ufid(struct unixctl_conn *, int argc,
+@@ -416,17 +496,25 @@ static dp_purge_callback dp_purge_cb;
+ static atomic_bool enable_megaflows = ATOMIC_VAR_INIT(true);
+ static atomic_bool enable_ufid = ATOMIC_VAR_INIT(true);
+ 
++static struct flow megaflow_mask;
++
+ void
+ udpif_init(void)
+ {
+     static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
+     if (ovsthread_once_start(&once)) {
++        memset(&megaflow_mask, 0xff, sizeof(megaflow_mask));
++
+         unixctl_command_register("upcall/show", "", 0, 0, upcall_unixctl_show,
+                                  NULL);
+         unixctl_command_register("upcall/disable-megaflows", "", 0, 0,
+                                  upcall_unixctl_disable_megaflows, NULL);
+         unixctl_command_register("upcall/enable-megaflows", "", 0, 0,
+                                  upcall_unixctl_enable_megaflows, NULL);
++        unixctl_command_register("upcall/disable-megaflows-mask-fields", "fields-list", 0, 1,
++                                 upcall_unixctl_disable_megaflows_mask_fields, NULL);
++        unixctl_command_register("upcall/enable-megaflows-mask-fields", "fields-list", 0, 1,
++                                 upcall_unixctl_enable_megaflows_mask_fields, NULL);                        
+         unixctl_command_register("upcall/disable-ufid", "", 0, 0,
+                                  upcall_unixctl_disable_ufid, NULL);
+         unixctl_command_register("upcall/enable-ufid", "", 0, 0,
+@@ -1730,12 +1818,47 @@ ukey_create__(const struct nlattr *key, size_t key_len,
+     return ukey;
+ }
+ 
++static int
++flow_wildcards_or_flow(struct flow_wildcards *dst,
++                  const struct flow *src)
++{
++    uint64_t *dst_u64 = (uint64_t *) &dst->masks;
++    const uint64_t *src_u64 = (const uint64_t *) src;
++    size_t i;
++    uint64_t result = ~0x00ull;
++
++    for (i = 0; i < FLOW_U64S; ++i) {
++        dst_u64[i] |= src_u64[i];
++        result &= src_u64[i];
++    }
++
++    return result != ~0x00ull;
++}
++
++static int
++flow_wildcards_and_flow(struct flow_wildcards *dst,
++                  const struct flow *src)
++{
++    uint64_t *dst_u64 = (uint64_t *) &dst->masks;
++    const uint64_t *src_u64 = (const uint64_t *) src;
++    size_t i;
++    uint64_t result = ~0x00ull;
++
++    for (i = 0; i < FLOW_U64S; ++i) {
++        dst_u64[i] &= src_u64[i];
++        result &= src_u64[i];
++    }
++
++    return result != ~0x00ull;
++}
++
+ static struct udpif_key *
+ ukey_create_from_upcall(struct upcall *upcall, struct flow_wildcards *wc)
+ {
+     struct odputil_keybuf keystub, maskstub;
+     struct ofpbuf keybuf, maskbuf;
+     bool megaflow;
++    bool megaflow_fields = false;
+     struct odp_flow_key_parms odp_parms = {
+         .flow = upcall->flow,
+         .mask = wc ? &wc->masks : NULL,
+@@ -1752,8 +1875,16 @@ ukey_create_from_upcall(struct upcall *upcall, struct flow_wildcards *wc)
+     }
+ 
+     atomic_read_relaxed(&enable_megaflows, &megaflow);
++
++    if (!megaflow && wc) {
++        struct flow_wildcards wc2;
++        flow_wildcards_init_for_packet(&wc2, upcall->flow);
++        megaflow_fields = flow_wildcards_and_flow(&wc2, &megaflow_mask);
++        flow_wildcards_or_flow(wc, &wc2.masks);
++    }
++
+     ofpbuf_use_stack(&maskbuf, &maskstub, sizeof maskstub);
+-    if (megaflow && wc) {
++    if ((megaflow || megaflow_fields) && wc) {
+         odp_parms.key_buf = &keybuf;
+         odp_flow_key_from_mask(&odp_parms, &maskbuf);
+     }
+@@ -2939,6 +3070,98 @@ upcall_unixctl_enable_megaflows(struct unixctl_conn *conn,
+     unixctl_command_reply(conn, "megaflows enabled");
+ }
+ 
++static void
++parse_wildcard_fields_and_mask(const char *fields, struct flow *mask)
++{
++    const char delim[] = ",";
++    char *save_ptr = NULL;
++    char *token;
++    char *tokstr;
++
++    if (fields == NULL)
++    {
++        memset(mask, 0xff, sizeof(*mask));
++        return;
++    }
++
++    tokstr = xstrdup(fields);
++
++    for (token = strtok_r(tokstr, delim, &save_ptr); token != NULL; token = strtok_r(NULL, delim, &save_ptr)) 
++    {
++        #define FLOW_MASK_FIELD(FIELD__, NAME__) \
++            else if (0 == strcmp(NAME__, token)) {FLOW_MASK_FIELD_MASK(mask, FIELD__);}
++
++        if (0) {}
++        FLOW_MASK_FIELDS
++        else {
++            VLOG_WARN("-- parse_wildcard_fields_and_mask(): unknown field \"%s\" for flow mask", token);
++        }
++        #undef FLOW_MASK_FIELD
++    }
++
++    free(tokstr);
++}
++
++static void
++parse_wildcard_fields_and_unmask(const char *fields, struct flow *mask)
++{
++    const char delim[] = ",";
++    char *save_ptr = NULL;
++    char *token;
++    char *tokstr;
++
++    if (fields == NULL)
++    {
++        memset(mask, 0x00, sizeof(*mask));
++        return;
++    }
++
++    tokstr = xstrdup(fields);
++
++    for (token = strtok_r(tokstr, delim, &save_ptr); token != NULL; token = strtok_r(NULL, delim, &save_ptr)) 
++    {
++        #define FLOW_MASK_FIELD(FIELD__, NAME__) \
++            else if (0 == strcmp(NAME__, token)) {FLOW_MASK_FIELD_UNMASK(mask, FIELD__);}
++
++        if (0) {}
++        FLOW_MASK_FIELDS
++        else {
++            VLOG_WARN("-- parse_wildcard_fields_and_unmask(): unknown field \"%s\" for flow mask", token);
++        }
++        #undef FLOW_MASK_FIELD
++    }
++
++    free(tokstr);
++}
++
++/* Disable using the megaflows mask fields.
++ *
++ */
++static void
++upcall_unixctl_disable_megaflows_mask_fields(struct unixctl_conn *conn,
++                                 int argc OVS_UNUSED,
++                                 const char *argv[] OVS_UNUSED,
++                                 void *aux OVS_UNUSED)
++{
++    parse_wildcard_fields_and_mask(argc > 1 ? argv[1] : NULL, &megaflow_mask);
++    udpif_flush_all_datapaths();
++    unixctl_command_reply(conn, "megaflows fields are disabled");
++}
++
++/* Re-enable using megaflows mask fields.
++ *
++ */
++static void
++upcall_unixctl_enable_megaflows_mask_fields(struct unixctl_conn *conn,
++                                int argc OVS_UNUSED,
++                                const char *argv[] OVS_UNUSED,
++                                void *aux OVS_UNUSED)
++{
++    parse_wildcard_fields_and_unmask(argc > 1 ? argv[1] : NULL, &megaflow_mask);
++    udpif_flush_all_datapaths();
++    unixctl_command_reply(conn, "megaflows fields are enabled");
++}
++
+ /* Disable skipping flow attributes during flow dump.
+  *
+  * This command is only needed for advanced debugging, so it's not

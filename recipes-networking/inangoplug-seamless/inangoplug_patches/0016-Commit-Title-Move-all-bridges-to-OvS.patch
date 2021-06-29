@@ -1,4 +1,4 @@
-From b728764896ae7d9101a4c3d3f82dffbd2be96aaa Mon Sep 17 00:00:00 2001
+From cd70bfc13aa7f7b09541d7c400f5b22075f017b6 Mon Sep 17 00:00:00 2001
 From: Oleksandr Shaporov <o.shaporov@inango-systems.com>
 Date: Wed, 5 May 2021 14:08:29 +0300
 Subject: [PATCH] Commit Title: Move all bridges to OvS
@@ -12,10 +12,10 @@ Description           : Added all Pumas7's bridges to OvS except a-mux
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/utilities/ovs-ctl.in b/utilities/ovs-ctl.in
-index 6c86ac016..fa86f5ff1 100644
+index ef1a5e24d..ee27cc62c 100644
 --- a/utilities/ovs-ctl.in
 +++ b/utilities/ovs-ctl.in
-@@ -399,7 +399,7 @@ set_defaults () {
+@@ -403,7 +403,7 @@ set_defaults () {
      fi
  
      if ! test -e /nvram/openvswitch.conf; then

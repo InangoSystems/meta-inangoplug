@@ -1,0 +1,252 @@
+From 39a4491edebfd529cebaebd3e19adc5e9ca17958 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Wed, 9 Jun 2021 12:23:47 +0300
+Subject: [PATCH] Commit Title          : Apply exact match to hardware during
+ revalidation thread
+
+BugID                 : 24104
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Added new functions in order to put exact match flow to datapath.
+---
+ ofproto/ofproto-dpif-upcall.c | 151 ++++++++++++++++++++++++++++++++++++++++++
+ ofproto/ofproto-dpif.c        |  11 +++
+ ofproto/ofproto-dpif.h        |   9 ++-
+ 3 files changed, 170 insertions(+), 1 deletion(-)
+
+diff --git a/ofproto/ofproto-dpif-upcall.c b/ofproto/ofproto-dpif-upcall.c
+index 30525ecb6..291069e55 100644
+--- a/ofproto/ofproto-dpif-upcall.c
++++ b/ofproto/ofproto-dpif-upcall.c
+@@ -490,6 +490,14 @@ static int udpif_flow_program(struct udpif *udpif, struct udpif_key *ukey,
+ static int udpif_flow_unprogram(struct udpif *udpif, struct udpif_key *ukey,
+                                 enum dpif_offload_type offload_type);
+ 
++static void revalidate_exact_matches(struct revalidator *revalidator);
++
++static struct udpif_key *create_ukey_from_of_rule(struct ofproto_dpif *ofproto,
++                                           struct udpif *udpif, struct rule *rule);
++
++static void handle_exact_match_flow(struct udpif *udpif, struct ukey_op *ops,
++                                            size_t n_ops);
++
+ static upcall_callback upcall_cb;
+ static dp_purge_callback dp_purge_cb;
+ 
+@@ -991,6 +999,7 @@ udpif_revalidator(void *arg)
+     /* Used only by the leader. */
+     long long int start_time = 0;
+     uint64_t last_reval_seq = 0;
++    uint64_t exact_last_reval_seq = 0;
+     size_t n_flows = 0;
+ 
+     revalidator->id = ovsthread_id_self();
+@@ -1058,6 +1067,12 @@ udpif_revalidator(void *arg)
+                 udpif_run_flow_rebalance(udpif);
+             }
+ 
++            if (exact_last_reval_seq != last_reval_seq)
++            {
++                revalidate_exact_matches(revalidator);
++                exact_last_reval_seq = last_reval_seq;
++            }
++
+             duration = MAX(time_msec() - start_time, 1);
+             udpif->dump_duration = duration;
+             if (duration > 2000) {
+@@ -3583,3 +3598,139 @@ udpif_flow_unprogram(struct udpif *udpif, struct udpif_key *ukey,
+ 
+     return opsp->error;
+ }
++
++static void
++revalidate_exact_matches(struct revalidator *revalidator)
++{
++    struct sset types;
++    const char *type;
++
++    sset_init(&types);
++    ofproto_enumerate_types(&types);
++
++    if (!revalidator) {
++        VLOG_ERR("Revalidator pointer is NULL!!!");
++        return;
++    }
++
++    struct udpif *udpif = revalidator->udpif;
++
++    SSET_FOR_EACH(type, &types) {
++
++        struct sset names;
++        const char *name;
++        sset_init(&names);
++        ofproto_enumerate_names(type, &names);
++
++        SSET_FOR_EACH(name, &names) {
++
++            struct ofproto_dpif *ofproto = ofproto_dpif_lookup_by_name(name);
++
++            if (ofproto->backer == udpif->backer) {
++
++                struct ovs_list *exact_match = &ofproto->up.exact_matches;
++                struct rule *rule;
++                struct udpif_key *ukey;
++
++                if (!ovs_list_is_empty(exact_match)) {
++
++                    struct ukey_op ops[UPCALL_MAX_BATCH * 2];
++                    size_t n_ops = 0;
++
++                    LIST_FOR_EACH(rule, exact_match, exact_match) {
++
++                        ukey = create_ukey_from_of_rule(ofproto, udpif, rule);
++
++                        if (ukey) {
++                            if (ukey_install(udpif, ukey)) {
++                                put_op_init(&ops[n_ops++], ukey, DPIF_FP_CREATE);
++                                (&ops[n_ops-1])->dop.flow_put.proactive_flag = true;
++                            } else {
++                                ukey_delete__(ukey);
++                            }
++                        }
++
++                    }
++
++                    if (n_ops) {
++                        handle_exact_match_flow(udpif, ops, n_ops);
++                    }
++
++                }
++            }
++        }
++        sset_destroy(&names);
++    }
++    sset_destroy(&types);
++}
++
++static struct udpif_key *
++create_ukey_from_of_rule(struct ofproto_dpif *ofproto, struct udpif *udpif, struct rule *rule)
++{
++    struct match m;
++    uint64_t odp_actions_stub[1024 / 8];
++    struct ofpbuf odp_actions = OFPBUF_STUB_INITIALIZER(odp_actions_stub);
++    struct recirc_refs recircs = RECIRC_REFS_EMPTY_INITIALIZER;
++    struct dpif_flow_stats stats;
++    struct odputil_keybuf keystub, maskstub;
++    struct ofpbuf keybuf, maskbuf;
++    struct udpif_key *ukey;
++    ovs_u128 ufid;
++
++    minimatch_expand(&rule->cr.match, &m);
++
++    struct odp_flow_key_parms odp_parms = {
++        .flow = &m.flow,
++        .mask = &m.wc.masks,
++    };
++
++    m.flow.in_port.odp_port = ofp_port_to_odp_port_ext(ofproto, odp_parms.flow->in_port.ofp_port);
++    WC_MASK_FIELD(&m.wc, in_port);
++
++    ofpbuf_use_stack(&keybuf, &keystub, sizeof keystub);
++    odp_flow_key_from_flow(&odp_parms, &keybuf);
++
++    ofpbuf_use_stack(&maskbuf, &maskstub, sizeof maskstub);
++    odp_parms.key_buf = &keybuf;
++    odp_flow_key_from_mask(&odp_parms, &maskbuf);
++
++    odp_flow_key_hash(keybuf.data, keybuf.size, &ufid);
++    ukey = ukey_lookup(udpif, &ufid, PMD_ID_NULL);
++
++    if (ukey) {
++        return NULL;
++    }
++
++    ukey = ukey_create__(keybuf.data, keybuf.size, maskbuf.data, maskbuf.size,
++                         true, &ufid, PMD_ID_NULL, &odp_actions, 0, 0, m.flow.recirc_id, NULL);
++
++    revalidate_ukey(udpif, ukey, &stats, &odp_actions, udpif->reval_seq, &recircs, false);
++    ukey_set_actions(ukey, &odp_actions);
++
++    return ukey;
++}
++
++static void
++handle_exact_match_flow(struct udpif *udpif, struct ukey_op *ops, size_t n_ops)
++{
++    struct dpif_op *opsp[UPCALL_MAX_BATCH * 2];
++    size_t i, n_opsp = 0;
++
++    for (i = 0; i < n_ops; i++) {
++        opsp[n_opsp++] = &ops[i].dop;
++    }
++    dpif_operate(udpif->dpif, opsp, n_opsp, DPIF_OFFLOAD_AUTO);
++    for (i = 0; i < n_ops; i++) {
++        struct udpif_key *ukey = ops[i].ukey;
++
++        if (ukey) {
++            ovs_mutex_lock(&ukey->mutex);
++            if (ops[i].dop.error) {
++                transition_ukey(ukey, UKEY_EVICTED);
++            } else if (ukey->state < UKEY_OPERATIONAL) {
++                transition_ukey(ukey, UKEY_OPERATIONAL);
++            }
++            ovs_mutex_unlock(&ukey->mutex);
++        }
++    }
++}
+diff --git a/ofproto/ofproto-dpif.c b/ofproto/ofproto-dpif.c
+index d3cb39207..eaa79b060 100644
+--- a/ofproto/ofproto-dpif.c
++++ b/ofproto/ofproto-dpif.c
+@@ -13,6 +13,11 @@
+  * limitations under the License.
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #include <config.h>
+ #include <errno.h>
+ 
+@@ -6407,6 +6412,12 @@ ofp_port_to_odp_port(const struct ofproto_dpif *ofproto, ofp_port_t ofp_port)
+     return ofport ? ofport->odp_port : ODPP_NONE;
+ }
+ 
++odp_port_t
++ofp_port_to_odp_port_ext(const struct ofproto_dpif *ofproto, ofp_port_t ofp_port)
++{
++    return ofp_port_to_odp_port(ofproto, ofp_port);
++}
++
+ struct ofport_dpif *
+ odp_port_to_ofport(const struct dpif_backer *backer, odp_port_t odp_port)
+ {
+diff --git a/ofproto/ofproto-dpif.h b/ofproto/ofproto-dpif.h
+index c9d5df34b..7499d2409 100644
+--- a/ofproto/ofproto-dpif.h
++++ b/ofproto/ofproto-dpif.h
+@@ -12,6 +12,11 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License. */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #ifndef OFPROTO_DPIF_H
+ #define OFPROTO_DPIF_H 1
+ 
+@@ -282,7 +287,9 @@ struct dpif_backer {
+ extern struct shash all_dpif_backers;
+ 
+ struct ofport_dpif *odp_port_to_ofport(const struct dpif_backer *, odp_port_t);
+-
++
++odp_port_t ofp_port_to_odp_port_ext(const struct ofproto_dpif *ofproto, ofp_port_t ofp_port);
++
+ /* A bridge based on a "dpif" datapath. */
+ 
+ struct ofproto_dpif {

@@ -1,0 +1,35 @@
+From 9c0346cd791e48e903f1a7defcfe55e62f6d4b64 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Thu, 10 Jun 2021 14:06:40 +0300
+Subject: [PATCH] Commit Title          : HW Offload skb post processing for
+ flow with action userspace
+
+BugID                 : 24452
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Implemented skb post processing for flow with action userspace in HW Offload
+---
+ datapath/actions.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/datapath/actions.c b/datapath/actions.c
+index e7e28a904..d7abc4442 100644
+--- a/datapath/actions.c
++++ b/datapath/actions.c
+@@ -1330,6 +1330,8 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 				/* 'skb' has been used for output.
+ 				 */
+ 				return 0;
++			} else {
++				am_skb_postprocessing(PP_AM_SET_SKIP, ufid, skb);
+ 			}
+ 
+ 			clone = skb_clone(skb, GFP_ATOMIC);
+@@ -1348,6 +1350,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 		}
+ 
+ 		case OVS_ACTION_ATTR_USERSPACE:
++			am_skb_postprocessing(PP_AM_SET_SKIP, ufid, skb);
+ 			output_userspace(dp, skb, key, a, attr,
+ 						     len, OVS_CB(skb)->cutlen);
+ 			OVS_CB(skb)->cutlen = 0;

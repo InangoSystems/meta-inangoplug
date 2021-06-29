@@ -1,0 +1,155 @@
+From acb4209196d50d66d1424a37c78feebabc047907 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Tue, 1 Jun 2021 14:52:23 +0300
+Subject: [PATCH] Commit Title          : HW Offload retrieve statistics and
+ remove session
+
+BugID                 : 24109,24108
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Retrieved HW Offload session statistics
+Implemented HW Offload session remove together with statistics retrieving
+---
+ datapath/am_pp.c | 48 +++++++++++++++++++++++++++++++++++++++++++++++-
+ datapath/am_pp.h | 18 +++++++++++++++++-
+ datapath/flow.h  |  7 +++++++
+ 3 files changed, 71 insertions(+), 2 deletions(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index b778f5bdd..cb202c061 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -21,10 +21,19 @@
+ ################################################################################
+ */
+ 
++#include <linux/jiffies.h>
++
+ #include "translate_dp_am.h"
+ #include "am_pp.h"
+ #include "datapath.h"
+ 
++static void update_flow_am_stats(struct sw_flow *flow, am_session_stats_t *stats)
++{
++	flow->am_stats.packets = stats->packets;
++	flow->am_stats.bytes = stats->bytes;
++	flow->am_stats.jiffies_last_used = stats->jiffies_last_used;
++}
++
+ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_flag)
+ {
+ 	struct am_session new_session;
+@@ -62,12 +71,49 @@ int am_mod_session(struct datapath *dp, struct sw_flow *flow)
+ 	return err;
+ }
+ 
+-void am_remove_session(struct sw_flow *flow)
++int am_remove_session(struct sw_flow *flow)
+ {
++	am_ufid_request_t request;
++	am_session_stats_t response;
++	int err = OK;
++
++	if (flow->acl_state != ACCELERATED) {
++		return err;
++	}
++
++	memcpy(&request.ufid, &flow->id, sizeof(struct sw_flow_id));
++	memset(&response, 0, sizeof(am_session_stats_t));
++
++//	err = send_remove_to_am(&request, &response);
++
++	if (err != OK)
++		return err;
++
++	flow->acl_state = REMOVED;
++	update_flow_am_stats(flow, &response);
++
++	return err;
+ }
+ 
+ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *stats, unsigned long *used)
+ {
++	am_ufid_request_t request;
++	am_session_stats_t response;
++
++	if (flow->acl_state == ACCELERATED) {
++		memcpy(&request.ufid, &flow->id, sizeof(struct sw_flow_id));
++		memset(&response, 0, sizeof(am_session_stats_t));
++
++//		get_session_stats_from_am(&request, &response);
++
++		update_flow_am_stats((struct sw_flow *)flow, &response);
++	}
++
++	stats->n_packets += flow->am_stats.packets;
++	stats->n_bytes += flow->am_stats.bytes;
++	if (!*used || time_after(flow->am_stats.jiffies_last_used, *used)) {
++			*used = flow->am_stats.jiffies_last_used;
++	}
+ }
+ 
+ void am_skb_preprocessing(enum SKB_action action, const struct sw_flow_id *ufid, struct sk_buff *skb)
+diff --git a/datapath/am_pp.h b/datapath/am_pp.h
+index e956b434f..84705b610 100644
+--- a/datapath/am_pp.h
++++ b/datapath/am_pp.h
+@@ -21,6 +21,9 @@
+ ################################################################################
+ */
+ 
++#ifndef AM_PP_H
++#define AM_PP_H 1
++
+ #include "flow.h"
+ 
+ struct datapath;
+@@ -35,6 +38,7 @@ enum SKB_action {
+ enum acl_state {
+     ACCELERATED,
+     NOT_ACCELERATE,
++    REMOVED,
+     UNDEFINED
+ };
+ 
+@@ -45,9 +49,21 @@ enum response_status {
+     GENERIC_FAIL
+ };
+ 
++typedef struct am_ufid_request {
++    struct sw_flow_id ufid;
++} am_ufid_request_t;
++
++typedef struct am_session_stats {
++    u64 bytes;
++    u64 packets;
++    unsigned long jiffies_last_used;
++} am_session_stats_t;
++
+ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_flag);
+ int am_mod_session(struct datapath *dp, struct sw_flow *flow);
+-void am_remove_session(struct sw_flow *flow);
++int am_remove_session(struct sw_flow *flow);
+ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *stats, unsigned long *used);
+ void am_skb_preprocessing(enum SKB_action action, const struct sw_flow_id *ufid, struct sk_buff *skb);
+ void am_skb_postprocessing(enum SKB_action action, const struct sw_flow_id *ufid, struct sk_buff *skb);
++
++#endif /* am_pp.h */
+diff --git a/datapath/flow.h b/datapath/flow.h
+index 9d251d49d..38c7b5096 100644
+--- a/datapath/flow.h
++++ b/datapath/flow.h
+@@ -231,6 +231,13 @@ struct sw_flow {
+ 					 * 'stats[0]'.
+ 					 */
+ 	int acl_state;			/*hold value that say about session is accelerated, not accelerated or undefined.*/
++	struct {
++		u64 bytes;
++		u64 packets;
++		unsigned long jiffies_last_used;
++	} am_stats; /* For saving statistics from acceleration module
++				 * and retrieving them in the moment of flow deletion
++				 */
+ 	struct sw_flow_key key;
+ 	struct sw_flow_id id;
+ 	struct cpumask cpu_used_mask;

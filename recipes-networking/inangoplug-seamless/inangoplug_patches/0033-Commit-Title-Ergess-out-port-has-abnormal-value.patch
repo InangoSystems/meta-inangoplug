@@ -1,0 +1,69 @@
+From 6ba34b31462d9f6b2d0029a4f8dae97d172e5916 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Fri, 11 Jun 2021 12:07:21 +0300
+Subject: [PATCH] Commit Title          : Ergess out port has abnormal value
+
+BugID                 : 24450
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Initialization was added for all fields of pm_am_session structure as 0 and fixed condition from != to ==.
+---
+ datapath/translate_dp_am.c | 10 ++++------
+ datapath/translate_dp_am.h |  2 +-
+ 2 files changed, 5 insertions(+), 7 deletions(-)
+
+diff --git a/datapath/translate_dp_am.c b/datapath/translate_dp_am.c
+index 1127f7392..5d3998f4e 100644
+--- a/datapath/translate_dp_am.c
++++ b/datapath/translate_dp_am.c
+@@ -233,15 +233,13 @@ static int tr_masked_set_action(struct sw_flow_key *f_key, const struct nlattr *
+ 	return err;
+ }
+ 
+-int traslate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *acts,
++int translate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *acts,
+ 				const struct sw_flow_key *ingr_key, struct pm_am_session *session)
+ {
+ 	const struct nlattr *a;
+ 	int rem;
+ 	struct sw_flow_key *egr_key = (struct sw_flow_key *)&session->match.egress;
+ 
+-	memset(egr_key, 0, sizeof(struct sw_flow_key));
+-
+ 	if (!acts)
+ 		return -EINVAL;
+ 
+@@ -259,7 +257,7 @@ int traslate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *acts
+ 		switch (nla_type(a)) {
+ 		case OVS_ACTION_ATTR_OUTPUT: {
+ 			// TODO support more than one port as egress (for multicast/flood)
+-			if (session->match.egress_port != 0 && dp != NULL) {
++			if (session->match.egress_port == 0 && dp != NULL) {
+ 				struct vport * port = ovs_vport_rcu(dp, nla_get_u32(a));
+ 				if (port && port->dev) {
+ 					session->match.egress_port = port->dev->ifindex;
+@@ -340,9 +338,9 @@ int translate_to_am_session(struct datapath *dp, struct sw_flow *flow,
+ {
+ 	int err;
+ 
++	memset(session, 0, sizeof(struct pm_am_session));
+ 
+-
+-	err = traslate_to_egr_prop(dp, flow->sf_acts, &flow->key, session);
++	err = translate_to_egr_prop(dp, flow->sf_acts, &flow->key, session);
+ 
+ 	memcpy(&session->match.ingress, &flow->key, sizeof(struct pp_am_flow_key));
+ 	session->match.ingress_port = ovs_vport_rcu(dp, flow->key.phy.in_port)->dev->ifindex;
+diff --git a/datapath/translate_dp_am.h b/datapath/translate_dp_am.h
+index a57386ae2..f2cf6f12b 100644
+--- a/datapath/translate_dp_am.h
++++ b/datapath/translate_dp_am.h
+@@ -44,7 +44,7 @@ struct s_prop_egress {
+ };
+ 
+ 
+-int traslate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *acts,
++int translate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *acts,
+ 				const struct sw_flow_key *ingr_key, struct pm_am_session *session);
+ 
+ int translate_to_am_session(struct datapath *dp, struct sw_flow *flow,

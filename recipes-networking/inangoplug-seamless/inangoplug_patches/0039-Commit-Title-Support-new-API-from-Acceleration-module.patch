@@ -1,0 +1,405 @@
+From 38968b76ecf5c06d3c8142b55732bb771cf16ff3 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Mon, 21 Jun 2021 23:14:39 +0500
+Subject: [PATCH] Commit Title          : Support new API from Acceleration
+ module
+
+BugID                 : 24610
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Added support for new acceleration module API to datapath
+---
+ datapath/actions.c  | 64 +++++++++++++++++++++++++++++------------------------
+ datapath/am_pp.c    | 20 ++++++++---------
+ datapath/am_pp.h    |  4 ++--
+ datapath/datapath.c |  4 ++--
+ datapath/datapath.h |  4 ++--
+ datapath/flow.h     |  1 +
+ 6 files changed, 52 insertions(+), 45 deletions(-)
+
+diff --git a/datapath/actions.c b/datapath/actions.c
+index d7abc4442..ee1cc8ccc 100644
+--- a/datapath/actions.c
++++ b/datapath/actions.c
+@@ -53,7 +53,8 @@
+ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			      struct sw_flow_key *key,
+ 			      const struct nlattr *attr, int len,
+-			      const struct sw_flow_id *ufid);
++			      struct sw_flow *flow
++			      /*const struct sw_flow_id *ufid*/);
+ 
+ struct deferred_action {
+ 	struct sk_buff *skb;
+@@ -178,7 +179,8 @@ static int clone_execute(struct datapath *dp, struct sk_buff *skb,
+ 			 u32 recirc_id,
+ 			 const struct nlattr *actions, int len,
+ 			 bool last, bool clone_flow_key,
+-			 const struct sw_flow_id *ufid);
++			 struct sw_flow *flow/*
++			 const struct sw_flow_id *ufid*/);
+ 
+ static void update_ethertype(struct sk_buff *skb, struct ethhdr *hdr,
+ 			     __be16 ethertype)
+@@ -1054,7 +1056,7 @@ static int output_userspace(struct datapath *dp, struct sk_buff *skb,
+  */
+ static int sample(struct datapath *dp, struct sk_buff *skb,
+ 		  struct sw_flow_key *key, const struct nlattr *attr,
+-		  bool last, const struct sw_flow_id *ufid)
++		  bool last, struct sw_flow *flow/*const structsw_flow_id *ufid*/)
+ {
+ 	struct nlattr *actions;
+ 	struct nlattr *sample_arg;
+@@ -1076,7 +1078,7 @@ static int sample(struct datapath *dp, struct sk_buff *skb,
+ 
+ 	clone_flow_key = !arg->exec;
+ 	return clone_execute(dp, skb, key, 0, actions, rem, last,
+-			     clone_flow_key, ufid);
++			     clone_flow_key, flow/*ufid*/);
+ }
+ 
+ /* When 'last' is true, clone() should always consume the 'skb'.
+@@ -1085,7 +1087,7 @@ static int sample(struct datapath *dp, struct sk_buff *skb,
+  */
+ static int clone(struct datapath *dp, struct sk_buff *skb,
+ 		 struct sw_flow_key *key, const struct nlattr *attr,
+-		 bool last, const struct sw_flow_id *ufid)
++		 bool last, struct sw_flow *flow/*const structsw_flow_id *ufid*/)
+ {
+ 	struct nlattr *actions;
+ 	struct nlattr *clone_arg;
+@@ -1098,7 +1100,7 @@ static int clone(struct datapath *dp, struct sk_buff *skb,
+ 	actions = nla_next(clone_arg, &rem);
+ 
+ 	return clone_execute(dp, skb, key, 0, actions, rem, last,
+-			     !dont_clone_flow_key, ufid);
++			     !dont_clone_flow_key, flow/*ufid*/);
+ }
+ 
+ static void execute_hash(struct sk_buff *skb, struct sw_flow_key *key,
+@@ -1214,7 +1216,7 @@ static int execute_masked_set_action(struct sk_buff *skb,
+ static int execute_recirc(struct datapath *dp, struct sk_buff *skb,
+ 			  struct sw_flow_key *key,
+ 			  const struct nlattr *a, bool last,
+-			  const struct sw_flow_id *ufid)
++			  struct sw_flow *flow/*const struct sw_flow_id *ufid*/)
+ {
+ 	u32 recirc_id;
+ 
+@@ -1228,14 +1230,15 @@ static int execute_recirc(struct datapath *dp, struct sk_buff *skb,
+ 	BUG_ON(!is_flow_key_valid(key));
+ 
+ 	recirc_id = nla_get_u32(a);
+-	return clone_execute(dp, skb, key, recirc_id, NULL, 0, last, true, ufid);
++	return clone_execute(dp, skb, key, recirc_id, NULL, 0, last, true, flow/*ufid*/);
+ }
+ 
+ static int execute_check_pkt_len(struct datapath *dp, struct sk_buff *skb,
+ 				 struct sw_flow_key *key,
+ 				 const struct nlattr *attr,
+ 				 bool last,
+-				 const struct sw_flow_id *ufid)
++				 struct sw_flow *flow/*
++				 const struct sw_flow_id *ufid*/)
+ {
+ 	const struct nlattr *actions, *cpl_arg;
+ 	const struct check_pkt_len_arg *arg;
+@@ -1264,7 +1267,7 @@ static int execute_check_pkt_len(struct datapath *dp, struct sk_buff *skb,
+ 	}
+ 
+ 	return clone_execute(dp, skb, key, 0, nla_data(actions),
+-			     nla_len(actions), last, clone_flow_key, ufid);
++			     nla_len(actions), last, clone_flow_key, flow/*ufid*/);
+ }
+ 
+ static bool is_flood_flow(const struct sw_flow_key *key,
+@@ -1297,14 +1300,15 @@ static bool is_flood_flow(const struct sw_flow_key *key,
+ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			      struct sw_flow_key *key,
+ 			      const struct nlattr *attr, int len,
+-			      const struct sw_flow_id *ufid)
++				  struct sw_flow *flow
++			      /*const struct sw_flow_id *ufid*/)
+ {
+ 	const struct nlattr *a;
+ 	int rem;
+ 	bool flood_flow = is_flood_flow(key, attr, len);
+ 
+ 	// TODO: Set correct action instead of PP_AM_SET_OUTPUT
+-	am_skb_preprocessing(PP_AM_SET_OUTPUT, ufid, skb);
++	am_skb_preprocessing(PP_AM_SET_OUTPUT, flow/*ufid*/, skb);
+ 
+ 	for (a = attr, rem = len; rem > 0;
+ 	     a = nla_next(a, &rem)) {
+@@ -1316,7 +1320,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			struct sk_buff *clone;
+ 
+ 			if (flood_flow) {
+-				am_skb_postprocessing(PP_AM_SET_FLOOD, ufid, skb);
++				am_skb_postprocessing(PP_AM_SET_FLOOD, flow/*ufid*/, skb);
+ 			}
+ 			/* Every output action needs a separate clone
+ 			 * of 'skb', In case the output action is the
+@@ -1324,14 +1328,14 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			 */
+ 			if (nla_is_last(a, rem)) {
+ 				if (!flood_flow) {
+-					am_skb_postprocessing(PP_AM_SET_OUTPUT, ufid, skb);
++					am_skb_postprocessing(PP_AM_SET_OUTPUT, flow/*ufid*/, skb);
+ 				}
+ 				do_output(dp, skb, port, key);
+ 				/* 'skb' has been used for output.
+ 				 */
+ 				return 0;
+ 			} else {
+-				am_skb_postprocessing(PP_AM_SET_SKIP, ufid, skb);
++				am_skb_postprocessing(PP_AM_SET_SKIP, flow/*ufid*/, skb);
+ 			}
+ 
+ 			clone = skb_clone(skb, GFP_ATOMIC);
+@@ -1350,7 +1354,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 		}
+ 
+ 		case OVS_ACTION_ATTR_USERSPACE:
+-			am_skb_postprocessing(PP_AM_SET_SKIP, ufid, skb);
++			am_skb_postprocessing(PP_AM_SET_SKIP, flow/*ufid*/, skb);
+ 			output_userspace(dp, skb, key, a, attr,
+ 						     len, OVS_CB(skb)->cutlen);
+ 			OVS_CB(skb)->cutlen = 0;
+@@ -1379,7 +1383,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 		case OVS_ACTION_ATTR_RECIRC: {
+ 			bool last = nla_is_last(a, rem);
+ 
+-			err = execute_recirc(dp, skb, key, a, last, ufid);
++			err = execute_recirc(dp, skb, key, a, last, flow/*ufid*/);
+ 			if (last) {
+ 				/* If this is the last action, the skb has
+ 				 * been consumed or freed.
+@@ -1402,7 +1406,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 		case OVS_ACTION_ATTR_SAMPLE: {
+ 			bool last = nla_is_last(a, rem);
+ 
+-			err = sample(dp, skb, key, a, last, ufid);
++			err = sample(dp, skb, key, a, last, flow/*ufid*/);
+ 			if (last)
+ 				return err;
+ 
+@@ -1462,7 +1466,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 		case OVS_ACTION_ATTR_CLONE: {
+ 			bool last = nla_is_last(a, rem);
+ 
+-			err = clone(dp, skb, key, a, last, ufid);
++			err = clone(dp, skb, key, a, last, flow/*ufid*/);
+ 			if (last)
+ 				return err;
+ 			break;
+@@ -1471,7 +1475,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 		case OVS_ACTION_ATTR_CHECK_PKT_LEN: {
+                         bool last = nla_is_last(a, rem);
+ 
+-                        err = execute_check_pkt_len(dp, skb, key, a, last, ufid);
++                        err = execute_check_pkt_len(dp, skb, key, a, last, flow/*ufid*/);
+                         if (last)
+                                 return err;
+ 
+@@ -1484,7 +1488,7 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			return err;
+ 		}
+ 	}
+-	am_skb_postprocessing(PP_AM_SET_DROP, ufid, skb);
++	am_skb_postprocessing(PP_AM_SET_DROP, flow/*ufid*/, skb);
+ 
+ 	consume_skb(skb);
+ 	return 0;
+@@ -1500,7 +1504,8 @@ static int clone_execute(struct datapath *dp, struct sk_buff *skb,
+ 			 struct sw_flow_key *key, u32 recirc_id,
+ 			 const struct nlattr *actions, int len,
+ 			 bool last, bool clone_flow_key,
+-			 const struct sw_flow_id *ufid)
++			 struct sw_flow *flow/*
++			 const struct sw_flow_id *ufid*/)
+ {
+ 	struct deferred_action *da;
+ 	struct sw_flow_key *clone;
+@@ -1527,7 +1532,7 @@ static int clone_execute(struct datapath *dp, struct sk_buff *skb,
+ 				__this_cpu_inc(exec_actions_level);
+ 
+ 			err = do_execute_actions(dp, skb, clone,
+-						 actions, len, ufid);
++						 actions, len, flow/*ufid*/);
+ 
+ 			if (clone_flow_key)
+ 				__this_cpu_dec(exec_actions_level);
+@@ -1564,7 +1569,7 @@ static int clone_execute(struct datapath *dp, struct sk_buff *skb,
+ 	return 0;
+ }
+ 
+-static void process_deferred_actions(struct datapath *dp, const struct sw_flow_id *ufid)
++static void process_deferred_actions(struct datapath *dp, struct sw_flow *flow/*const struct sw_flow_id *ufid*/)
+ {
+ 	struct action_fifo *fifo = this_cpu_ptr(action_fifos);
+ 
+@@ -1581,7 +1586,7 @@ static void process_deferred_actions(struct datapath *dp, const struct sw_flow_i
+ 		int actions_len = da->actions_len;
+ 
+ 		if (actions)
+-			do_execute_actions(dp, skb, key, actions, actions_len, ufid);
++			do_execute_actions(dp, skb, key, actions, actions_len, flow/*ufid*/);
+ 		else
+ 			ovs_dp_process_packet(skb, key);
+ 	} while (!action_fifo_is_empty(fifo));
+@@ -1593,8 +1598,9 @@ static void process_deferred_actions(struct datapath *dp, const struct sw_flow_i
+ /* Execute a list of actions against 'skb'. */
+ int ovs_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			const struct sw_flow_actions *acts,
++			struct sw_flow *flow/*,
+ 			struct sw_flow_key *key,
+-			const struct sw_flow_id *ufid)
++			const struct sw_flow_id *ufid*/)
+ {
+ 	int err, level;
+ 
+@@ -1608,11 +1614,11 @@ int ovs_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 	}
+ 
+ 	OVS_CB(skb)->acts_origlen = acts->orig_len;
+-	err = do_execute_actions(dp, skb, key,
+-				 acts->actions, acts->actions_len, ufid);
++	err = do_execute_actions(dp, skb, &flow->key,/*key,*/
++				 acts->actions, acts->actions_len, flow/*ufid*/);
+ 
+ 	if (level == 1)
+-		process_deferred_actions(dp, ufid);
++		process_deferred_actions(dp, flow/*ufid*/);
+ 
+ out:
+ 	__this_cpu_dec(exec_actions_level);
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index 2e3e525eb..a0103afdf 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -49,7 +49,7 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 	new_session.proactive_session = proactive_flag;
+ 	flow->acl_state = NOT_ACCELERATE;
+ 
+-	err = pp_am_create_session(&new_session);
++	err = pp_am_create_session(&new_session, &flow->pp_am_id);
+ 
+ 	if (err == PP_AM_OK)
+ 		flow->acl_state = ACCELERATED;
+@@ -69,7 +69,7 @@ int am_mod_session(struct datapath *dp, struct sw_flow *flow)
+ 	if (err)
+ 		return err;
+ 
+-	err = pp_am_modify_session(&new_session);
++	err = pp_am_modify_session(&new_session, &flow->pp_am_id);
+ 
+ 	if (err != PP_AM_OK)
+ 		flow->acl_state = NOT_ACCELERATE;
+@@ -91,7 +91,7 @@ int am_remove_session(struct sw_flow *flow)
+ 
+ 	memset(&response, 0, sizeof(struct pp_am_stats));
+ 
+-	err = pp_am_delete_session((struct pp_am_flow_id *)&flow->id, &response);
++	err = pp_am_delete_session((struct pp_am_flow_id *)&flow->id, flow->pp_am_id, &response);
+ 
+ 	if (err != PP_AM_OK)
+ 		return err;
+@@ -112,7 +112,7 @@ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *sta
+ 	if (flow->acl_state == ACCELERATED) {
+ 		memset(&response, 0, sizeof(struct pp_am_stats));
+ 
+-		pp_am_get_session_stats((struct pp_am_flow_id *)&flow->id, &response);
++		pp_am_get_session_stats((struct pp_am_flow_id *)&flow->id, flow->pp_am_id, &response);
+ 
+ 		update_flow_am_stats((struct sw_flow *)flow, &response);
+ 	}
+@@ -124,18 +124,18 @@ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *sta
+ 	}
+ }
+ 
+-void am_skb_preprocessing(pp_am_skb_process_action action, const struct sw_flow_id *ufid, struct sk_buff *skb)
++void am_skb_preprocessing(pp_am_skb_process_action action, struct sw_flow *flow/*const struct sw_flow_id *ufid*/, struct sk_buff *skb)
+ {
+-	if (!ufid || !skb)
++	if (!flow || !skb)
+ 		return;
+ 
+-	pp_am_skb_preprocess(action, (u32 *)ufid->ufid, skb);
++	pp_am_skb_preprocess(action, (u32 *)flow->id.ufid/*ufid->ufid*/, flow->pp_am_id, skb);
+ }
+ 
+-void am_skb_postprocessing(pp_am_skb_process_action action, const struct sw_flow_id *ufid, struct sk_buff *skb)
++void am_skb_postprocessing(pp_am_skb_process_action action, struct sw_flow *flow/*const struct sw_flow_id *ufid*/, struct sk_buff *skb)
+ {
+-	if (!ufid || !skb)
++	if (!flow || !skb)
+ 		return;
+ 
+-	pp_am_skb_postprocess(action, (u32 *)ufid->ufid, skb);
++	pp_am_skb_postprocess(action, (u32 *)flow->id.ufid/*ufid->ufid*/, flow->pp_am_id, skb);
+ }
+diff --git a/datapath/am_pp.h b/datapath/am_pp.h
+index 9f01eca0c..e81b904d4 100644
+--- a/datapath/am_pp.h
++++ b/datapath/am_pp.h
+@@ -40,7 +40,7 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ int am_mod_session(struct datapath *dp, struct sw_flow *flow);
+ int am_remove_session(struct sw_flow *flow);
+ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *stats, unsigned long *used);
+-void am_skb_preprocessing(pp_am_skb_process_action action, const struct sw_flow_id *ufid, struct sk_buff *skb);
+-void am_skb_postprocessing(pp_am_skb_process_action action, const struct sw_flow_id *ufid, struct sk_buff *skb);
++void am_skb_preprocessing(pp_am_skb_process_action action, struct sw_flow *flow/*const struct sw_flow_id *ufid*/, struct sk_buff *skb);
++void am_skb_postprocessing(pp_am_skb_process_action action, struct sw_flow *flow/*const struct sw_flow_id *ufid*/, struct sk_buff *skb);
+ 
+ #endif /* am_pp.h */
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 9ede6de67..7865b5464 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -376,7 +376,7 @@ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key)
+ 
+ 	ovs_flow_stats_update(flow, key->tp.flags, skb);
+ 	sf_acts = rcu_dereference(flow->sf_acts);
+-	ovs_execute_actions(dp, skb, sf_acts, key, &flow->id);
++	ovs_execute_actions(dp, skb, sf_acts, flow /*key, &flow->id*/);
+ 
+ 	stats_counter = &stats->n_hit;
+ 
+@@ -737,7 +737,7 @@ static int ovs_packet_cmd_execute(struct sk_buff *skb, struct genl_info *info)
+ 	sf_acts = rcu_dereference(flow->sf_acts);
+ 
+ 	local_bh_disable();
+-	err = ovs_execute_actions(dp, packet, sf_acts, &flow->key, &flow->id);
++	err = ovs_execute_actions(dp, packet, sf_acts, flow/*&flow->key, &flow->id*/);
+ 	local_bh_enable();
+ 	rcu_read_unlock();
+ 
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index 8c2d890e0..7f0889fcf 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -274,8 +274,8 @@ struct sk_buff *ovs_vport_cmd_build_info(struct vport *vport, struct net *net,
+ 					 u32 portid, u32 seq, u8 cmd);
+ 
+ int ovs_execute_actions(struct datapath *dp, struct sk_buff *skb,
+-			const struct sw_flow_actions *, struct sw_flow_key *,
+-			const struct sw_flow_id *ufid);
++			const struct sw_flow_actions *, struct sw_flow *flow /*, struct sw_flow_key *,
++			const struct sw_flow_id *ufid*/);
+ 
+ void ovs_dp_notify_wq(struct work_struct *work);
+ 
+diff --git a/datapath/flow.h b/datapath/flow.h
+index a5c0c80e2..920d86a98 100644
+--- a/datapath/flow.h
++++ b/datapath/flow.h
+@@ -231,6 +231,7 @@ struct sw_flow {
+ 					 * 'stats[0]'.
+ 					 */
+ 	int acl_state;			/*hold value that say about session is accelerated, not accelerated or undefined.*/
++	u32 pp_am_id;               /* acceleration module id */
+ 	struct {
+ 		u64 bytes;
+ 		u64 packets;

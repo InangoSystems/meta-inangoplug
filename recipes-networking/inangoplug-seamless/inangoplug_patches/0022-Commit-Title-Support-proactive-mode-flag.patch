@@ -1,0 +1,188 @@
+From 5d3c8603d3fa4d56e70dbe20f34a764709d41bf5 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Tue, 1 Jun 2021 02:07:20 +0300
+Subject: [PATCH] Commit Title          : Support proactive mode flag.
+
+BugID                 : 24296
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Added new field to dpif_flow_put structure and made changes to fill it.
+---
+ datapath/am_pp.c                                  |  3 ++-
+ datapath/am_pp.h                                  |  2 +-
+ datapath/datapath.c                               |  3 ++-
+ datapath/linux/compat/include/linux/openvswitch.h |  6 ++++++
+ lib/dpif-netlink.c                                | 10 ++++++++++
+ lib/dpif.h                                        |  6 ++++++
+ ofproto/ofproto-dpif-upcall.c                     |  6 ++++++
+ 7 files changed, 33 insertions(+), 3 deletions(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index e1175653d..b778f5bdd 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -25,7 +25,7 @@
+ #include "am_pp.h"
+ #include "datapath.h"
+ 
+-int am_create_session(struct datapath *dp, struct sw_flow *flow)
++int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_flag)
+ {
+ 	struct am_session new_session;
+ 	int err;
+@@ -34,6 +34,7 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow)
+ 	if (err)
+ 		return err;
+ 
++	new_session.proactive_session = proactive_flag;
+ 	flow->acl_state = NOT_ACCELERATE;
+ 
+ //	err = send_create_to_am(&new_session);
+diff --git a/datapath/am_pp.h b/datapath/am_pp.h
+index e81188780..e956b434f 100644
+--- a/datapath/am_pp.h
++++ b/datapath/am_pp.h
+@@ -45,7 +45,7 @@ enum response_status {
+     GENERIC_FAIL
+ };
+ 
+-int am_create_session(struct datapath *dp, struct sw_flow *flow);
++int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_flag);
+ int am_mod_session(struct datapath *dp, struct sw_flow *flow);
+ void am_remove_session(struct sw_flow *flow);
+ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *stats, unsigned long *used);
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 5b7ec00f1..9ede6de67 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -1112,7 +1112,7 @@ static int ovs_flow_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 			acts = NULL;
+ 			goto err_unlock_ovs;
+ 		}
+-		am_create_session(dp, new_flow);
++		am_create_session(dp, new_flow, a[OVS_FLOW_ATTR_PROACTIVE_FLAG]);
+ 
+ 		if (unlikely(reply)) {
+ 			error = ovs_flow_cmd_fill_info(new_flow,
+@@ -1558,6 +1558,7 @@ static const struct nla_policy flow_policy[OVS_FLOW_ATTR_MAX + 1] = {
+ 	[OVS_FLOW_ATTR_PROBE] = { .type = NLA_FLAG },
+ 	[OVS_FLOW_ATTR_UFID] = { .type = NLA_UNSPEC, .len = 1 },
+ 	[OVS_FLOW_ATTR_UFID_FLAGS] = { .type = NLA_U32 },
++	[OVS_FLOW_ATTR_PROACTIVE_FLAG] = { .type = NLA_FLAG },
+ };
+ 
+ static const struct genl_ops dp_flow_genl_ops[] = {
+diff --git a/datapath/linux/compat/include/linux/openvswitch.h b/datapath/linux/compat/include/linux/openvswitch.h
+index 2f0c6559e..36a118457 100644
+--- a/datapath/linux/compat/include/linux/openvswitch.h
++++ b/datapath/linux/compat/include/linux/openvswitch.h
+@@ -37,6 +37,11 @@
+  * ----------------------------------------------------------------------
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #ifndef _LINUX_OPENVSWITCH_H
+ #define _LINUX_OPENVSWITCH_H 1
+ 
+@@ -642,6 +647,7 @@ enum ovs_flow_attr {
+ 				  * logging should be suppressed. */
+ 	OVS_FLOW_ATTR_UFID,      /* Variable length unique flow identifier. */
+ 	OVS_FLOW_ATTR_UFID_FLAGS,/* u32 of OVS_UFID_F_*. */
++	OVS_FLOW_ATTR_PROACTIVE_FLAG, /* Bool flag for proactive or reactive mode. */
+ 	OVS_FLOW_ATTR_PAD,
+ 	__OVS_FLOW_ATTR_MAX
+ };
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index 5b5c96d72..bac4bcf13 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -14,6 +14,11 @@
+  * limitations under the License.
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #include <config.h>
+ 
+ #include "dpif-netlink.h"
+@@ -143,6 +148,7 @@ struct dpif_netlink_flow {
+     const ovs_32aligned_u64 *used;      /* OVS_FLOW_ATTR_USED. */
+     bool clear;                         /* OVS_FLOW_ATTR_CLEAR. */
+     bool probe;                         /* OVS_FLOW_ATTR_PROBE. */
++    bool proactive_flag;                /* Proactive mode. Reactive mode this flag is false. */
+ };
+ 
+ static void dpif_netlink_flow_init(struct dpif_netlink_flow *);
+@@ -1382,6 +1388,7 @@ dpif_netlink_init_flow_put(struct dpif_netlink *dpif,
+         request->probe = true;
+     }
+     request->nlmsg_flags = put->flags & DPIF_FP_MODIFY ? 0 : NLM_F_CREATE;
++    request->proactive_flag = put->proactive_flag;
+ }
+ 
+ static void
+@@ -4557,6 +4564,9 @@ dpif_netlink_flow_to_ofpbuf(const struct dpif_netlink_flow *flow,
+     if (flow->probe) {
+         nl_msg_put_flag(buf, OVS_FLOW_ATTR_PROBE);
+     }
++    if (flow->proactive_flag) {
++        nl_msg_put_flag(buf, OVS_FLOW_ATTR_PROACTIVE_FLAG);
++    }
+ }
+ 
+ /* Clears 'flow' to "empty" values. */
+diff --git a/lib/dpif.h b/lib/dpif.h
+index 4df8f7c8b..936539149 100644
+--- a/lib/dpif.h
++++ b/lib/dpif.h
+@@ -14,6 +14,11 @@
+  * limitations under the License.
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ /*
+  * dpif, the DataPath InterFace.
+  *
+@@ -666,6 +671,7 @@ struct dpif_flow_put {
+     size_t actions_len;             /* Length of 'actions' in bytes. */
+     const ovs_u128 *ufid;           /* Optional unique flow identifier. */
+     unsigned pmd_id;                /* Datapath poll mode driver id. */
++    bool proactive_flag;            /* Proactive mode. Reactive mode this flag is false. */
+ 
+     /* Output. */
+     struct dpif_flow_stats *stats;  /* Optional flow statistics. */
+diff --git a/ofproto/ofproto-dpif-upcall.c b/ofproto/ofproto-dpif-upcall.c
+index 409286ab1..27f0ccc16 100644
+--- a/ofproto/ofproto-dpif-upcall.c
++++ b/ofproto/ofproto-dpif-upcall.c
+@@ -12,6 +12,11 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #include <config.h>
+ #include "ofproto-dpif-upcall.h"
+ 
+@@ -2343,6 +2348,7 @@ put_op_init(struct ukey_op *op, struct udpif_key *ukey,
+     op->ukey = ukey;
+     op->dop.type = DPIF_OP_FLOW_PUT;
+     op->dop.flow_put.flags = flags;
++    op->dop.flow_put.proactive_flag = false;
+     op->dop.flow_put.key = ukey->key;
+     op->dop.flow_put.key_len = ukey->key_len;
+     op->dop.flow_put.mask = ukey->mask;

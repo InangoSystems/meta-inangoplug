@@ -1,0 +1,102 @@
+From 3cfcf35cdbef00f0a94bd2fcd1a87074a1ee8f24 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Fri, 18 Jun 2021 00:35:57 +0300
+Subject: [PATCH] Commit Title          : Kernel bug during init ovs datapath
+
+BugID                 : 24555
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Added some conditions to check pointers on NULL to avoid NULL dereference.
+---
+ datapath/am_pp.c           | 18 ++++++++++++++++++
+ datapath/translate_dp_am.c | 10 +++++++++-
+ 2 files changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index c6c3c0405..2e3e525eb 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -39,6 +39,9 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 	struct pm_am_session new_session;
+ 	int err;
+ 
++	if (!dp || !flow)
++		return -EINVAL;
++
+ 	err = translate_to_am_session(dp, flow, &new_session);
+ 	if (err)
+ 		return err;
+@@ -59,6 +62,9 @@ int am_mod_session(struct datapath *dp, struct sw_flow *flow)
+ 	struct pm_am_session new_session;
+ 	int err;
+ 
++	if (!dp || !flow)
++		return -EINVAL;
++
+ 	err = translate_to_am_session(dp, flow, &new_session);
+ 	if (err)
+ 		return err;
+@@ -76,6 +82,9 @@ int am_remove_session(struct sw_flow *flow)
+ 	struct pp_am_stats response;
+ 	int err = PP_AM_OK;
+ 
++	if (!flow)
++		return -EINVAL;
++
+ 	if (flow->acl_state != ACCELERATED) {
+ 		return err;
+ 	}
+@@ -97,6 +106,9 @@ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *sta
+ {
+ 	struct pp_am_stats response;
+ 
++	if (!stats || !flow || !used)
++		return;
++
+ 	if (flow->acl_state == ACCELERATED) {
+ 		memset(&response, 0, sizeof(struct pp_am_stats));
+ 
+@@ -114,10 +126,16 @@ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *sta
+ 
+ void am_skb_preprocessing(pp_am_skb_process_action action, const struct sw_flow_id *ufid, struct sk_buff *skb)
+ {
++	if (!ufid || !skb)
++		return;
++
+ 	pp_am_skb_preprocess(action, (u32 *)ufid->ufid, skb);
+ }
+ 
+ void am_skb_postprocessing(pp_am_skb_process_action action, const struct sw_flow_id *ufid, struct sk_buff *skb)
+ {
++	if (!ufid || !skb)
++		return;
++
+ 	pp_am_skb_postprocess(action, (u32 *)ufid->ufid, skb);
+ }
+diff --git a/datapath/translate_dp_am.c b/datapath/translate_dp_am.c
+index 5d3998f4e..f402b58a1 100644
+--- a/datapath/translate_dp_am.c
++++ b/datapath/translate_dp_am.c
+@@ -337,13 +337,21 @@ int translate_to_am_session(struct datapath *dp, struct sw_flow *flow,
+                                               struct pm_am_session *session)
+ {
+ 	int err;
++	struct vport *port;
++
++	if (!dp || !flow || !session)
++		return -EINVAL;
+ 
+ 	memset(session, 0, sizeof(struct pm_am_session));
+ 
+ 	err = translate_to_egr_prop(dp, flow->sf_acts, &flow->key, session);
+ 
+ 	memcpy(&session->match.ingress, &flow->key, sizeof(struct pp_am_flow_key));
+-	session->match.ingress_port = ovs_vport_rcu(dp, flow->key.phy.in_port)->dev->ifindex;
++
++	port = ovs_vport_rcu(dp, flow->key.phy.in_port);
++	if (port && port->dev)
++		session->match.ingress_port = port->dev->ifindex;
++
+ 	session->wildcard = (struct pp_am_flow_mask *)flow->mask;
+ 	memcpy(&session->ufid, &flow->id, sizeof(struct pp_am_flow_id));
+ 	session->idle_timeout = -1;

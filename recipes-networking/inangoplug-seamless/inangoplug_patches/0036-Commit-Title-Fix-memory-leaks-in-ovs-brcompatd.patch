@@ -1,0 +1,69 @@
+From 3f4e97c22c561eb28d263138828d067e5fe9c764 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Thu, 17 Jun 2021 18:02:24 +0500
+Subject: [PATCH] Commit Title          : Fix memory leaks in ovs-brcompatd
+
+BugID                 : 24539
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Added couple of missed free() invocations
+---
+ vswitchd/ovs-brcompatd.c | 22 +++++++++++-----------
+ 1 file changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 530654ef3..bf84f4da7 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -514,8 +514,9 @@ handle_fdb_query_cmd(struct ofpbuf *buffer)
+     }
+ 
+     /* Fetch the forwarding database using ovs-appctl. */
+-    output = capture_vsctl(appctl_program, "fdb/show", br_name,
+-                           (char *) NULL);
++    output = capture_vsctl(appctl_program, "fdb/show", br_name, (char *) NULL);
++    free(br_name);
++    
+     if (!output) {
+         error = ECHILD;
+         send_simple_reply(seq, error);
+@@ -838,15 +839,14 @@ handle_get_ulong_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+             result = 0;
+             goto send_reply;
+         }
+-        output++;
++
+         errno = 0;
+-        result = strtoul(output, &end_p, 10);
+-        if (end_p == output || *end_p != '\"' || (result == ULONG_MAX && (errno == ERANGE))) {
++        result = strtoul(output + 1, &end_p, 10);
++        if (end_p == (output + 1) || *end_p != '\"' || (result == ULONG_MAX && (errno == ERANGE))) {
+             VLOG_ERR("Error occurred during converting string to int cmd\n");
+             result = 0;
+             goto send_reply;
+         }
+-        output--;
+     }
+ 
+ send_reply:
+@@ -905,14 +905,14 @@ handle_get_ulong_val_port_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+             result = 0;
+             goto send_reply;
+         }
+-        output++;
++
+         errno = 0;
+-        result = strtoul(output, &end_p, 10);
+-        if (end_p == output || *end_p != '\"' || (result == ULONG_MAX && (errno == ERANGE))) {
++        result = strtoul(output + 1, &end_p, 10);
++        if (end_p == (output + 1) || *end_p != '\"' || (result == ULONG_MAX && (errno == ERANGE))) {
+             VLOG_ERR("Error occurred during converting string to int cmd\n");
+-            return EINVAL;
++            result = 0;
++            goto send_reply;
+         }
+-        output--;
+     }
+ 
+ send_reply:

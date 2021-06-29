@@ -1,6 +1,6 @@
 #
 # Code is taken "as is" from upstream OpenEmbedded version based on this state:
-# https://git.yoctoproject.org/cgit/cgit.cgi/meta-virtualization/commit/recipes-networking/openvswitch/openvswitch_git.bb?h=zeus&id=98883bf42582b0271dffec0f6c344618ef55c4b7
+# https://git.yoctoproject.org/cgit/cgit.cgi/meta-virtualization/commit/recipes-networking/openvswitch/openvswitch_git.bb?h=zeus&id=92cd3467502bd27b98a76862ca6525ce425a8479
 #
 
 require openvswitch.inc
@@ -10,16 +10,16 @@ DEPENDS += "virtual/kernel"
 PACKAGE_ARCH = "${MACHINE_ARCH}"
 
 RDEPENDS_${PN}-ptest += "\
-	python3-logging python3-syslog python3-io \
+	python3-logging python3-syslog python3-io python3-core \
 	python3-fcntl python3-shell python3-xml python3-math \
 	python3-datetime python3-netclient python3 sed \
 	ldd perl-module-socket perl-module-carp perl-module-exporter \
 	perl-module-xsloader python3-netserver python3-threading \
-	python3-resource findutils which \
+	python3-resource findutils which diffutils \
 	"
 
 S = "${WORKDIR}/git"
-PV = "2.11+${SRCPV}"
+PV = "2.13+${SRCPV}"
 
 FILESEXTRAPATHS_append := "${THISDIR}/${PN}-git:"
 
@@ -28,13 +28,11 @@ SRC_URI = "file://openvswitch-switch \
            file://openvswitch-switch-setup \
            file://openvswitch-testcontroller \
            file://openvswitch-testcontroller-setup \
-           git://github.com/openvswitch/ovs.git;protocol=git;branch=branch-2.11 \
-           file://openvswitch-add-ptest-78e203138cb7253e9ca5ad8a2c4ed6bb6752f23e.patch \
+           git://github.com/openvswitch/ovs.git;protocol=git;branch=branch-2.13 \
+           file://openvswitch-add-ptest-71d553b995d0bd527d3ab1e9fbaf5a2ae34de2f3.patch \
            file://run-ptest \
            file://disable_m4_check.patch \
            file://kernel_module.patch \
-           file://python-make-remaining-scripts-use-usr-bin-env.patch \
-           file://0002-Define-WAIT_ANY-if-not-provided-by-system.patch \
            file://python-switch-remaining-scripts-to-use-python3.patch \
            file://systemd-update-tool-paths.patch \
            file://systemd-create-runtime-dirs.patch \

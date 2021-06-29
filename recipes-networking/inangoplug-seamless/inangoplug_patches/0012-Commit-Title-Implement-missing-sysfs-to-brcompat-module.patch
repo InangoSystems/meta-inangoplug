@@ -1,4 +1,4 @@
-From 4fb64c0d123c25f85c5cfadd522f1a2865f741a2 Mon Sep 17 00:00:00 2001
+From 0a79807433e133d68f9725b2591f8ae380e4f41b Mon Sep 17 00:00:00 2001
 From: "Puz, Dmytro" <d.puz@inango-systems.com>
 Date: Mon, 29 Mar 2021 13:26:06 +0300
 Subject: [PATCH] Commit Title: Implement missing sysfs to brcompat module
@@ -129,7 +129,7 @@ index 7e8b58b24..30c99ee91 100644
  	ovs_dp_getHead = getHead;
  
 diff --git a/datapath/datapath.c b/datapath/datapath.c
-index 32b118d4e..e8bff88a9 100644
+index 9c1537197..4bbd83a56 100644
 --- a/datapath/datapath.c
 +++ b/datapath/datapath.c
 @@ -16,6 +16,11 @@
@@ -157,7 +157,7 @@ index 32b118d4e..e8bff88a9 100644
  static struct genl_family dp_packet_genl_family;
  static struct genl_family dp_flow_genl_family;
  static struct genl_family dp_datapath_genl_family;
-@@ -1748,8 +1759,6 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
+@@ -1778,8 +1789,6 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
  	ovs_net = net_generic(ovs_dp_get_net(dp), ovs_net_id);
  	list_add_tail_rcu(&dp->list_node, &ovs_net->dps);
  
@@ -166,7 +166,7 @@ index 32b118d4e..e8bff88a9 100644
  	ovs_unlock();
  
  	ovs_notify(&dp_datapath_genl_family, &ovs_dp_datapath_multicast_group, reply, info);
-@@ -2204,21 +2213,22 @@ restart:
+@@ -2246,21 +2255,22 @@ restart:
  		head = ovs_dp_getHead();
  
  		if (head == NULL)
@@ -193,7 +193,7 @@ index 32b118d4e..e8bff88a9 100644
  				      info->snd_portid, info->snd_seq, 0,
  				      OVS_VPORT_CMD_NEW);
 diff --git a/datapath/datapath.h b/datapath/datapath.h
-index da6a16fcd..b647496d7 100644
+index 57ce4ffcb..9083ca2bd 100644
 --- a/datapath/datapath.h
 +++ b/datapath/datapath.h
 @@ -16,6 +16,11 @@
@@ -209,7 +209,7 @@ index da6a16fcd..b647496d7 100644
  #define DATAPATH_H 1
  
 @@ -255,6 +260,8 @@ extern struct genl_family dp_vport_genl_family;
- extern struct genl_multicast_group ovs_dp_vport_multicast_group;
+ extern const struct genl_multicast_group ovs_dp_vport_multicast_group;
  extern int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
  extern br_pair_t* (*ovs_dp_getHead)(void);
 +extern int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);

@@ -1,0 +1,106 @@
+From d0b16ef5ee8c397bfff5f97ae43608114c492ec5 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Thu, 24 Jun 2021 15:45:34 +0300
+Subject: [PATCH] Commit Title          : Incorrect am_id during call to
+ acceleration module
+
+BugID                 : 24667
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Fixing incorrect am_id during call to acceleration module
+---
+ datapath/actions.c | 10 +++++++---
+ datapath/am_pp.c   | 12 +++++++++++-
+ datapath/am_pp.h   |  2 +-
+ 3 files changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/datapath/actions.c b/datapath/actions.c
+index ee1cc8ccc..a80eec42d 100644
+--- a/datapath/actions.c
++++ b/datapath/actions.c
+@@ -1310,6 +1310,13 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 	// TODO: Set correct action instead of PP_AM_SET_OUTPUT
+ 	am_skb_preprocessing(PP_AM_SET_OUTPUT, flow/*ufid*/, skb);
+ 
++	if (flow->acl_state != ACCELERATED) {
++		am_skb_postprocessing(PP_AM_SET_SKIP, flow/*ufid*/, skb);
++	}
++	if (flood_flow) {
++		am_skb_postprocessing(PP_AM_SET_FLOOD, flow/*ufid*/, skb);
++	}
++
+ 	for (a = attr, rem = len; rem > 0;
+ 	     a = nla_next(a, &rem)) {
+ 		int err = 0;
+@@ -1319,9 +1326,6 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			int port = nla_get_u32(a);
+ 			struct sk_buff *clone;
+ 
+-			if (flood_flow) {
+-				am_skb_postprocessing(PP_AM_SET_FLOOD, flow/*ufid*/, skb);
+-			}
+ 			/* Every output action needs a separate clone
+ 			 * of 'skb', In case the output action is the
+ 			 * last action, cloning can be avoided.
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index a0103afdf..344359903 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -42,12 +42,12 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 	if (!dp || !flow)
+ 		return -EINVAL;
+ 
++	flow->acl_state = NOT_ACCELERATE;
+ 	err = translate_to_am_session(dp, flow, &new_session);
+ 	if (err)
+ 		return err;
+ 
+ 	new_session.proactive_session = proactive_flag;
+-	flow->acl_state = NOT_ACCELERATE;
+ 
+ 	err = pp_am_create_session(&new_session, &flow->pp_am_id);
+ 
+@@ -65,6 +65,10 @@ int am_mod_session(struct datapath *dp, struct sw_flow *flow)
+ 	if (!dp || !flow)
+ 		return -EINVAL;
+ 
++	if (flow->acl_state == NOT_ACCELERATE)
++		// TODO neer to understand proactive flag
++		return am_create_session(dp, flow, false);
++
+ 	err = translate_to_am_session(dp, flow, &new_session);
+ 	if (err)
+ 		return err;
+@@ -129,6 +133,9 @@ void am_skb_preprocessing(pp_am_skb_process_action action, struct sw_flow *flow/
+ 	if (!flow || !skb)
+ 		return;
+ 
++	if (flow->acl_state != ACCELERATED)
++		return;
++
+ 	pp_am_skb_preprocess(action, (u32 *)flow->id.ufid/*ufid->ufid*/, flow->pp_am_id, skb);
+ }
+ 
+@@ -137,5 +144,8 @@ void am_skb_postprocessing(pp_am_skb_process_action action, struct sw_flow *flow
+ 	if (!flow || !skb)
+ 		return;
+ 
++	if (flow->acl_state != ACCELERATED && action != PP_AM_SET_SKIP)
++		return;
++
+ 	pp_am_skb_postprocess(action, (u32 *)flow->id.ufid/*ufid->ufid*/, flow->pp_am_id, skb);
+ }
+diff --git a/datapath/am_pp.h b/datapath/am_pp.h
+index e81b904d4..26c4d89a5 100644
+--- a/datapath/am_pp.h
++++ b/datapath/am_pp.h
+@@ -30,8 +30,8 @@
+ struct datapath;
+ 
+ enum acl_state {
+-    ACCELERATED,
+     NOT_ACCELERATE,
++    ACCELERATED,
+     REMOVED,
+     UNDEFINED
+ };

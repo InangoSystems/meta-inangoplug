@@ -1,4 +1,4 @@
-From 00facfe0c4e6d3ff3689215f00426cc45ca8e5dc Mon Sep 17 00:00:00 2001
+From 97f3cec7bd0517606df3b42c9864a73698db5196 Mon Sep 17 00:00:00 2001
 From: Anastasiia Kononenko <a.hryts@inango-systems.com>
 Date: Tue, 30 Mar 2021 10:47:54 +0300
 Subject: [PATCH] Commit Title: Integrate OVS port protection patch
@@ -30,7 +30,7 @@ index 7c08b563b..f5394654a 100644
  	ofproto/netflow.c \
  	ofproto/netflow.h \
 diff --git a/ofproto/connmgr.c b/ofproto/connmgr.c
-index 684f77c39..57bcd7f02 100644
+index 51d656cba..ba9fa77ce 100644
 --- a/ofproto/connmgr.c
 +++ b/ofproto/connmgr.c
 @@ -16,6 +16,7 @@
@@ -41,7 +41,7 @@ index 684f77c39..57bcd7f02 100644
  #include <stdlib.h>
  
  #include "bundles.h"
-@@ -225,6 +226,7 @@ struct connmgr {
+@@ -227,6 +228,7 @@ struct connmgr {
  
      /* In-band control. */
      struct in_band *in_band;
@@ -49,7 +49,7 @@ index 684f77c39..57bcd7f02 100644
      struct sockaddr_in *extra_in_band_remotes;
      size_t n_extra_remotes;
      int in_band_queue;
-@@ -263,6 +265,7 @@ connmgr_create(struct ofproto *ofproto,
+@@ -264,6 +266,7 @@ connmgr_create(struct ofproto *ofproto,
      mgr->fail_mode = OFPROTO_FAIL_SECURE;
  
      mgr->in_band = NULL;
@@ -57,7 +57,7 @@ index 684f77c39..57bcd7f02 100644
      mgr->extra_in_band_remotes = NULL;
      mgr->n_extra_remotes = 0;
      mgr->in_band_queue = -1;
-@@ -331,6 +334,7 @@ connmgr_destroy(struct connmgr *mgr)
+@@ -326,6 +329,7 @@ connmgr_destroy(struct connmgr *mgr)
      mgr->fail_open = NULL;
  
      in_band_destroy(mgr->in_band);
@@ -65,7 +65,7 @@ index 684f77c39..57bcd7f02 100644
      mgr->in_band = NULL;
      free(mgr->extra_in_band_remotes);
      free(mgr->name);
-@@ -339,6 +343,22 @@ connmgr_destroy(struct connmgr *mgr)
+@@ -334,6 +338,22 @@ connmgr_destroy(struct connmgr *mgr)
      free(mgr);
  }
  
@@ -88,7 +88,7 @@ index 684f77c39..57bcd7f02 100644
  /* Does all of the periodic maintenance required by 'mgr'.  Calls
   * 'handle_openflow' for each message received on an OpenFlow connection,
   * passing along the OpenFlow connection itself and the message that was sent.
-@@ -1986,6 +2006,11 @@ connmgr_count_hidden_rules(const struct connmgr *mgr)
+@@ -1892,6 +1912,11 @@ connmgr_count_hidden_rules(const struct connmgr *mgr)
      if (mgr->in_band) {
          n_hidden += in_band_count_rules(mgr->in_band);
      }
@@ -101,10 +101,10 @@ index 684f77c39..57bcd7f02 100644
          n_hidden += fail_open_count_rules(mgr->fail_open);
      }
 diff --git a/ofproto/connmgr.h b/ofproto/connmgr.h
-index 7ca7fe67b..3a8a1d37b 100644
+index 079c8437c..248bebaaa 100644
 --- a/ofproto/connmgr.h
 +++ b/ofproto/connmgr.h
-@@ -178,6 +178,9 @@ void connmgr_set_in_band_queue(struct connmgr *, int queue_id);
+@@ -157,6 +157,9 @@ void connmgr_set_in_band_queue(struct connmgr *, int queue_id);
  /* In-band implementation. */
  bool connmgr_has_in_band(struct connmgr *);
  
@@ -463,10 +463,10 @@ index 000000000..af531a715
 +
 +#endif /* port-protection.h */
 diff --git a/vswitchd/bridge.c b/vswitchd/bridge.c
-index 83708ee51..5e4364085 100644
+index e591c26a6..12135ed28 100644
 --- a/vswitchd/bridge.c
 +++ b/vswitchd/bridge.c
-@@ -41,6 +41,7 @@
+@@ -42,6 +42,7 @@
  #include "nx-match.h"
  #include "ofproto/bond.h"
  #include "ofproto/ofproto.h"
@@ -474,7 +474,7 @@ index 83708ee51..5e4364085 100644
  #include "openvswitch/dynamic-string.h"
  #include "openvswitch/list.h"
  #include "openvswitch/meta-flow.h"
-@@ -318,6 +319,7 @@ static bool iface_is_synthetic(const struct iface *);
+@@ -355,6 +356,7 @@ static bool iface_is_synthetic(const struct iface *);
  static ofp_port_t iface_get_requested_ofp_port(
      const struct ovsrec_interface *);
  static ofp_port_t iface_pick_ofport(const struct ovsrec_interface *);
@@ -482,7 +482,7 @@ index 83708ee51..5e4364085 100644
  
  
  static void discover_types(const struct ovsrec_open_vswitch *cfg);
-@@ -710,6 +712,7 @@ bridge_reconfigure(const struct ovsrec_open_vswitch *ovs_cfg)
+@@ -940,6 +942,7 @@ bridge_reconfigure(const struct ovsrec_open_vswitch *ovs_cfg)
          bridge_configure_tables(br);
          bridge_configure_dp_desc(br);
          bridge_configure_aa(br);
@@ -490,7 +490,7 @@ index 83708ee51..5e4364085 100644
      }
      free(managers);
  
-@@ -3537,6 +3540,19 @@ equal_pathnames(const char *a, const char *b, size_t b_stoplen)
+@@ -3855,6 +3858,19 @@ get_controller_ofconn_type(const char *target, const char *type)
  }
  
  static void

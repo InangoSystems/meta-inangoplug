@@ -1,0 +1,219 @@
+From d0ad7882e85096cfb59bae10a65595c5175e799c Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Fri, 14 May 2021 12:52:55 +0500
+Subject: [PATCH] Commit Title          : Prepare exact match checker
+
+BugID                 : 23903
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Implemented exact match check for rule and actions
+- Added list with exact match rules to ofproto structure
+---
+ ofproto/ofproto-provider.h |   7 +++
+ ofproto/ofproto.c          | 130 +++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 137 insertions(+)
+
+diff --git a/ofproto/ofproto-provider.h b/ofproto/ofproto-provider.h
+index afecb24cb..1c8362f06 100644
+--- a/ofproto/ofproto-provider.h
++++ b/ofproto/ofproto-provider.h
+@@ -115,6 +115,9 @@ struct ofproto {
+     /* List of expirable flows, in all flow tables. */
+     struct ovs_list expirable OVS_GUARDED_BY(ofproto_mutex);
+ 
++    /* List of exact matches */
++    struct ovs_list exact_matches OVS_GUARDED_BY(ofproto_mutex);
++
+     /* Meter table.  */
+     struct ofputil_meter_features meter_features;
+     struct hmap meters;             /* uint32_t indexed 'struct meter *'.  */
+@@ -427,6 +430,10 @@ struct rule {
+      * rule is expirable, otherwise empty. */
+     struct ovs_list expirable OVS_GUARDED_BY(ofproto_mutex);
+ 
++    /* Optimisation for flow exact match.  In ofproto's 'exact_matches' list if this
++     * rule is exact match, otherwise empty. */
++    struct ovs_list exact_match OVS_GUARDED_BY(ofproto_mutex);
++
+     /* Times.  Last so that they are more likely close to the stats managed
+      * by the provider. */
+     long long int created OVS_GUARDED; /* Creation time. */
+diff --git a/ofproto/ofproto.c b/ofproto/ofproto.c
+index 08830d837..6665c9f83 100644
+--- a/ofproto/ofproto.c
++++ b/ofproto/ofproto.c
+@@ -530,6 +530,7 @@ ofproto_create(const char *datapath_name, const char *datapath_type,
+     hindex_init(&ofproto->cookies);
+     hmap_init(&ofproto->learned_cookies);
+     ovs_list_init(&ofproto->expirable);
++    ovs_list_init(&ofproto->exact_matches);
+     ofproto->connmgr = connmgr_create(ofproto, datapath_name, datapath_name);
+     ofproto->min_mtu = INT_MAX;
+     cmap_init(&ofproto->groups);
+@@ -5281,6 +5282,7 @@ ofproto_rule_create(struct ofproto *ofproto, struct cls_rule *cr,
+     rule->add_seqno = 0;
+     rule->modify_seqno = 0;
+     ovs_list_init(&rule->expirable);
++    ovs_list_init(&rule->exact_match);
+     ovs_mutex_unlock(&rule->mutex);
+ 
+     /* Construct rule, initializing derived state. */
+@@ -6202,8 +6204,10 @@ handle_flow_mod__(struct ofproto *ofproto, const struct ofputil_flow_mod *fm,
+ 
+     ovs_mutex_lock(&ofproto_mutex);
+     ofm.version = ofproto->tables_version + 1;
++    // create rule in internal db
+     error = ofproto_flow_mod_start(ofproto, &ofm);
+     if (!error) {
++        // call revalidator thread to apply changes into ovs datapath
+         ofproto_bump_tables_version(ofproto);
+         error = ofproto_flow_mod_finish(ofproto, &ofm, req);        
+         ofmonitor_flush(ofproto->connmgr);
+@@ -9096,6 +9100,121 @@ oftable_configure_eviction(struct oftable *table, unsigned int eviction,
+     }
+ }
+ 
++#define IS_ALL_ONES(ARG__)     is_all_ones(&(ARG__), sizeof(ARG__))
++
++/* Check if rule and actions from rule represent exact match
++ */
++static bool
++is_exact_match(struct rule *rule, const struct rule_actions *actions)
++{
++    struct match     m;
++    struct flow     *masks;
++    struct ofpact   *a;
++    ovs_be16         dl_type = OVS_BE16_MAX;
++    int              result;
++    const ofp_port_t any_port_mask = u16_to_ofp(UINT16_MAX);
++
++    /* Veify flow from rule */
++
++    minimatch_expand(&rule->cr.match, &m);
++    masks = &m.wc.masks;
++
++    if (m.flow.in_port.ofp_port == 0 || m.flow.in_port.ofp_port >= OFPP_MAX)
++        return false;
++
++    result = any_port_mask == (any_port_mask & masks->in_port.ofp_port);
++
++    if (m.flow.packet_type == htonl(PT_ETH)) {
++        result = result && IS_ALL_ONES(masks->dl_dst);
++        result = result && IS_ALL_ONES(masks->dl_src);
++        result = result && IS_ALL_ONES(masks->dl_type);
++
++        for (int i = 0; i < FLOW_MAX_VLAN_HEADERS; ++i) {
++            /* TODO: test m.flow.vlans[i] */
++            if (m.flow.vlans[i].tci == htons(0)) {
++                break;
++            }
++        }
++
++        dl_type = m.flow.dl_type;
++    } else {
++        dl_type = pt_ns_type_be(m.flow.packet_type);
++    }
++
++    if (dl_type == htons(ETH_TYPE_IP)) {
++        result = result && IS_ALL_ONES(masks->nw_src);
++        result = result && IS_ALL_ONES(masks->nw_dst);
++    } else if (dl_type == htons(ETH_TYPE_IPV6)) {
++        result = result && IS_ALL_ONES(masks->ipv6_src);
++        result = result && IS_ALL_ONES(masks->ipv6_dst);
++    }
++    
++    result = result && IS_ALL_ONES(masks->nw_proto);
++
++    /* TODO: implement proper nw_tos handling - the following code doesn't work as expected:
++     * result = result && IS_ALL_ONES(masks->nw_tos);
++     */
++
++    result = result && IS_ALL_ONES(masks->nw_frag);
++
++    if (!result) {
++        return false;
++    }
++
++    if (!(m.flow.nw_frag & FLOW_NW_FRAG_LATER)) {
++        switch (m.flow.nw_proto)
++        {
++        case IPPROTO_ICMP:
++        case IPPROTO_ICMPV6:
++        case IPPROTO_TCP:
++        case IPPROTO_UDP:
++        case IPPROTO_SCTP:
++        case IPPROTO_IGMP:
++            result = result && IS_ALL_ONES(masks->tp_src);
++            result = result && IS_ALL_ONES(masks->tp_dst);
++            if (m.flow.nw_proto == IPPROTO_IGMP) {
++                result = result && IS_ALL_ONES(masks->igmp_group_ip4);
++            }
++            break;
++        default:
++            break;
++        }
++    }
++
++    /* Verify actions */
++
++    if (!result || !actions->ofpacts_len) {
++        /* it's a drop */
++        return result;
++    }
++
++    result = false; /* no valid output found */
++
++    OFPACT_FOR_EACH (a, actions->ofpacts, actions->ofpacts_len) {
++        switch (a->type) {
++        case OFPACT_OUTPUT:
++            {
++                ofp_port_t out_port = ofpact_get_OUTPUT(a)->port;
++                if (out_port == 0 || out_port >= OFPP_MAX)
++                    return false;
++
++                result = true;
++            }
++            break;
++        case OFPACT_GROUP:
++        case OFPACT_CONTROLLER:
++        case OFPACT_RESUBMIT:
++        case OFPACT_LEARN:
++        case OFPACT_METER:
++            return false;
++        default:
++            break;
++        }
++    }
++
++    return result;
++}
++
+ /* Inserts 'rule' from the ofproto data structures BEFORE caller has inserted
+  * it to the classifier. */
+ static void
+@@ -9110,6 +9229,14 @@ ofproto_rule_insert__(struct ofproto *ofproto, struct rule *rule)
+     if (rule->hard_timeout || rule->idle_timeout) {
+         ovs_list_insert(&ofproto->expirable, &rule->expirable);
+     }
++
++    /*
++    * action must contains at least one Output port and doesn't contain any resubmit
++    */
++    if (is_exact_match(rule, actions)) {
++        ovs_list_insert(&ofproto->exact_matches, &rule->exact_match);
++    }
++
+     cookies_insert(ofproto, rule);
+     eviction_group_add_rule(rule);
+     if (actions->has_meter) {
+@@ -9145,6 +9272,9 @@ ofproto_rule_remove__(struct ofproto *ofproto, struct rule *rule)
+     if (!ovs_list_is_empty(&rule->expirable)) {
+         ovs_list_remove(&rule->expirable);
+     }
++    if (!ovs_list_is_empty(&rule->exact_match)) {
++        ovs_list_remove(&rule->exact_match);
++    }
+     if (!ovs_list_is_empty(&rule->meter_list_node)) {
+         ovs_list_remove(&rule->meter_list_node);
+         ovs_list_init(&rule->meter_list_node);

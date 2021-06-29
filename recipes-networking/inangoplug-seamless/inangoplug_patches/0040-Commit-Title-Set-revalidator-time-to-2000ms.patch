@@ -1,0 +1,28 @@
+From 196d5498f10675f4199e6ea971bcd675d5177484 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Tue, 22 Jun 2021 21:14:33 +0300
+Subject: [PATCH] Commit Title          : Set revalidator time to 2000ms
+
+BugID                 : 24610
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Set revalidator time to 2000ms
+---
+ utilities/ovs-ctl.in | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/utilities/ovs-ctl.in b/utilities/ovs-ctl.in
+index 01d85d40b..0a6b47ecd 100644
+--- a/utilities/ovs-ctl.in
++++ b/utilities/ovs-ctl.in
+@@ -262,6 +262,9 @@ do_start_brcompatd () {
+ 
+         action "Disabling the flow hardware offload" \
+             ovs-vsctl set Open_vSwitch . other_config:hw-offload=false
++
++        action "Set max-revalidator time to 2000ms" \
++            ovs-vsctl --no-wait set Open_vSwitch . other_config:max-revalidator=2000
+     fi
+ }
+ 

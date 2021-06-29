@@ -1,4 +1,4 @@
-From ca6e9878c938763104c6152585a196c8d6fe35f5 Mon Sep 17 00:00:00 2001
+From a08e7f89919fe87689d61cdcd8df994113780a3c Mon Sep 17 00:00:00 2001
 From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
 Date: Thu, 11 Mar 2021 00:46:14 +0200
 Subject: [PATCH] Commit Title: Add correct handlers in brcompat module to
