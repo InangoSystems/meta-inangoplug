@@ -1,5 +1,9 @@
 include openvswitch_${INANGOPLUG_OPENVSWITCH}.inc
 
+DEPENDS_remove_class-native = "virtual/kernel-native bridge-utils-native"
+DEPENDS_remove = "bridge-utils python perl"
+DEPENDS_remove = "virtual/kernel"
+
 RDEPENDS_${PN}_remove = "python3-twisted"
 RDEPENDS_${PN} += " ${PN}-brcompat ${PN}-testcontroller "
 
@@ -7,7 +11,6 @@ FILESEXTRAPATHS_append := "${THISDIR}/inangoplug_files:"
 
 SRC_URI_append = " file://0001-launch-rsc-server-arm.patch \
                    file://ovs-brcompatd.service \
-                   file://ovsdb-idlc.in-fix-dict-change-during-iteration.patch \
                  "
 
 PACKAGECONFIG += "pp-offload"
@@ -66,3 +69,66 @@ do_make_scripts[func] = "1"
 addtask make_scripts after do_patch before do_compile
 do_make_scripts[lockfiles] = "${TMPDIR}/kernel-scripts.lock"
 do_make_scripts[depends] += "virtual/kernel:do_shared_workdir"
+
+#
+# All changes below are added for compatibility with meta-rdk-mesh
+# meta-rdk-mesh removes files, that are used by seamless ovs, here those files
+# are restored
+#
+do_install_append() {
+    install -d ${D}/${systemd_unitdir}/system/
+    install -m 644 ${S}/rhel/usr_lib_systemd_system_ovs-vswitchd.service \
+        ${D}/${systemd_unitdir}/system/ovs-vswitchd.service
+    install -m 644 ${S}/rhel/usr_lib_systemd_system_openvswitch.service \
+        ${D}/${systemd_unitdir}/system/openvswitch.service
+    install -m 644 ${S}/rhel/usr_lib_systemd_system_ovsdb-server.service \
+        ${D}/${systemd_unitdir}/system/ovsdb-server.service
+}
+
+# added for compatibility with rdk-mesh
+FILES_${PN} += "${datadir}/ovsdbmonitor"
+FILES_${PN} += "/run"
+FILES_${PN} += "/var/run/openvswitch"
+FILES_${PN} += "/lib/modules"
+
+FILES_${PN} += "/usr/share/openvswitch/scripts/ovs-ctl"
+FILES_${PN} += "/usr/share/openvswitch/scripts/ovs-kmod-ctl"
+FILES_${PN} += "/usr/share/openvswitch/scripts/ovs-save"
+FILES_${PN} += "/usr/share/openvswitch/scripts/ovs-systemd-reload"
+FILES_${PN} += "/usr/share/openvswitch/scripts/ovs-lib"
+
+# added for compatibility with rdk-mesh
+FILES_${PN}-switch += "\
+        ${sysconfdir}/init.d/openvswitch-switch \
+        ${sysconfdir}/default/openvswitch-switch \
+        ${sysconfdir}/sysconfig/openvswitch \
+        ${sysconfdir}/openvswitch/default.conf \
+        "
+
+# added for compatibility with rdk-mesh
+# some files are removed with _remove suffix, and can't be restored with
+# _append suffix, thus __anynymous function is used
+python __anonymous() {
+    pn_switch_var = "FILES_" + d.getVar("PN", True) + "-switch"
+    systemd_service_var = "SYSTEMD_SERVICE_" + d.getVar("PN", True) + "-switch"
+    d.setVar(pn_switch_var, d.getVar("PN_NEEDED", True))
+    d.setVar(systemd_service_var, "ovsdb-server.service ovs-vswitchd.service openvswitch.service ovs-brcompatd.service")
+}
+
+PN_NEEDED =  "\
+/usr/share/openvswitch/ovn-nb.ovsschema \
+/usr/share/openvswitch/vtep.ovsschema \
+/usr/share/openvswitch/ovn-sb.ovsschema \
+/usr/share/openvswitch/vswitch.ovsschema \
+${systemd_unitdir}/system/openvswitch.service \
+${systemd_unitdir}/system/ovs-vswitchd.service \
+${systemd_unitdir}/system/ovsdb-server.service \
+${bindir}/ovs-appctl \
+${bindir}/ovs-dpctl \
+${bindir}/ovs-ofctl \
+${sbindir}/ovs-vswitchd \
+${sysconfdir}/init.d/openvswitch-switch \
+${sysconfdir}/default/openvswitch-switch \
+${sysconfdir}/sysconfig/openvswitch \
+${sysconfdir}/openvswitch/default.conf"
+

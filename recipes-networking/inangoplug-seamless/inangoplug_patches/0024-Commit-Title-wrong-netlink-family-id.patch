@@ -1,0 +1,37 @@
+From a4bc1ff14c5060333c29c5b08463d217257d3b09 Mon Sep 17 00:00:00 2001
+From: Georgii Okhokhonin <g.okhokhonin@inango-systems.com>
+Date: Fri, 4 Jun 2021 12:04:34 +0500
+Subject: [PATCH] Commit Title          : wrong netlink family id
+
+BugID                 : 24282
+Bug Fixed(y/N[blankN]): y
+CodeReviewId          : 0
+Description           :
+VLM_reconnect is actually a pointer, using it as a struct corrupted
+brc_family. Remove reference to VLM_reconnect as suggested in upstream:
+https://mail.openvswitch.org/pipermail/ovs-dev/2016-February/309156.html
+---
+ vswitchd/ovs-brcompatd.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index aec3e3266..530654ef3 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -1169,14 +1169,14 @@ netdev_changed_cb(const struct rtnetlink_change *change,
+ int
+ main(int argc, char *argv[])
+ {
+-    extern struct vlog_module VLM_reconnect;
+     struct nln_notifier *link_notifier;
+     struct unixctl_server *unixctl;
+     int retval;
+ 
+     ovs_cmdl_proctitle_init(argc, argv);
+     set_program_name(argv[0]);
+-    vlog_set_levels(&VLM_reconnect, VLF_ANY_DESTINATION, VLL_WARN);
++    vlog_set_levels(NULL, VLF_ANY_DESTINATION, VLL_WARN);
++    vlog_set_levels_from_string_assert("reconnect:dbg");
+ 
+     VLOG_INFO("\nBridge compatibility daemon is starting ...\n");
+ 

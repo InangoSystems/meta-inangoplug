@@ -16,4 +16,5 @@ SRC_URI_prepend = " \
   file://0014-Commit-Title-Capability-to-define-list-of-bridges-via-specialized-symbols.patch \
   file://0015-Commit-Title-Fix-broken-build.patch \
   file://0016-Commit-Title-Move-all-bridges-to-OvS.patch \
+  file://0024-Commit-Title-wrong-netlink-family-id.patch \
 "
