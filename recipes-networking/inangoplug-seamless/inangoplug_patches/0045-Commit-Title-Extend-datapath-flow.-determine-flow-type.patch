@@ -1,0 +1,305 @@
+From 9267cd67aa8c8836d3e4d35d7ab0445b58d7132a Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Tue, 13 Jul 2021 16:45:17 +0500
+Subject: [PATCH] Commit Title          : Extend datapath flow. determine flow
+ type
+
+BugID                 : 24804
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- During normal action ovs determine flow type as multicast/unicast or
+broadcast
+---
+ datapath/datapath.c                               |  1 +
+ datapath/flow.h                                   |  1 +
+ datapath/linux/compat/include/linux/openvswitch.h | 18 ++++++++++++++++++
+ datapath/translate_dp_am.c                        |  1 +
+ lib/dpif-netlink.c                                |  3 +++
+ lib/dpif.h                                        |  1 +
+ ofproto/ofproto-dpif-upcall.c                     | 15 ++++++++++-----
+ ofproto/ofproto-dpif-xlate.c                      | 11 +++++++++++
+ ofproto/ofproto-dpif-xlate.h                      |  3 +++
+ 9 files changed, 49 insertions(+), 5 deletions(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 7865b5464..792517990 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -1064,6 +1064,7 @@ static int ovs_flow_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 	if (error)
+ 		goto err_kfree_flow;
+ 
++	new_flow->flow_type = nla_get_u32(a[OVS_FLOW_ATTR_FLOW_TYPE]);
+ 	/* Extract flow identifier. */
+ 	error = ovs_nla_get_identifier(&new_flow->id, a[OVS_FLOW_ATTR_UFID],
+ 				       &new_flow->key, log);
+diff --git a/datapath/flow.h b/datapath/flow.h
+index 920d86a98..581307372 100644
+--- a/datapath/flow.h
++++ b/datapath/flow.h
+@@ -244,6 +244,7 @@ struct sw_flow {
+ 	struct cpumask cpu_used_mask;
+ 	struct sw_flow_mask *mask;
+ 	struct sw_flow_actions __rcu *sf_acts;
++	u32 flow_type;
+ 	struct sw_flow_stats __rcu *stats[]; /* One for each CPU.  First one
+ 					   * is allocated at flow creation time,
+ 					   * the rest are allocated on demand
+diff --git a/datapath/linux/compat/include/linux/openvswitch.h b/datapath/linux/compat/include/linux/openvswitch.h
+index 36a118457..b72346eb9 100644
+--- a/datapath/linux/compat/include/linux/openvswitch.h
++++ b/datapath/linux/compat/include/linux/openvswitch.h
+@@ -648,12 +648,30 @@ enum ovs_flow_attr {
+ 	OVS_FLOW_ATTR_UFID,      /* Variable length unique flow identifier. */
+ 	OVS_FLOW_ATTR_UFID_FLAGS,/* u32 of OVS_UFID_F_*. */
+ 	OVS_FLOW_ATTR_PROACTIVE_FLAG, /* Bool flag for proactive or reactive mode. */
++	OVS_FLOW_ATTR_FLOW_TYPE, /* Bool flag for proactive or reactive mode. */
+ 	OVS_FLOW_ATTR_PAD,
+ 	__OVS_FLOW_ATTR_MAX
+ };
+ 
+ #define OVS_FLOW_ATTR_MAX (__OVS_FLOW_ATTR_MAX - 1)
+ 
++/**
++ * Flow type attribute provide addtional info from userspace.
++ * helps to determine how decisiion to create flow was made.
++ * UNKNOWN_FLOW_TYPE - can't determine flow type 
++ * BROADCAST_FLOW_TYPE - flow created via normal rule for broadcast/multicast traffic or via FLOOD rule.
++ * UNICAST_FLOW_TYPE - flow created via fdb for specified dst mac address.
++ * MULTICAST_FLOW_TYPE - flow created for multicast data traffic when multicast snooping enabled.
++ * UNKNOWN_UNICAST_FLOW_TYPE - flow created during normal rule when fdb doesn't contains specified mac.
++*/
++enum flow_type {
++    UNKNOWN_FLOW_TYPE,
++    BROADCAST_FLOW_TYPE,
++    UNICAST_FLOW_TYPE,
++    MULTICAST_FLOW_TYPE,
++    UNKNOWN_UNICAST_FLOW_TYPE
++};
++
+ /**
+  * Omit attributes for notifications.
+  *
+diff --git a/datapath/translate_dp_am.c b/datapath/translate_dp_am.c
+index 051667762..56bf58552 100644
+--- a/datapath/translate_dp_am.c
++++ b/datapath/translate_dp_am.c
+@@ -352,6 +352,7 @@ int translate_to_am_session(struct datapath *dp, struct sw_flow *flow,
+ 	session->hard_timeout = -1;
+ 	session->actions = (struct pp_am_flow_actions *)flow->sf_acts;
+ 	session->proactive_session = false;
++	session->routing = flow->flow_type;
+ 
+ 	return err;
+ }
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index bac4bcf13..9a55b1a60 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -149,6 +149,7 @@ struct dpif_netlink_flow {
+     bool clear;                         /* OVS_FLOW_ATTR_CLEAR. */
+     bool probe;                         /* OVS_FLOW_ATTR_PROBE. */
+     bool proactive_flag;                /* Proactive mode. Reactive mode this flag is false. */
++    int flow_type;
+ };
+ 
+ static void dpif_netlink_flow_init(struct dpif_netlink_flow *);
+@@ -1389,6 +1390,7 @@ dpif_netlink_init_flow_put(struct dpif_netlink *dpif,
+     }
+     request->nlmsg_flags = put->flags & DPIF_FP_MODIFY ? 0 : NLM_F_CREATE;
+     request->proactive_flag = put->proactive_flag;
++    request->flow_type = put->flow_type;
+ }
+ 
+ static void
+@@ -4567,6 +4569,7 @@ dpif_netlink_flow_to_ofpbuf(const struct dpif_netlink_flow *flow,
+     if (flow->proactive_flag) {
+         nl_msg_put_flag(buf, OVS_FLOW_ATTR_PROACTIVE_FLAG);
+     }
++    nl_msg_put_u32(buf, OVS_FLOW_ATTR_FLOW_TYPE, flow->flow_type);
+ }
+ 
+ /* Clears 'flow' to "empty" values. */
+diff --git a/lib/dpif.h b/lib/dpif.h
+index 936539149..5ffcedce9 100644
+--- a/lib/dpif.h
++++ b/lib/dpif.h
+@@ -672,6 +672,7 @@ struct dpif_flow_put {
+     const ovs_u128 *ufid;           /* Optional unique flow identifier. */
+     unsigned pmd_id;                /* Datapath poll mode driver id. */
+     bool proactive_flag;            /* Proactive mode. Reactive mode this flag is false. */
++    unsigned int flow_type;      /* attribute which mark of session type Unicast/broadcast/Multicast*/
+ 
+     /* Output. */
+     struct dpif_flow_stats *stats;  /* Optional flow statistics. */
+diff --git a/ofproto/ofproto-dpif-upcall.c b/ofproto/ofproto-dpif-upcall.c
+index 291069e55..02a3a1edf 100644
+--- a/ofproto/ofproto-dpif-upcall.c
++++ b/ofproto/ofproto-dpif-upcall.c
+@@ -322,6 +322,7 @@ struct upcall {
+     const struct nlattr *key;      /* Datapath flow key. */
+     size_t key_len;                /* Datapath flow key length. */
+     const struct nlattr *out_tun_key;  /* Datapath output tunnel key. */
++    unsigned int flow_type; /* Datapath flow type attribute */
+ 
+     struct user_action_cookie cookie;
+ 
+@@ -363,6 +364,7 @@ struct udpif_key {
+     bool ufid_present;             /* True if 'ufid' is in datapath. */
+     uint32_t hash;                 /* Pre-computed hash for 'key'. */
+     unsigned pmd_id;               /* Datapath poll mode driver id. */
++    unsigned flow_type;            /* Datapath flow type attribute */
+ 
+     struct ovs_mutex mutex;                   /* Guards the following. */
+     struct dpif_flow_stats stats OVS_GUARDED; /* Last known stats.*/
+@@ -1334,7 +1336,7 @@ upcall_xlate(struct udpif *udpif, struct upcall *upcall,
+          * whole thing, so we can do the same here. */
+         WC_MASK_FIELD(wc, in_port.odp_port);
+     }
+-
++    upcall->flow_type = xin.flow_type;
+     upcall->xout_initialized = true;
+ 
+     if (upcall->fitness == ODP_FIT_TOO_LITTLE) {
+@@ -1789,7 +1791,8 @@ ukey_create__(const struct nlattr *key, size_t key_len,
+               bool ufid_present, const ovs_u128 *ufid,
+               const unsigned pmd_id, const struct ofpbuf *actions,
+               uint64_t reval_seq, long long int used,
+-              uint32_t key_recirc_id, struct xlate_out *xout)
++              uint32_t key_recirc_id, struct xlate_out *xout,
++              const unsigned int flow_type)
+     OVS_NO_THREAD_SAFETY_ANALYSIS
+ {
+     struct udpif_key *ukey = xmalloc(sizeof *ukey);
+@@ -1804,6 +1807,7 @@ ukey_create__(const struct nlattr *key, size_t key_len,
+     ukey->ufid = *ufid;
+     ukey->pmd_id = pmd_id;
+     ukey->hash = get_ukey_hash(&ukey->ufid, pmd_id);
++    ukey->flow_type = flow_type;
+ 
+     ovsrcu_init(&ukey->actions, NULL);
+     ukey_set_actions(ukey, actions);
+@@ -1908,7 +1912,7 @@ ukey_create_from_upcall(struct upcall *upcall, struct flow_wildcards *wc)
+                          true, upcall->ufid, upcall->pmd_id,
+                          &upcall->put_actions, upcall->reval_seq, 0,
+                          upcall->have_recirc_ref ? upcall->recirc->id : 0,
+-                         &upcall->xout);
++                         &upcall->xout, upcall->flow_type);
+ }
+ 
+ static int
+@@ -1960,7 +1964,7 @@ ukey_create_from_dpif_flow(const struct udpif *udpif,
+     *ukey = ukey_create__(flow->key, flow->key_len,
+                           flow->mask, flow->mask_len, flow->ufid_present,
+                           &flow->ufid, flow->pmd_id, &actions,
+-                          reval_seq, flow->stats.used, 0, NULL);
++                          reval_seq, flow->stats.used, 0, NULL, UNKNOWN_FLOW_TYPE);
+ 
+     return 0;
+ }
+@@ -2502,6 +2506,7 @@ put_op_init(struct ukey_op *op, struct udpif_key *ukey,
+     op->dop.flow_put.ufid = ukey->ufid_present ? &ukey->ufid : NULL;
+     op->dop.flow_put.pmd_id = ukey->pmd_id;
+     op->dop.flow_put.stats = NULL;
++    op->dop.flow_put.flow_type = ukey->flow_type;
+     ukey_get_actions(ukey, &op->dop.flow_put.actions,
+                      &op->dop.flow_put.actions_len);
+ }
+@@ -3702,7 +3707,7 @@ create_ukey_from_of_rule(struct ofproto_dpif *ofproto, struct udpif *udpif, stru
+     }
+ 
+     ukey = ukey_create__(keybuf.data, keybuf.size, maskbuf.data, maskbuf.size,
+-                         true, &ufid, PMD_ID_NULL, &odp_actions, 0, 0, m.flow.recirc_id, NULL);
++                         true, &ufid, PMD_ID_NULL, &odp_actions, 0, 0, m.flow.recirc_id, NULL, UNKNOWN_FLOW_TYPE);
+ 
+     revalidate_ukey(udpif, ukey, &stats, &odp_actions, udpif->reval_seq, &recircs, false);
+     ukey_set_actions(ukey, &odp_actions);
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index a6f417c81..c8c345a81 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2771,9 +2771,11 @@ static void
+ mcast_output_finish(struct xlate_ctx *ctx, struct mcast_output *out,
+                     struct xbundle *in_xbundle, struct xvlan *xvlan)
+ {
++    struct xlate_in *xin = ctx->xin;
+     if (out->flood) {
+         xlate_normal_flood(ctx, in_xbundle, xvlan);
+     } else {
++        xin->flow_type = MULTICAST_FLOW_TYPE;
+         for (size_t i = 0; i < out->n; i++) {
+             output_normal(ctx, out->xbundles[i], xvlan);
+         }
+@@ -2939,6 +2941,7 @@ xlate_normal(struct xlate_ctx *ctx)
+     struct xvlan in_xvlan;
+     struct xvlan xvlan;
+     uint16_t vlan;
++    struct xlate_in *xin = ctx->xin;
+ 
+     memset(&wc->masks.dl_src, 0xff, sizeof wc->masks.dl_src);
+     memset(&wc->masks.dl_dst, 0xff, sizeof wc->masks.dl_dst);
+@@ -3017,6 +3020,7 @@ xlate_normal(struct xlate_ctx *ctx)
+         && is_ip_any(flow)) {
+         struct mcast_snooping *ms = ctx->xbridge->ms;
+         struct mcast_group *grp = NULL;
++        xin->flow_type = BROADCAST_FLOW_TYPE;
+ 
+         if (is_igmp(flow, wc)) {
+             /*
+@@ -3093,6 +3097,7 @@ xlate_normal(struct xlate_ctx *ctx)
+ 
+         /* forwarding to group base ports */
+         struct mcast_output out = MCAST_OUTPUT_INIT;
++        xin->flow_type = MULTICAST_FLOW_TYPE;
+ 
+         ovs_rwlock_rdlock(&ms->rwlock);
+         if (flow->dl_type == htons(ETH_TYPE_IP)) {
+@@ -3124,6 +3129,7 @@ xlate_normal(struct xlate_ctx *ctx)
+         mac = mac_learning_lookup(ctx->xbridge->ml, flow->dl_dst, vlan);
+         mac_port = mac ? mac_entry_get_port(ctx->xbridge->ml, mac) : NULL;
+         ovs_rwlock_unlock(&ctx->xbridge->ml->rwlock);
++        xin->flow_type = BROADCAST_FLOW_TYPE;
+ 
+         if (mac_port) {
+             struct xbundle *mac_xbundle = xbundle_lookup(ctx->xcfg, mac_port);
+@@ -3138,6 +3144,7 @@ xlate_normal(struct xlate_ctx *ctx)
+                 && mac_xbundle != in_xbundle
+                 && mac_xbundle->ofbundle != in_xbundle->ofbundle) {
+                 xlate_report(ctx, OFT_DETAIL, "forwarding to learned port");
++                xin->flow_type = UNICAST_FLOW_TYPE;
+                 output_normal(ctx, mac_xbundle, &xvlan);
+             } else if (!mac_xbundle) {
+                 xlate_report(ctx, OFT_WARN,
+@@ -3149,6 +3156,9 @@ xlate_normal(struct xlate_ctx *ctx)
+         } else {
+             xlate_report(ctx, OFT_DETAIL,
+                          "no learned MAC for destination, flooding");
++            if (!eth_addr_is_broadcast(flow->dl_dst) && !eth_addr_is_multicast(flow->dl_dst)) {
++                xin->flow_type = UNKNOWN_UNICAST_FLOW_TYPE;
++            }
+             xlate_normal_flood(ctx, in_xbundle, &xvlan);
+         }
+     }
+@@ -7141,6 +7151,7 @@ xlate_in_init(struct xlate_in *xin, struct ofproto_dpif *ofproto,
+     xin->in_packet_out = false;
+     xin->recirc_queue = NULL;
+     xin->xport_uuid = UUID_ZERO;
++    xin->flow_type = UNKNOWN_FLOW_TYPE;
+ 
+     /* Do recirc lookup. */
+     xin->frozen_state = NULL;
+diff --git a/ofproto/ofproto-dpif-xlate.h b/ofproto/ofproto-dpif-xlate.h
+index 3426a27b2..6af62c705 100644
+--- a/ofproto/ofproto-dpif-xlate.h
++++ b/ofproto/ofproto-dpif-xlate.h
+@@ -166,6 +166,9 @@ struct xlate_in {
+ 
+     /* UUID of first non-patch port packet was received on.*/
+     struct uuid xport_uuid;
++
++    /* Determine flow type attribute */
++    unsigned int flow_type;
+ };
+ 
+ void xlate_ofproto_set(struct ofproto_dpif *, const char *name, struct dpif *,

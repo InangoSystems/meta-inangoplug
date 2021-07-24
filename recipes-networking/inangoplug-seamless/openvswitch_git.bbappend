@@ -11,9 +11,7 @@ RDEPENDS_${PN} += " ${PN}-brcompat ${PN}-testcontroller "
 FILESEXTRAPATHS_prepend := "${THISDIR}/inangoplug_files:${THISDIR}/inangoplug_patches:"
 
 SRCREV = "71d553b995d0bd527d3ab1e9fbaf5a2ae34de2f3"
-SRC_URI_append = " file://0001-launch-rsc-server-arm.patch \
-                   file://ovs-brcompatd.service \
-                   file://ovs-vswitchd.path \
+SRC_URI_append = " file://ovs-brcompatd.service \
                  "
 
 PACKAGECONFIG += "pp-offload"
@@ -27,14 +25,13 @@ EXTRA_OECONF_class-target += "--with-linux=${STAGING_KERNEL_BUILDDIR} \
                               --enable-static=no \
                              "
 
-SYSTEMD_SERVICE_${PN}-switch += "ovs-brcompatd.service ovs-vswitchd.path"
+SYSTEMD_SERVICE_${PN}-switch += "ovs-brcompatd.service"
 
 do_install_append_class-target() {
     oe_runmake modules_install INSTALL_MOD_PATH=${D}
 
     install -d ${D}/${systemd_unitdir}/system/
     install -m 644 ${WORKDIR}/ovs-brcompatd.service ${D}/${systemd_unitdir}/system/
-    install -m 644 ${WORKDIR}/ovs-vswitchd.path ${D}/${systemd_unitdir}/system/
 
     # Remove unneeded files
     rm -rf ${D}/usr/share/openvswitch/scripts/ovn-ctl
@@ -90,6 +87,8 @@ do_install_append() {
 }
 
 # added for compatibility with rdk-mesh
+SRC_URI_remove = "file://ovsdb-idlc.in-fix-dict-change-during-iteration.patch"
+
 FILES_${PN} += "${datadir}/ovsdbmonitor"
 FILES_${PN} += "/run"
 FILES_${PN} += "/var/run/openvswitch"
@@ -116,7 +115,7 @@ python __anonymous() {
     pn_switch_var = "FILES_" + d.getVar("PN", True) + "-switch"
     systemd_service_var = "SYSTEMD_SERVICE_" + d.getVar("PN", True) + "-switch"
     d.setVar(pn_switch_var, d.getVar("PN_NEEDED", True))
-    d.setVar(systemd_service_var, "ovsdb-server.service ovs-vswitchd.service openvswitch.service ovs-brcompatd.service ovs-vswitchd.path")
+    d.setVar(systemd_service_var, "ovsdb-server.service ovs-vswitchd.service openvswitch.service ovs-brcompatd.service")
 }
 
 PN_NEEDED =  "\

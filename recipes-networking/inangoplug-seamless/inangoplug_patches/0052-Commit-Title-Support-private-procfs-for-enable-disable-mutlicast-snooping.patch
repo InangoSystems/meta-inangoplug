@@ -1,0 +1,220 @@
+From 73cefac148350f4584ab62c6da6c2412a0f5536a Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Thu, 15 Jul 2021 00:46:04 +0300
+Subject: [PATCH] Commit Title          : Support private procfs for
+ enable/disable mutlicast snooping
+
+BugID                 : 24805
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Added support procfs with bridge-igmp-snooping and bridge-mld-snooping flags for OVS.
+---
+ datapath/brcompat_main.c               | 48 +++++++++++++++++++++++++++++++++-
+ include/openvswitch/brcompat-netlink.h |  1 +
+ ofproto/ofproto-dpif.c                 | 38 +++++++++++++++++++++++++++
+ vswitchd/ovs-brcompatd.c               | 30 +++++++++++++++++++++
+ 4 files changed, 116 insertions(+), 1 deletion(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 6021c4653..57dcd60ec 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -88,6 +88,11 @@ static struct genl_family brc_genl_family;
+ static struct genl_multicast_group brc_mc_group = {
+ 	.name = "brcompat"
+ };
++
++#ifdef CONFIG_LTQ_MCAST_SNOOPING
++static struct net *brc_net = NULL;
++#endif
++
+ /* Time to wait for ovs-vswitchd to respond to a datapath action, in
+  * jiffies. */
+ #define BRC_TIMEOUT (HZ * 5)
+@@ -165,7 +170,10 @@ static int brc_add_del_bridge(struct net *net, char __user *uname, int add)
+ 				   name, NULL);
+ 	if (!request)
+ 		return -ENOMEM;
+-
++#ifdef CONFIG_LTQ_MCAST_SNOOPING
++	if (!brc_net)
++		brc_net = net;
++#endif
+ 	return brc_send_simple_command(net, request);
+ }
+ 
+@@ -977,6 +985,34 @@ static bool check_bridge_list(const char *name)
+ 	return false;
+ }
+ 
++#ifdef CONFIG_LTQ_MCAST_SNOOPING
++static void brc_mcsnoop_hook(int type, int br_snooping)
++{
++	struct sk_buff *request;
++
++	if (!brc_net)
++		return;
++
++	request = brc_make_request(BRC_GENL_C_SET_MC_SNOOPING_FLAG, NULL, NULL);
++	if (!request)
++		return;
++
++	if (nla_put_u64_64bit(request, BRC_GENL_A_ULONG_VAL, type, BRC_GENL_A_PAD))
++		goto nla_put_failure;
++	if (nla_put_u64_64bit(request, BRC_GENL_A_FDB_COUNT, br_snooping, BRC_GENL_A_PAD))
++		goto nla_put_failure;
++
++	rtnl_unlock();
++	brc_send_simple_command(brc_net, request);
++	rtnl_lock();
++
++	return;
++
++nla_put_failure:
++	kfree_skb(request);
++}
++#endif
++
+ static int __init brc_init(void)
+ {
+ 	int err;
+@@ -998,6 +1034,11 @@ static int __init brc_init(void)
+ 	ovs_dp_sysfs_hook = brc_dev_sysfs;
+ 	ovs_dp_sysfs_string_hook = brc_dev_sysfs_string;
+ 
++#ifdef CONFIG_LTQ_MCAST_SNOOPING
++	/* Set multicast snooping hooks */
++	ovs_brc_mcsnoop_hook = brc_mcsnoop_hook;
++#endif
++
+ 	/*For transfering a pair bridge - interface to datapath*/
+ 	ovs_dp_getHead = getHead;
+ 
+@@ -1027,6 +1068,11 @@ static void brc_cleanup(void)
+ 	/* Back the hook of the linux bridge to socket module */
+ 	brioctl_set(bridge_ioctl_hook);
+ 
++#ifdef CONFIG_LTQ_MCAST_SNOOPING
++	/* Unregister multicast snooping hooks */
++	ovs_brc_mcsnoop_hook = NULL;
++#endif
++
+ 	genl_unregister_family(&brc_genl_family);
+ }
+ 
+diff --git a/include/openvswitch/brcompat-netlink.h b/include/openvswitch/brcompat-netlink.h
+index f2eb66ef3..04517825d 100644
+--- a/include/openvswitch/brcompat-netlink.h
++++ b/include/openvswitch/brcompat-netlink.h
+@@ -135,6 +135,7 @@ enum brc_genl_command {
+     BRC_GENL_C_MG_ADD,    /* K: seamless-ovs */
+     BRC_GENL_C_MG_DEL,    /* K: seamless-ovs */
+     BRC_GENL_C_SET_MCSNOOP_ROUT_PORT, /* K: Set the port as router port. */
++    BRC_GENL_C_SET_MC_SNOOPING_FLAG, /* K: Set the multicast snooping flag. */
+ 
+     __BRC_GENL_C_MAX,
+     BRC_GENL_C_MAX = __BRC_GENL_C_MAX - 1
+diff --git a/ofproto/ofproto-dpif.c b/ofproto/ofproto-dpif.c
+index 0e7e1aea2..6a8296e91 100644
+--- a/ofproto/ofproto-dpif.c
++++ b/ofproto/ofproto-dpif.c
+@@ -6129,6 +6129,42 @@ ofproto_unixctl_mcast_snooping_set_mrouter_port(struct unixctl_conn *conn,
+ 
+     unixctl_command_reply(conn, "ofproto_unixctl_mcast_snooping_set_mrouter_port success");
+ }
++
++static void
++ofproto_unixctl_mcast_snooping_flag(struct unixctl_conn *conn,
++                                               int argc OVS_UNUSED,
++                                               const char *argv[],
++                                               void *aux OVS_UNUSED)
++{
++    if (argc < 3) {
++        unixctl_command_reply_error(conn, "less than 3 args");
++        return;
++    }
++
++    unsigned int ip_type;
++    if (!str_to_uint(argv[1], 10, &ip_type)) {
++        unixctl_command_reply_error(conn, "invalid type of protocol");
++        return;
++    }
++
++    unsigned int br_snooping;
++    if (!str_to_uint(argv[2], 10, &br_snooping)) {
++        unixctl_command_reply_error(conn, "invalid br_snooping");
++        return;
++    }
++
++    VLOG_INFO("ofproto_unixctl_mcast_snooping_flag: ip_type=%u, br_snooping=%u", ip_type, br_snooping);
++
++    if (ip_type == 0) {
++        mcast_external_igmp_handler_enable(br_snooping);
++    } else if (ip_type == 1) {
++        mcast_external_mld_handler_enable(br_snooping);
++    } else {
++        unixctl_command_reply_error(conn, "unknown type of protocol");
++    }
++
++    unixctl_command_reply(conn, "ofproto_unixctl_mcast_snooping_flag success");
++}
+ /* } seamless-ovs */
+ 
+ /* Store the current ofprotos in 'ofproto_shash'.  Returns a sorted list
+@@ -6581,6 +6617,8 @@ ofproto_unixctl_init(void)
+                              ofproto_unixctl_mcast_snooping_del_grp, NULL);
+     unixctl_command_register("mdb/set-mrouter-port", "bridge port ip_type expires", 4, 4,
+                              ofproto_unixctl_mcast_snooping_set_mrouter_port, NULL);
++    unixctl_command_register("mdb/mc-snooping-flag", "ip_type snooping_flag", 2, 2,
++                             ofproto_unixctl_mcast_snooping_flag, NULL);
+     unixctl_command_register("dpif/dump-dps", "", 0, 0,
+                              ofproto_unixctl_dpif_dump_dps, NULL);
+     unixctl_command_register("dpif/show", "", 0, 0, ofproto_unixctl_dpif_show,
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 0f7e00d49..7e4409ccf 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -1150,6 +1150,33 @@ send_reply:
+     return 0;
+ }
+ 
++static int
++handle_set_mc_snooping_flag_cmd(struct ofpbuf *buffer)
++{
++    const char *str_key_value_type, *str_key_value_snooping;
++    uint64_t ip_type, br_snooping;
++    uint32_t seq;
++    int error;
++
++    error = parse_command(buffer, &seq, NULL, NULL, &br_snooping, NULL, &ip_type);
++
++    if (!error) {
++        str_key_value_type = xasprintf("%llu", ip_type);
++        str_key_value_snooping = xasprintf("%llu", br_snooping);
++
++        if (!run_vsctl(appctl_program,
++                       "--", "mdb/mc-snooping-flag", str_key_value_type,
++                        str_key_value_snooping, (char *) NULL)) {
++            error = EINVAL;
++        }
++        send_simple_reply(seq, error);
++
++        free(str_key_value_type);
++        free(str_key_value_snooping);
++    }
++    return error;
++}
++
+ static void set_bridge_parameter(const char *br_name, const char *param, unsigned long value)
+ {
+     const char *str_key_value = xasprintf("%s=%lu", param, value);
+@@ -1354,6 +1381,9 @@ brc_recv_update(void)
+     case BRC_GENL_C_SET_PORT_PATH_COST:
+         handle_set_ulong_val_port_cmd(&buffer, "stp-path-cost");
+         break;
++    case BRC_GENL_C_SET_MC_SNOOPING_FLAG:
++        handle_set_mc_snooping_flag_cmd(&buffer);
++        break;
+ 
+     /* seamless-ovs { */
+     case BRC_GENL_C_MG_ADD:

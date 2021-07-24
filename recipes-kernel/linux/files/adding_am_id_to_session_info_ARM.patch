@@ -1,0 +1,18 @@
+commit b67a2101b9ba220b6054904849322470fdc86d35
+Author: Puz, Dmytro <d.puz@inango-systems.com>
+Date:   Tue Jul 6 11:49:25 2021 +0000
+
+    Adding am_id to the AVALANCHE_PP_SESSION_INFO_t structure
+
+diff --git a/include/asm-arm/arch-avalanche/generic/avalanche_pp_api.h b/include/asm-arm/arch-avalanche/generic/avalanche_pp_api.h
+index e15d481db3..19b0e3228b 100644
+--- a/include/asm-arm/arch-avalanche/generic/avalanche_pp_api.h
++++ b/include/asm-arm/arch-avalanche/generic/avalanche_pp_api.h
+@@ -1494,6 +1494,7 @@ typedef struct // former TI_PP_SESSION
+     Uint8                   is_frag;
+ 
+     Uint32                  scb_id;
++    Uint32                  am_id;
+ } AVALANCHE_PP_SESSION_INFO_t;
+ 
+ #define HOSTD_DESC_PROTOCOL_SPECIFIC_SESSION_INDEX_MASK (0x0000FFFF)

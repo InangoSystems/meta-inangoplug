@@ -1,0 +1,562 @@
+From 5f952085c2913766be975dabbd4e192f7d96c9d3 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Mon, 19 Jul 2021 20:16:28 +0500
+Subject: [PATCH] Commit Title          : Support ioctl's to configure ipv6
+ multicast snooping
+
+BugID                 : 24905
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Added IPv6 support for private multicast IOCTL-s
+---
+ datapath/brcompat_main.c     |  68 ++++++++++++--------
+ lib/mcast-snooping.c         |  46 ++++++++++----
+ lib/mcast-snooping.h         |   2 +
+ ofproto/ofproto-dpif-xlate.c |  10 +--
+ ofproto/ofproto-dpif.c       |  45 +++++++++-----
+ vswitchd/ovs-brcompatd.c     | 145 +++++++++++++++++++++++--------------------
+ 6 files changed, 189 insertions(+), 127 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 57dcd60ec..a3f5ad854 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -437,51 +437,65 @@ static int brc_add_del_mg_rec(struct net_device *dev, br_grp_mem_t *rec, int add
+ 	if (!capable(CAP_NET_ADMIN))
+ 		return -EPERM;
+ 
+-	if (rec->gaddr.type != IPV4) {
+-		/* TODO: Add support for IPv6 addresses */
+-		return -EINVAL;
+-	}
+-
+ 	port = __dev_get_by_index(dev_net(dev), rec->if_idx);
+ 	if (!port)
+ 		return -EINVAL;
+ 
++	/* debug prints */
++	#if 0
++	printk("brc_add_del_mg_rec(add=%d): if_idx=%u, dev=%s, port=%s, gaddr.type=%s\n", add, rec->if_idx, dev->name, port->name, rec->gaddr.type == IPV4 ? "ipv4" : "ipv6");
++	#endif
++
+ 	/* Save name of dev and port because there's a race between the
+ 	 * rtnl_unlock() and the brc_send_simple_command(). */
+ 	request = brc_make_request(add ? BRC_GENL_C_MG_ADD : BRC_GENL_C_MG_DEL, dev->name, port->name);
+ 	if (!request)
+ 		return -ENOMEM;
+ 
+-	if (nla_put_u32(request, BRC_GENL_A_MG_ADDR_TYPE, rec->gaddr.type == IPV4 ? 0 : 1))
++	if (nla_put(request, BRC_GENL_A_MG_GADDR, sizeof(rec->gaddr), &rec->gaddr))
+ 		goto brc_add_del_mg_rec_put_failure;
+ 
+-	switch (rec->gaddr.type) {
+-	case IPV4:
+-		if (nla_put_u32(request, BRC_GENL_A_MG_GADDR, rec->gaddr.addr.ip4.s_addr))
++	if (add) {
++		if (nla_put_u32(request, BRC_GENL_A_MG_FILTER, rec->filter_mode))
+ 			goto brc_add_del_mg_rec_put_failure;
+-		break;
+-	case IPV6:
+-		/* TODO: implement for IPv6 */
+-		break;
+-	}
+ 
+-	if (nla_put_u32(request, BRC_GENL_A_MG_FILTER, rec->filter_mode))
+-		goto brc_add_del_mg_rec_put_failure;
++		if (nla_put_u32(request, BRC_GENL_A_MG_COMPAT, rec->compat_mode))
++			goto brc_add_del_mg_rec_put_failure;
+ 
+-	if (nla_put_u32(request, BRC_GENL_A_MG_COMPAT, rec->compat_mode))
+-		goto brc_add_del_mg_rec_put_failure;
++		if (nla_put_u32(request, BRC_GENL_A_MG_NSRC, rec->nsrc))  /* Number of sources -> unsigned int */
++			goto brc_add_del_mg_rec_put_failure;
+ 
+-	if (nla_put_u32(request, BRC_GENL_A_MG_NSRC, rec->nsrc))  /* Number of sources -> unsigned int */
+-		goto brc_add_del_mg_rec_put_failure;
++		if (rec->nsrc) {
++			if (nla_put(request, BRC_GENL_A_MG_SADDR, rec->nsrc * sizeof(rec->slist[0]), rec->slist))
++				goto brc_add_del_mg_rec_put_failure;
++		}
+ 
+-	if (rec->nsrc) {
+-		if (nla_put(request, BRC_GENL_A_MG_SADDR, rec->nsrc * sizeof(rec->slist[0]), rec->slist))
+-			goto brc_add_del_mg_rec_put_failure;
++		/* debug prints */
++		#if 0
++		if (rec->gaddr.type == IPV4)
++			printk("brc_add_del_mg_rec(add=1): if_idx=%u, dev=%s, port=%s, gaddr=0x%08x, filter=%u, compat=%u, nsrc=%u\n", rec->if_idx, dev->name, port->name, rec->gaddr.addr.ip4.s_addr, rec->filter_mode, rec->compat_mode, rec->nsrc);
++		else {
++			__be32 *ip6_32 = rec->gaddr.addr.ip6.s6_addr32;
++			printk("brc_add_del_mg_rec(add=1): if_idx=%u, dev=%s, port=%s, gaddr=0x%08x%08x%08x%08x, filter=%u, compat=%u, nsrc=%u\n", rec->if_idx, dev->name, port->name,
++				ip6_32[0], ip6_32[1], ip6_32[2], ip6_32[3],
++				rec->filter_mode, rec->compat_mode, rec->nsrc
++			);
++		}
++		#endif
+ 	}
+-
+-	/* for debug
+-	printk("brc_add_del_mg_rec: if_idx=%u, gaddr=0x%08x, filter=%u, compat=%u, nsrc=%u\n", rec->if_idx, rec->gaddr.addr.ip4.s_addr, rec->filter_mode, rec->compat_mode, rec->nsrc);
+-	*/
++	/* debug prints */
++	#if 0
++	else {
++		if (rec->gaddr.type == IPV4)
++			printk("brc_add_del_mg_rec(add=0): if_idx=%u, dev=%s, port=%s, gaddr=0x%08x\n", rec->if_idx, dev->name, port->name, rec->gaddr.addr.ip4.s_addr);
++		else {
++			__be32 *ip6_32 = rec->gaddr.addr.ip6.s6_addr32;
++			printk("brc_add_del_mg_rec(add=0): if_idx=%u, dev=%s, port=%s, gaddr=0x%08x%08x%08x%08x\n", rec->if_idx, dev->name, port->name,
++				ip6_32[0], ip6_32[1], ip6_32[2], ip6_32[3]
++			);
++		}
++	}
++	#endif
+ 
+ 	rtnl_unlock();
+ 	err = brc_send_simple_command(dev_net(dev), request);
+diff --git a/lib/mcast-snooping.c b/lib/mcast-snooping.c
+index 1caad30e4..d126f4caa 100644
+--- a/lib/mcast-snooping.c
++++ b/lib/mcast-snooping.c
+@@ -52,6 +52,30 @@ static atomic_bool enable_external_mld_handler = ATOMIC_VAR_INIT(false);
+ static struct mcast_port_bundle *
+ mcast_snooping_port_lookup(struct ovs_list *list, void *port);
+ 
++bool
++string_to_in6_addr(const char *str, struct in6_addr *addr)
++{
++    ovs_be32 ip4;
++    bool     is_ipv4 = strlen(str) < 32;
++    if (is_ipv4) {
++        if (!str_to_uint(str, 16, &ip4)) {
++            return false;
++        }
++        *addr = in6_addr_mapped_ipv4(ip4);
++    }
++    else {
++        char buffer[9] = {[8] = '\0'};
++        for (uint32_t i = 0; i < 4; ++i) {
++            memcpy(buffer, str + 8*i, 8);
++            if (!str_to_uint(buffer, 16, &addr->s6_addr32[i])) {
++                return false;
++            }
++        }
++    }
++
++    return true;
++}
++
+ bool
+ mcast_snooping_enabled(const struct mcast_snooping *ms)
+ {
+@@ -301,20 +325,16 @@ mcast_group_bundle_insert_src_addrs(struct mcast_snooping *ms OVS_UNUSED,
+ 
+     for (token = strtok_r(tokstr, delim, &save_ptr); token != NULL; token = strtok_r(NULL, delim, &save_ptr)) 
+     {
+-        ovs_be32 ip4 = 0;
+-
+-        if (!str_to_uint(token, 16, &ip4)) {
+-            VLOG_ERR("::DBG mcast_group_insert_src_addrs(): failed to decode IPv4 from HEX \"%s\"", token);
+-        }
+-        else {
+-            /* ::DBG */
+-            VLOG_WARN("::DBG mcast_group_insert_src_addrs(): saddr = \"%s\" -> ip4 = 0x%08x", token, ip4);
+-
+-            sa = xmalloc(sizeof(*sa));
+-            ovs_list_init(&sa->node);
+-            sa->addr = in6_addr_mapped_ipv4(ip4);
+-            ovs_list_push_back(&gb->src_addrs, &sa->node);
++        struct in6_addr ip6;
++        if (!string_to_in6_addr(token, &ip6)) {
++            VLOG_ERR("mcast_group_insert_src_addrs(): failed to decode IPv4/IPv6 address from string \"%s\"", token);
++            return;
+         }
++
++        sa = xmalloc(sizeof(*sa));
++        ovs_list_init(&sa->node);
++        sa->addr = ip6;
++        ovs_list_push_back(&gb->src_addrs, &sa->node);
+     }
+ 
+     free(tokstr);
+diff --git a/lib/mcast-snooping.h b/lib/mcast-snooping.h
+index ea6ad8cb2..9c682dd4b 100644
+--- a/lib/mcast-snooping.h
++++ b/lib/mcast-snooping.h
+@@ -161,6 +161,8 @@ struct mcast_snooping {
+     struct ovs_rwlock rwlock;
+ };
+ 
++bool string_to_in6_addr(const char *str, struct in6_addr *addr);
++
+ /* Basics. */
+ bool mcast_snooping_enabled(const struct mcast_snooping *ms);
+ bool mcast_snooping_flood_unreg(const struct mcast_snooping *ms);
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index e22c3829d..7c14a01f3 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2798,11 +2798,11 @@ mcast_xlate_query_external_handler(struct xlate_ctx *ctx,
+             if (mcast_xbundle && mcast_xbundle != in_xbundle) {
+                 if (! mcast_snooping_mrouter_lookup(ms, xvlan, mcast_xbundle->ofbundle))
+                 {
+-                    VLOG_ERR("forwarding query to mcast group port");
++                    VLOG_INFO("forwarding query to mcast group port");
+                     xlate_report(ctx, OFT_DETAIL, "forwarding query to mcast group port");
+                     mcast_output_add(out, mcast_xbundle);
+                 } else {
+-                    VLOG_ERR("query not forwarded to mrouter port");
++                    VLOG_INFO("query not forwarded to mrouter port");
+ 
+                     xlate_report(ctx, OFT_WARN,
+                             "mcast group port is router port, dropping");
+@@ -2811,7 +2811,7 @@ mcast_xlate_query_external_handler(struct xlate_ctx *ctx,
+                 xlate_report(ctx, OFT_WARN,
+                             "mcast group port is unknown, dropping");
+             } else {
+-                    VLOG_ERR("query not forwarded to input port");
++                    VLOG_INFO("query not forwarded to input port");
+                 xlate_report(ctx, OFT_DETAIL,
+                             "mcast group port is input port, dropping");
+             }
+@@ -2829,7 +2829,7 @@ mcast_xlate_igmp_external_handler(struct xlate_ctx *ctx,
+     struct xbundle *xbundle;
+     struct flow *flow = &ctx->xin->flow;
+     if (mcast_snooping_is_membership(flow->tp_src)) {
+-        VLOG_ERR("Membership request will handle in external application");
++        VLOG_INFO("Membership request will handle in external application");
+         xlate_report(ctx, OFT_DETAIL, "Membership request will handle in external application");
+         return;
+     } else if ( mcast_snooping_is_query(flow->tp_src)) {
+@@ -2868,7 +2868,7 @@ mcast_xlate_mld_external_handler(struct xlate_ctx *ctx,
+         mcast_xlate_query_external_handler(ctx,ms,in_xbundle,xvlan,grp,out);
+         return;
+     } else {
+-        VLOG_ERR("Membership request will handle in external application");
++        VLOG_INFO("Membership request will handle in external application");
+         xlate_report(ctx, OFT_DETAIL, "Membership request will handle in external application");
+         return;
+     }
+diff --git a/ofproto/ofproto-dpif.c b/ofproto/ofproto-dpif.c
+index 6a8296e91..2a1816a16 100644
+--- a/ofproto/ofproto-dpif.c
++++ b/ofproto/ofproto-dpif.c
+@@ -5991,16 +5991,19 @@ ofproto_unixctl_mcast_snooping_add_grp(struct unixctl_conn *conn,
+     struct ofport_dpif *ofport;
+     ofport = ofport_dpif_cast(shash_find_data(&ofproto->up.port_by_name, argv[2]));
+ 
+-    VLOG_INFO("ofport %p", ofport);
+-    if (!ofport) {
++    if (ofport) {
++        VLOG_INFO("found ofport %p for port \"%s\"", ofport, argv[2]);
++    }
++    else {
++        VLOG_ERR("failed to find ofport for port \"%s\"", argv[2]);
+         unixctl_command_reply_error(conn, "no such port in bridge");
+         return;   
+     }
+ 
+-    unsigned int gaddr;
+-    if (!str_to_uint(argv[3], 10, &gaddr)) {
+-        unixctl_command_reply_error(conn, "invalid gaddr");
+-        return; 
++    struct in6_addr gaddr;
++    if (!string_to_in6_addr(argv[3], &gaddr)) {
++        unixctl_command_reply_error(conn, "invalid gaddr encoding");
++        return;
+     }
+ 
+     unsigned int filter;
+@@ -6021,11 +6024,20 @@ ofproto_unixctl_mcast_snooping_add_grp(struct unixctl_conn *conn,
+         saddrs = argv[6];
+     }
+ 
+-    VLOG_INFO("ofproto_unixctl_mcast_snooping_add_grp: port=%s, gaddr=%u, filter=%u, compat=%u, saddrs=%s", argv[2], gaddr, filter, compat, saddrs != NULL ? saddrs : "null");
++    /* debug prints */
++    /*
++    struct ds ds = DS_EMPTY_INITIALIZER;
++    ipv6_format_mapped(&gaddr6, &ds);
++    VLOG_INFO("ofproto_unixctl_mcast_snooping_add_grp: port=%s, gaddr=%s, filter=%u, compat=%u, saddrs=%s", argv[2], ds_cstr(&ds), filter, compat, saddrs != NULL ? saddrs : "null");
++    ds_destroy(&ds);
++    */
++    VLOG_INFO("ofproto_unixctl_mcast_snooping_add_grp: port=%s, gaddr=%s, filter=%u, compat=%u, saddrs=%s", argv[2], argv[3], filter, compat, saddrs != NULL ? saddrs : "null");
+ 
+-    mcast_snooping_add_group4(ofproto->ms, (ovs_be32)gaddr, (filter != 0 ? IGMPV3_MODE_IS_INCLUDE : IGMPV3_MODE_IS_EXCLUDE), saddrs, 0, ofport->bundle);
++    int filter_mode = filter != 0 ? IGMPV3_MODE_IS_INCLUDE : IGMPV3_MODE_IS_EXCLUDE;
++    mcast_snooping_add_group(ofproto->ms, &gaddr, filter_mode, saddrs, 0, ofport->bundle);
+ 
+-    unixctl_command_reply(conn, "ofproto_unixctl_mcast_snooping_add_grp success");
++    VLOG_INFO("ofproto_unixctl_mcast_snooping_add_grp: group was added");
++    unixctl_command_reply(conn, "multicast group was added");
+ }
+ 
+ static void
+@@ -6063,17 +6075,18 @@ ofproto_unixctl_mcast_snooping_del_grp(struct unixctl_conn *conn,
+         return;
+     }
+ 
+-    unsigned int gaddr;
+-    if (!str_to_uint(argv[3], 10, &gaddr)) {
+-        unixctl_command_reply_error(conn, "invalid gaddr");
+-        return; 
++    struct in6_addr gaddr;
++    if (!string_to_in6_addr(argv[3], &gaddr)) {
++        unixctl_command_reply_error(conn, "invalid gaddr encoding");
++        return;
+     }
+ 
+-    VLOG_INFO("ofproto_unixctl_mcast_snooping_del_grp: port=%s, gaddr=%u", argv[2], gaddr);
++    VLOG_INFO("ofproto_unixctl_mcast_snooping_del_grp: port=%s, gaddr=%s", argv[2], argv[3]);
+ 
+-    mcast_snooping_leave_group4(ofproto->ms, (ovs_be32)gaddr, 0, ofport->bundle);
++    mcast_snooping_leave_group(ofproto->ms, &gaddr, 0, ofport->bundle);
+ 
+-    unixctl_command_reply(conn, "ofproto_unixctl_mcast_snooping_del_grp success");
++    VLOG_INFO("ofproto_unixctl_mcast_snooping_del_grp: group was deleted");
++    unixctl_command_reply(conn, "multicast group was deleted");
+ }
+ 
+ static void
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 7e4409ccf..311db7a71 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -322,92 +322,110 @@ parse_command(struct ofpbuf *buffer, uint32_t *seq, const char **br_name,
+ }
+ 
+ /* seamless-ovs { */
++static const char *
++ipaddrs_to_string(ipaddr_t *addrs, uint32_t naddrs)
++{
++    if (!naddrs)
++        return NULL;
++
++    const uint32_t size = 2 * (addrs->type == IPV4 ? sizeof(addrs->addr.ip4) : sizeof(addrs->addr.ip6));
++    char *addrs_str = malloc(naddrs*(size + 1) + 1);
++    char *s = addrs_str;
++    int count;
++    for (uint32_t i = 0; i < naddrs; ++i) {
++        if (addrs[i].type == IPV4)
++        {
++            count = sprintf(s, "%08x,", addrs[i].addr.ip4.s_addr);
++            if (count <= 0) {
++                free(addrs_str);
++                return NULL;
++            }
++            s += count;
++        }
++        else
++        {
++            for (uint32_t j = 0; j < 4; ++j) {
++                count = sprintf(s, (j < 3 ? "%08x" : "%08x,"), addrs[i].addr.ip6.s6_addr32[j]);
++                if (count <= 0) {
++                    free(addrs_str);
++                    return NULL;
++                }
++                s += count;
++            }
++        }
++    }
++
++    *(s - 1) = '\0';
++
++    return addrs_str;
++}
++
+ static int
+ parse_command_mg(struct ofpbuf *buffer, uint32_t *seq, const char **br_name,
+-                 const char **port_name, uint32_t *gaddr, uint32_t *filter, uint32_t *compat, 
+-                 uint32_t *nsrc, char **saddrs_str)
++                 const char **port_name, ipaddr_t **gaddr, uint32_t *filter, uint32_t *compat, 
++                 uint32_t *nsrc, ipaddr_t **saddrs)
+ {
+     static const struct nl_policy policy[] = {
+         [BRC_GENL_A_DP_NAME]      = { .type = NL_A_STRING, .optional = true },
+         [BRC_GENL_A_PORT_NAME]    = { .type = NL_A_STRING, .optional = true },
+-        [BRC_GENL_A_MG_ADDR_TYPE] = { .type = NL_A_U32,    .optional = true },
+-        [BRC_GENL_A_MG_GADDR]     = { .type = NL_A_U32,    .optional = true },
++        [BRC_GENL_A_MG_GADDR]     = { .type = NL_A_UNSPEC, .optional = true },
+         [BRC_GENL_A_MG_FILTER]    = { .type = NL_A_U32,    .optional = true },
+         [BRC_GENL_A_MG_COMPAT]    = { .type = NL_A_U32,    .optional = true },
+         [BRC_GENL_A_MG_NSRC]      = { .type = NL_A_U32,    .optional = true },
+         [BRC_GENL_A_MG_SADDR]     = { .type = NL_A_UNSPEC, .optional = true },
+     };
+     struct nlattr  *attrs[ARRAY_SIZE(policy)];
+-    uint32_t        gaddr_type;
+-    const ipaddr_t *saddrs;
+ 
+-    VLOG_INFO("parse_command_mg()");
++    VLOG_DBG("parse_command_mg()");
+ 
+     if (!nl_policy_parse(buffer, NLMSG_HDRLEN + GENL_HDRLEN, policy, attrs, ARRAY_SIZE(policy))
+         || (br_name   && !attrs[BRC_GENL_A_DP_NAME])
+         || (port_name && !attrs[BRC_GENL_A_PORT_NAME])
+-        || (             !attrs[BRC_GENL_A_MG_ADDR_TYPE])
+         || (gaddr     && !attrs[BRC_GENL_A_MG_GADDR])
+         || (filter    && !attrs[BRC_GENL_A_MG_FILTER])
+         || (compat    && !attrs[BRC_GENL_A_MG_COMPAT])
+         || (nsrc      && !attrs[BRC_GENL_A_MG_NSRC])
+     ) 
+     {
++        VLOG_ERR("parse_command_mg: nl_policy_parse() failed or some attributes are missing");
+         return EINVAL;
+     }
+ 
+     *seq = ((struct nlmsghdr *) buffer->data)->nlmsg_seq;
+-    VLOG_INFO("parse_command_mg: got seq");
++    VLOG_DBG("parse_command_mg: got seq");
+ 
+     if (br_name) {
+         *br_name = nl_attr_get_string(attrs[BRC_GENL_A_DP_NAME]);
+-        VLOG_INFO("parse_command_mg: got br_name");
++        VLOG_DBG("parse_command_mg: got br_name");
+     }
+ 
+     if (port_name) {
+         *port_name = nl_attr_get_string(attrs[BRC_GENL_A_PORT_NAME]);
+-        VLOG_INFO("parse_command_mg: got port");
++        VLOG_DBG("parse_command_mg: got port");
+     }
+ 
+-    gaddr_type = nl_attr_get_u32(attrs[BRC_GENL_A_MG_ADDR_TYPE]);
+-    VLOG_INFO("parse_command_mg: got gaddr_type = %u", gaddr_type);
+-
+     if (gaddr) {
+-        *gaddr = nl_attr_get_u32(attrs[BRC_GENL_A_MG_GADDR]);
+-        VLOG_INFO("parse_command_mg: got gaddr");
++        *gaddr = nl_attr_get_unspec(attrs[BRC_GENL_A_MG_GADDR], sizeof(ipaddr_t));
++        VLOG_DBG("parse_command_mg: got gaddr");
+     }
+ 
+     if (filter) {
+         *filter = nl_attr_get_u32(attrs[BRC_GENL_A_MG_FILTER]);
+-        VLOG_INFO("parse_command_mg: got filter");
++        VLOG_DBG("parse_command_mg: got filter");
+     }
+ 
+     if (compat) {
+         *compat = nl_attr_get_u32(attrs[BRC_GENL_A_MG_COMPAT]);
+-        VLOG_INFO("parse_command_mg: got compat");
++        VLOG_DBG("parse_command_mg: got compat");
+     }
+ 
+     if (nsrc) {
+         *nsrc = nl_attr_get_u32(attrs[BRC_GENL_A_MG_NSRC]);
+-        VLOG_INFO("parse_command_mg: got nsrc = %u", *nsrc);
+-
+-        if (saddrs_str && *nsrc && attrs[BRC_GENL_A_MG_SADDR]) {
+-            saddrs = nl_attr_get_unspec(attrs[BRC_GENL_A_MG_SADDR], *nsrc * sizeof(ipaddr_t));
+-            *saddrs_str = malloc(*nsrc*(8 + 1) + 1);
+-            char *s = *saddrs_str;
+-            int count;
+-            for (uint32_t i = 0; i < *nsrc; ++i) {
+-                count = sprintf(s, "%08x,", saddrs[i].addr.ip4.s_addr);
+-                if (count <= 0) {
+-                    free(*saddrs_str);
+-                    *saddrs_str = NULL;
+-                    return EINVAL;
+-                }
+-                s += count;
+-            }
+-            *(s - 1) = '\0';
++        VLOG_DBG("parse_command_mg: got nsrc = %u", *nsrc);
+ 
+-            VLOG_INFO("parse_command_mg: got saddrs = \"%s\"", *saddrs_str);
++        if (saddrs && *nsrc && attrs[BRC_GENL_A_MG_SADDR]) {
++            *saddrs = nl_attr_get_unspec(attrs[BRC_GENL_A_MG_SADDR], *nsrc * sizeof(ipaddr_t));
++            VLOG_DBG("parse_command_mg: got saddrs");
+         }
+     }
+ 
+@@ -523,19 +541,20 @@ handle_port_cmd(struct ofpbuf *buffer, bool add)
+ static int
+ handle_mg_add_del_cmd(struct ofpbuf *buffer, bool add)
+ {
++    const char *appctl_cmd = add ? "mdb/add-grp" : "mdb/del-grp";
+     const char *br_name;
+     const char *port_name;
+-    uint32_t seq;
+-    uint32_t gaddr;
+-    uint32_t filter;
+-    uint32_t compat;
+-    uint32_t nsrc;
+-    char     *saddrs = NULL;
+-    char     *args[4];
+-    int      error;
+-
+-    VLOG_INFO("handle_mg_add_del_cmd(add=%d)", add);
+-    
++    uint32_t    seq;
++    ipaddr_t   *gaddr;
++    uint32_t    filter;
++    uint32_t    compat;
++    uint32_t    nsrc = 0;
++    ipaddr_t   *saddrs;
++    char       *args[5];
++    int         error;
++
++    VLOG_DBG("handle_mg_add_del_cmd(add=%d)", add);
++
+     if (add) {
+         error = parse_command_mg(buffer, &seq, &br_name, &port_name, &gaddr, &filter, &compat, &nsrc, &saddrs);
+     }
+@@ -543,45 +562,39 @@ handle_mg_add_del_cmd(struct ofpbuf *buffer, bool add)
+         error = parse_command_mg(buffer, &seq, &br_name, &port_name, &gaddr, NULL, NULL, NULL, NULL);  
+     }
+ 
+-    VLOG_INFO("handle_mg_add_del_cmd: parse_command_mg() -> %d", error);
+-
+-    if (!error) {
++    if (error) {
++        VLOG_INFO("handle_mg_add_del_cmd(add=%d): parse error -> %d", add, error);
++    }
++    else {
+         args[0] = NULL;
+-        args[1] = xasprintf("%u", gaddr);
++        args[1] = ipaddrs_to_string(gaddr, 1);
+         if (add) {
+             args[2] = xasprintf("%u", filter);
+             args[3] = xasprintf("%u", compat);
++            args[4] = ipaddrs_to_string(saddrs, nsrc);
+         }
+         else {
+             args[2] = NULL;
+             args[3] = NULL;
++            args[4] = NULL;
+         }
+-        
+-        VLOG_INFO("handle_mg_add_del_cmd: %s %s %s %s %s %s", br_name, port_name, args[1], args[2], args[3], saddrs ? saddrs : "");
+ 
+-        const char *appctl_cmd = add ? "mdb/add-grp" : "mdb/del-grp";
+-        if (!run_vsctl(appctl_program,
+-                       "--", appctl_cmd, br_name, port_name,
+-                       args[1],
+-                       args[2],
+-                       args[3],
+-                       saddrs,
++        if (!run_vsctl(appctl_program, "--", appctl_cmd, br_name, port_name,
++                       args[1], args[2], args[3], args[4],
+                        (char *) NULL)
+-        ) 
++           )
+         {
+             error = EINVAL;
+         }
+ 
+-        send_simple_reply(seq, error);
++        VLOG_INFO("handle_mg_add_del_cmd: %s %s %s %s %s %s %s -> %d", appctl_cmd, br_name, port_name, args[1], args[2], args[3], args[4] ? args[4] : "", error);
+ 
+-        for (int i = 3; i >= 0; --i) {
++        for (int i = 4; i > 0; --i) {
+             free(args[i]);
+         }
+     }
+ 
+-    free(saddrs);
+-
+-    VLOG_INFO("handle_mg_add_del_cmd: result = %d", error);
++    send_simple_reply(seq, error);
+ 
+     return error;
+ }

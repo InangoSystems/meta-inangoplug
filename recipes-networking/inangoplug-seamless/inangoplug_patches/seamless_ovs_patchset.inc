@@ -41,5 +41,19 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0039-Commit-Title-Support-new-API-from-Acceleration-module.patch \
     file://0040-Commit-Title-Set-revalidator-time-to-2000ms.patch \
     file://0041-Commit-Title-Incorrect-am_id-during-call-to-acceleration-module.patch \
+    file://0042-Commit-Title-Translation-module.-Translate-to-egress-properties-should-support-.patch \
+    file://0043-Commit-Title-Integrating-private-IOCTL-s.patch \
+    file://0044-Commit-Title-Add-new-ioctl-SIOCBRENABLESNOOPING-to-disable-enable-multicast-sno.patch \
+    file://0045-Commit-Title-Extend-datapath-flow.-determine-flow-type.patch \
+    file://0046-Commit-Title-Integrate-base-management-for-Inango-Plug.patch \
+    file://0047-Commit-Title-Implement-logic-for-handle-control-mcast-traffic.patch \
+    file://0048-Commit-Title-Implement-new-ioctl-SIOCBRSETROUTERPORT-to-configure-specified-por.patch \
+    file://0049-Commit-Title-Fix-postprocessing-hooks-multicast-traffic.patch \
+    file://0050-Commit-Title-Extend-Multicast-DB-in-OVS.-Support-filter-mode-and-source-list.patch \
+    file://0051-Commit-Title-Implement-logic-for-handle-data-mcast-traffic.patch \
+    file://0052-Commit-Title-Support-private-procfs-for-enable-disable-mutlicast-snooping.patch \
+    file://0053-Commit-Title-Set-correct-default-multicast-behavior-for-Open-vSwitch.patch \
+    file://0054-Commit-Title-Integration-mcast-helper-functionality.patch \
+    file://0055-Commit-Title-Support-ioctl-s-to-configure-ipv6-multicast-snooping.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

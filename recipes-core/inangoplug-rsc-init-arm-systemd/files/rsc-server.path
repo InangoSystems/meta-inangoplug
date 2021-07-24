@@ -1,9 +1,9 @@
 [Unit]
-Description=Check flag file "VS Client enable"
+Description=Check flag file "Inango Plug enable"
 After=puma_fs.service
 
 [Path]
-PathExists=/tmp/vsclient_enable
+PathExists=/tmp/inangoplug_enable
 
 [Install]
 WantedBy=multi-user.target

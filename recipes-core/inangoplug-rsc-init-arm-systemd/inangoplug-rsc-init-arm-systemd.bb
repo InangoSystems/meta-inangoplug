@@ -8,7 +8,7 @@ SRC_URI = " \
     file://rsc-server.service \
     file://rsc-server.path \
     file://rsc-server_default.conf \
-    file://create_vsclient_enable.sh \
+    file://create_inangoplug_enable.sh \
     file://LICENSE \
 "
 
@@ -26,5 +26,5 @@ do_install () {
 
     install -d ${D}${sysconfdir}/scripts
     install -d ${D}${sysconfdir}/scripts/ncpu_exec
-    install -m 0755 ${WORKDIR}/create_vsclient_enable.sh ${D}${sysconfdir}/scripts/ncpu_exec
+    install -m 0755 ${WORKDIR}/create_inangoplug_enable.sh ${D}${sysconfdir}/scripts/ncpu_exec
 }

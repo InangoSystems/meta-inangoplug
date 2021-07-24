@@ -1,0 +1,58 @@
+From 0ccc2fafc7782ae823624076646e363f621e6bf9 Mon Sep 17 00:00:00 2001
+From: Oleksandr Shaporov <o.shaporov@inango-systems.com>
+Date: Thu, 1 Jul 2021 10:59:51 +0300
+Subject: [PATCH] Commit Title          : Integrate base management for Inango
+ Plug
+
+BugID                 : 23081
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Added dependency for openvswitch, openvswitch should start before CcspPandM and after PsmSsp
+---
+ rhel/usr_lib_systemd_system_ovs-vswitchd.service.in | 2 +-
+ rhel/usr_lib_systemd_system_ovsdb-server.service    | 3 ++-
+ utilities/ovs-ctl.in                                | 4 ----
+ 3 files changed, 3 insertions(+), 6 deletions(-)
+
+diff --git a/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in b/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
+index ff3a2c427..a2977046b 100644
+--- a/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
++++ b/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
+@@ -2,7 +2,7 @@
+ Description=Open vSwitch Forwarding Unit
+ After=ovsdb-server.service network-pre.target systemd-udev-settle.service
+ Before=network.target network.service
+-#Requires=ovsdb-server.service
++Requires=ovsdb-server.service
+ ReloadPropagatedFrom=ovsdb-server.service
+ AssertPathIsReadWrite=/var/run/openvswitch/db.sock
+ PartOf=openvswitch.service
+diff --git a/rhel/usr_lib_systemd_system_ovsdb-server.service b/rhel/usr_lib_systemd_system_ovsdb-server.service
+index 976c9f7aa..a23154515 100644
+--- a/rhel/usr_lib_systemd_system_ovsdb-server.service
++++ b/rhel/usr_lib_systemd_system_ovsdb-server.service
+@@ -1,7 +1,8 @@
+ [Unit]
+ Description=Open vSwitch Database Unit
+-After=systemd-rpcbind-puma7.service
++After=systemd-rpcbind-puma7.service check_inangoplug_enabled.service
+ Before=network.target network.service
++Requires=check_inangoplug_enabled.service
+ Wants=ovs-delete-transient-ports.service
+ PartOf=openvswitch.service
+ 
+diff --git a/utilities/ovs-ctl.in b/utilities/ovs-ctl.in
+index 0a6b47ecd..1e84a8ae8 100644
+--- a/utilities/ovs-ctl.in
++++ b/utilities/ovs-ctl.in
+@@ -165,10 +165,6 @@ do_start_ovsdb () {
+         if test X"$DELETE_TRANSIENT_PORTS" = Xyes; then
+             del_transient_ports
+         fi
+-
+-        # It required for start ovs-vswitchd service
+-        touch /tmp/ovsdb_server_started
+-
+     fi
+ }
+ 

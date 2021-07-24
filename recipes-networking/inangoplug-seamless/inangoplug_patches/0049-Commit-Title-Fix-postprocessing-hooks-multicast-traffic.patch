@@ -1,0 +1,173 @@
+From bf4c8d9a72af3842f1502a16b90e11805649ecde Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Tue, 20 Jul 2021 10:40:36 +0500
+Subject: [PATCH] Commit Title          : Fix postprocessing hooks, multicast
+ traffic shouldn't any post process except output.
+
+BugID                 : 24958
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- fix post porcessing for flood/skip/multicast traffic.
+- Fix set output porcessing for each out port.
+- fix flow type and proactive session properties
+---
+ datapath/actions.c           | 50 +++++++++++++++++++++++++-------------------
+ datapath/translate_dp_am.c   |  7 ++++++-
+ lib/dpif.c                   |  2 ++
+ ofproto/ofproto-dpif-xlate.c |  1 -
+ 4 files changed, 36 insertions(+), 24 deletions(-)
+
+diff --git a/datapath/actions.c b/datapath/actions.c
+index a80eec42d..ece56eb2b 100644
+--- a/datapath/actions.c
++++ b/datapath/actions.c
+@@ -1271,31 +1271,43 @@ static int execute_check_pkt_len(struct datapath *dp, struct sk_buff *skb,
+ }
+ 
+ static bool is_flood_flow(const struct sw_flow_key *key,
+-						  const struct nlattr *attr, int len)
++						  const struct nlattr *attr, int len, struct sw_flow *flow)
++{
++
++	if (flow->flow_type == BROADCAST_FLOW_TYPE || flow->flow_type == UNKNOWN_UNICAST_FLOW_TYPE)
++		return true;
++	else if (flow->flow_type != UNKNOWN_FLOW_TYPE)
++		return false;
++
++	if (!is_multicast_ether_addr(key->eth.dst)
++		&& is_broadcast_ether_addr(key->eth.dst)) {
++		return true;
++	}
++
++	return false;
++}
++
++static bool should_skip(const struct sw_flow_key *key,
++						  const struct nlattr *attr, int len,
++						  struct sw_flow *flow)
+ {
+ 	const struct nlattr *a;
+ 	int rem;
+-	int outputs = 0;
+ 
+-	if (is_multicast_ether_addr(key->eth.src)
+-		|| is_broadcast_ether_addr(key->eth.src)) {
++	if (flow->acl_state != ACCELERATED)
+ 		return true;
+-	}
+ 
+-	/* Check for unknown unicast.
+-	 * If the packet goes more then to one output, we will not process it.
+-	 */
+ 	for (a = attr, rem = len; rem > 0;
+-		a = nla_next(a, &rem)) {
+-		if (nla_type(a) == OVS_ACTION_ATTR_OUTPUT) {
+-			if (++outputs > 1) {
++	     a = nla_next(a, &rem)) {
++		switch (nla_type(a)) {
++			case OVS_ACTION_ATTR_USERSPACE:
+ 				return true;
+-			}
++				break;
+ 		}
+ 	}
++
+ 	return false;
+ }
+-
+ /* Execute a list of actions against 'skb'. */
+ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			      struct sw_flow_key *key,
+@@ -1305,15 +1317,14 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ {
+ 	const struct nlattr *a;
+ 	int rem;
+-	bool flood_flow = is_flood_flow(key, attr, len);
+ 
+ 	// TODO: Set correct action instead of PP_AM_SET_OUTPUT
+ 	am_skb_preprocessing(PP_AM_SET_OUTPUT, flow/*ufid*/, skb);
+ 
+-	if (flow->acl_state != ACCELERATED) {
++	if (should_skip(key, attr, len, flow)) {
+ 		am_skb_postprocessing(PP_AM_SET_SKIP, flow/*ufid*/, skb);
+ 	}
+-	if (flood_flow) {
++	if (is_flood_flow(key, attr, len, flow)) {
+ 		am_skb_postprocessing(PP_AM_SET_FLOOD, flow/*ufid*/, skb);
+ 	}
+ 
+@@ -1325,21 +1336,17 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 		case OVS_ACTION_ATTR_OUTPUT: {
+ 			int port = nla_get_u32(a);
+ 			struct sk_buff *clone;
++			am_skb_postprocessing(PP_AM_SET_OUTPUT, flow/*ufid*/, skb);
+ 
+ 			/* Every output action needs a separate clone
+ 			 * of 'skb', In case the output action is the
+ 			 * last action, cloning can be avoided.
+ 			 */
+ 			if (nla_is_last(a, rem)) {
+-				if (!flood_flow) {
+-					am_skb_postprocessing(PP_AM_SET_OUTPUT, flow/*ufid*/, skb);
+-				}
+ 				do_output(dp, skb, port, key);
+ 				/* 'skb' has been used for output.
+ 				 */
+ 				return 0;
+-			} else {
+-				am_skb_postprocessing(PP_AM_SET_SKIP, flow/*ufid*/, skb);
+ 			}
+ 
+ 			clone = skb_clone(skb, GFP_ATOMIC);
+@@ -1358,7 +1365,6 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 		}
+ 
+ 		case OVS_ACTION_ATTR_USERSPACE:
+-			am_skb_postprocessing(PP_AM_SET_SKIP, flow/*ufid*/, skb);
+ 			output_userspace(dp, skb, key, a, attr,
+ 						     len, OVS_CB(skb)->cutlen);
+ 			OVS_CB(skb)->cutlen = 0;
+diff --git a/datapath/translate_dp_am.c b/datapath/translate_dp_am.c
+index 56bf58552..ae7a060b6 100644
+--- a/datapath/translate_dp_am.c
++++ b/datapath/translate_dp_am.c
+@@ -313,7 +313,12 @@ int translate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *act
+ 			break;
+ 		}
+ 
+-		case OVS_ACTION_ATTR_POP_NSH:
++		case OVS_ACTION_ATTR_POP_NSH: {
++			err = -ENOTSUPP;
++			break;
++
++		}
++		case OVS_ACTION_ATTR_USERSPACE:
+ 			err = -ENOTSUPP;
+ 			break;
+ 
+diff --git a/lib/dpif.c b/lib/dpif.c
+index 9d9c716c1..758128d51 100644
+--- a/lib/dpif.c
++++ b/lib/dpif.c
+@@ -1027,6 +1027,8 @@ dpif_flow_put(struct dpif *dpif, enum dpif_flow_put_flags flags,
+     op.flow_put.ufid = ufid;
+     op.flow_put.pmd_id = pmd_id;
+     op.flow_put.stats = stats;
++    op.flow_put.flow_type = UNKNOWN_FLOW_TYPE;
++    op.flow_put.proactive_flag = 0;
+ 
+     opp = &op;
+     dpif_operate(dpif, &opp, 1, DPIF_OFFLOAD_AUTO);
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 51b8ed2dd..cfca0e08b 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2775,7 +2775,6 @@ mcast_output_finish(struct xlate_ctx *ctx, struct mcast_output *out,
+     if (out->flood) {
+         xlate_normal_flood(ctx, in_xbundle, xvlan);
+     } else {
+-        xin->flow_type = MULTICAST_FLOW_TYPE;
+         for (size_t i = 0; i < out->n; i++) {
+             output_normal(ctx, out->xbundles[i], xvlan);
+         }

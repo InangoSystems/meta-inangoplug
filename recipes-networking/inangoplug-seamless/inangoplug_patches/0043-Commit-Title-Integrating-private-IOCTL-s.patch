@@ -1,0 +1,473 @@
+From 9fee48f8bb35ab7be2e4482f5970baa4404d5c04 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Wed, 7 Jul 2021 23:05:05 +0500
+Subject: [PATCH] Commit Title          : Integrating private IOCTL-s
+
+BugID                 : 24797
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Implemented base private IOCTL-s (add/del multicast group)
+---
+ datapath/brcompat_main.c               |  84 +++++++++++++++++++++
+ include/openvswitch/brcompat-netlink.h |   9 +++
+ ofproto/ofproto-dpif-xlate.c           |   3 +
+ ofproto/ofproto-dpif.c                 | 114 ++++++++++++++++++++++++++++
+ vswitchd/ovs-brcompatd.c               | 134 +++++++++++++++++++++++++++++++++
+ 5 files changed, 344 insertions(+)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 3f08e4977..423e3d73c 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -39,6 +39,40 @@
+ 
+ #define BRIDGE_LIST_MAX 16
+ 
++/* Bridge ioctls */
++#define SIOCBRMGADD           0x89ab
++#define SIOCBRMGDEL           0x89ac
++#define SIOCBRSETROUTERPORT   0x89ad
++#define SIOCBRENABLESNOOPING  0x89ae
++
++/* kernel/net/bridge/br_private.h */
++typedef enum {
++	IPV4 = 0,
++	IPV6,
++} ptype_t;
++
++struct ipaddr {
++	ptype_t type;
++	union {
++		struct in_addr  ip4;
++		struct in6_addr ip6;
++	} addr;
++};
++
++typedef struct ipaddr ipaddr_t;
++
++/* mcast_service/daemon_mcast_src/LQ_MCASTD_includes.h */
++struct br_grp_mem {
++	unsigned int if_idx;       /* interface index */
++	ipaddr_t     gaddr;
++	unsigned int filter_mode;  /* Filter mode */
++	unsigned int compat_mode;  /* Compatibility mode */
++	unsigned int nsrc;         /* Number of sources */
++	ipaddr_t     slist[0];     /* source list */
++};
++typedef struct br_grp_mem br_grp_mem_t;
++
++
+ static char *br_list[BRIDGE_LIST_MAX];
+ static unsigned int size_list = BRIDGE_LIST_MAX;
+ module_param_array_named(bridges, br_list, charp, &size_list, 0);
+@@ -379,6 +413,49 @@ static int brc_add_del_port(struct net_device *dev, int port_ifindex, int add)
+ 	return err;
+ }
+ 
++/* seamless-ovs { */
++static int brc_add_del_mg_rec(struct net_device *dev, br_grp_mem_t *rec, int add)
++{
++	struct sk_buff    *request;
++	struct net_device *port;
++	int                err;
++
++	if (!capable(CAP_NET_ADMIN))
++		return -EPERM;
++
++	port = __dev_get_by_index(dev_net(dev), rec->if_idx);
++	if (!port)
++		return -EINVAL;
++
++	/* Save name of dev and port because there's a race between the
++	 * rtnl_unlock() and the brc_send_simple_command(). */
++	request = brc_make_request(add ? BRC_GENL_C_MG_ADD : BRC_GENL_C_MG_DEL, dev->name, port->name);
++	if (!request)
++		return -ENOMEM;
++
++	if (nla_put_u32(request, BRC_GENL_A_MG_GADDR, rec->gaddr.addr.ip4.s_addr))
++		goto brc_add_del_mg_rec_put_failure;
++	if (nla_put_u32(request, BRC_GENL_A_MG_FILTER, rec->filter_mode))
++		goto brc_add_del_mg_rec_put_failure;
++	if (nla_put_u32(request, BRC_GENL_A_MG_COMPAT, rec->compat_mode))
++		goto brc_add_del_mg_rec_put_failure;
++
++	/* debug
++	printk("brc_add_del_mg_rec: if_idx=%u, gaddr=%u, filter=%u, compat=%u\n", rec->if_idx, rec->gaddr.addr.ip4.s_addr, rec->filter_mode, rec->compat_mode);
++	*/
++
++	rtnl_unlock();
++	err = brc_send_simple_command(dev_net(dev), request);
++	rtnl_lock();
++
++	return err;
++
++brc_add_del_mg_rec_put_failure:
++	kfree_skb(request);
++	return -ENOMEM;
++}
++/* } seamless-ovs */
++
+ static int brc_get_bridge_info(struct net_device *dev,
+ 			       struct __bridge_info __user *ub)
+ {
+@@ -611,6 +688,13 @@ static int brc_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+ 		return brc_add_del_port(dev, rq->ifr_ifindex, 1);
+ 	case SIOCBRDELIF:
+ 		return brc_add_del_port(dev, rq->ifr_ifindex, 0);
++	case SIOCBRMGADD:
++	case SIOCBRMGDEL:
++		return brc_add_del_mg_rec(dev, rq->ifr_data, (cmd == SIOCBRMGADD));
++	/* TODO: implement handling
++	 * case SIOCBRSETROUTERPORT:
++	 * case SIOCBRENABLESNOOPING:
++	 */
+ 
+ 	default:
+ 		err = -EOPNOTSUPP;
+diff --git a/include/openvswitch/brcompat-netlink.h b/include/openvswitch/brcompat-netlink.h
+index ef73ba286..e9a6792d0 100644
+--- a/include/openvswitch/brcompat-netlink.h
++++ b/include/openvswitch/brcompat-netlink.h
+@@ -81,6 +81,13 @@ enum {
+     BRC_GENL_A_ULONG_VAL,   /* K: "unsigned long" Use in order to send parametrs to user space. */
+     BRC_GENL_A_GET_ULONG,   /* U: "ulong" value of bridges parameters. */
+     BRC_GENL_A_GET_STRING,  /* U: "string" value of bridges parameters. */
++
++    /* seamless-ovs { */
++    BRC_GENL_A_MG_IFIDX,    /* */
++    BRC_GENL_A_MG_GADDR,    /* */
++    BRC_GENL_A_MG_FILTER,   /* */
++    BRC_GENL_A_MG_COMPAT,   /* */
++
+     BRC_GENL_A_PAD,
+     __BRC_GENL_A_MAX,
+     BRC_GENL_A_MAX = __BRC_GENL_A_MAX - 1
+@@ -122,6 +129,8 @@ enum brc_genl_command {
+     BRC_GENL_C_GET_PORT_PORT_NO, /* K: Get the port number. */
+     BRC_GENL_C_GET_PORT_PATH_COST, /* K: Get the port path cost. */
+     BRC_GENL_C_SET_PORT_PATH_COST, /* K: Set the port path cost. */
++    BRC_GENL_C_MG_ADD,    /* K: seamless-ovs */
++    BRC_GENL_C_MG_DEL,    /* K: seamless-ovs */
+ 
+     __BRC_GENL_C_MAX,
+     BRC_GENL_C_MAX = __BRC_GENL_C_MAX - 1
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 4407f9c97..a6f417c81 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2612,6 +2612,7 @@ update_mcast_snooping_table4__(const struct xlate_ctx *ctx,
+     }
+ 
+     switch (ntohs(flow->tp_src)) {
++    /* TODO: enable/disable handling  */
+     case IGMP_HOST_MEMBERSHIP_REPORT:
+     case IGMPV2_HOST_MEMBERSHIP_REPORT:
+         if (mcast_snooping_add_group4(ms, ip4, vlan, in_xbundle->ofbundle)) {
+@@ -2681,6 +2682,7 @@ update_mcast_snooping_table6__(const struct xlate_ctx *ctx,
+                                "port %s in VLAN %d", in_xbundle->name, vlan);
+         }
+         break;
++    /* TODO: enable/disable handling  */
+     case MLD_REPORT:
+     case MLD_DONE:
+     case MLD2_REPORT:
+@@ -3036,6 +3038,7 @@ xlate_normal(struct xlate_ctx *ctx)
+             if (mcast_snooping_is_membership(flow->tp_src)) {
+                 struct mcast_output out = MCAST_OUTPUT_INIT;
+ 
++                /* TODO: enable/disable handling */
+                 ovs_rwlock_rdlock(&ms->rwlock);
+                 xlate_normal_mcast_send_mrouters(ctx, ms, in_xbundle, &xvlan,
+                                                  &out);
+diff --git a/ofproto/ofproto-dpif.c b/ofproto/ofproto-dpif.c
+index eaa79b060..a6eee3941 100644
+--- a/ofproto/ofproto-dpif.c
++++ b/ofproto/ofproto-dpif.c
+@@ -5948,6 +5948,116 @@ ofproto_unixctl_mcast_snooping_show(struct unixctl_conn *conn,
+     ds_destroy(&ds);
+ }
+ 
++/* seamless-ovs { */
++static void
++ofproto_unixctl_mcast_snooping_add_grp(struct unixctl_conn *conn,
++                                    int argc OVS_UNUSED,
++                                    const char *argv[],
++                                    void *aux OVS_UNUSED)
++{
++    const struct ofproto_dpif *ofproto;
++
++    VLOG_INFO("ofproto_unixctl_mcast_snooping_add_grp(argc=%d, argv[1]=%s)", argc, argv[1]);
++
++    ofproto = ofproto_dpif_lookup_by_name(argv[1]);
++    if (!ofproto) {
++        unixctl_command_reply_error(conn, "no such bridge");
++        return;
++    }
++
++    if (!mcast_snooping_enabled(ofproto->ms)) {
++        unixctl_command_reply_error(conn, "multicast snooping is disabled");
++        return;
++    }
++
++    if (argc < 6) {
++        unixctl_command_reply_error(conn, "less than 6 args");
++        return;
++    }
++
++    struct ofport_dpif *ofport;
++    ofport = ofport_dpif_cast(shash_find_data(&ofproto->up.port_by_name, argv[2]));
++
++    VLOG_INFO("ofport %p", ofport);
++    if (!ofport) {
++        unixctl_command_reply_error(conn, "no such port in bridge");
++        return;   
++    }
++
++    unsigned int gaddr;
++    if (!str_to_uint(argv[3], 10, &gaddr)) {
++        unixctl_command_reply_error(conn, "invalid gaddr");
++        return; 
++    }
++
++    unsigned int filter;
++    if (!str_to_uint(argv[4], 10, &filter)) {
++        unixctl_command_reply_error(conn, "invalid filter");
++        return; 
++    }
++
++    unsigned int compat;
++    if (!str_to_uint(argv[5], 10, &compat)) {
++        unixctl_command_reply_error(conn, "invalid compat");
++        return; 
++    }
++
++    VLOG_INFO("ofproto_unixctl_mcast_snooping_add_grp: port=%s, gaddr=%u, filter=%u, compat=%u", argv[2], gaddr, filter, compat);
++
++    mcast_snooping_add_group4(ofproto->ms, (ovs_be32)gaddr, 0, ofport->bundle);
++
++    unixctl_command_reply(conn, "ofproto_unixctl_mcast_snooping_add_grp success");
++}
++
++static void
++ofproto_unixctl_mcast_snooping_del_grp(struct unixctl_conn *conn,
++                                    int argc OVS_UNUSED,
++                                    const char *argv[],
++                                    void *aux OVS_UNUSED)
++{
++    const struct ofproto_dpif *ofproto;
++
++    VLOG_INFO("ofproto_unixctl_mcast_snooping_del_grp(argc=%d)", argc);
++
++    ofproto = ofproto_dpif_lookup_by_name(argv[1]);
++    if (!ofproto) {
++        unixctl_command_reply_error(conn, "no such bridge");
++        return;
++    }
++
++    if (!mcast_snooping_enabled(ofproto->ms)) {
++        unixctl_command_reply_error(conn, "multicast snooping is disabled");
++        return;
++    }
++
++    struct ofport_dpif *ofport;
++    ofport = ofport_dpif_cast(shash_find_data(&ofproto->up.port_by_name, argv[2]));
++
++    VLOG_INFO("ofport %p", ofport);
++    if (!ofport) {
++        unixctl_command_reply_error(conn, "no such port in bridge");
++        return;   
++    }
++
++    if (argc < 4) {
++        unixctl_command_reply_error(conn, "less than 4 args");
++        return;
++    }
++
++    unsigned int gaddr;
++    if (!str_to_uint(argv[3], 10, &gaddr)) {
++        unixctl_command_reply_error(conn, "invalid gaddr");
++        return; 
++    }
++
++    VLOG_INFO("ofproto_unixctl_mcast_snooping_del_grp: port=%s, gaddr=%u", argv[2], gaddr);
++
++    mcast_snooping_leave_group4(ofproto->ms, (ovs_be32)gaddr, 0, ofport->bundle);
++
++    unixctl_command_reply(conn, "ofproto_unixctl_mcast_snooping_del_grp success");
++}
++/* } seamless-ovs */
++
+ /* Store the current ofprotos in 'ofproto_shash'.  Returns a sorted list
+  * of the 'ofproto_shash' nodes.  It is the responsibility of the caller
+  * to destroy 'ofproto_shash' and free the returned value. */
+@@ -6392,6 +6502,10 @@ ofproto_unixctl_init(void)
+                              ofproto_unixctl_mcast_snooping_flush, NULL);
+     unixctl_command_register("mdb/show", "bridge", 1, 1,
+                              ofproto_unixctl_mcast_snooping_show, NULL);
++    unixctl_command_register("mdb/add-grp", "bridge ifidx gaddr filter_mode version", 5, 5,
++                             ofproto_unixctl_mcast_snooping_add_grp, NULL);
++    unixctl_command_register("mdb/del-grp", "bridge ifidx gaddr", 3, 3,
++                             ofproto_unixctl_mcast_snooping_del_grp, NULL);
+     unixctl_command_register("dpif/dump-dps", "", 0, 0,
+                              ofproto_unixctl_dpif_dump_dps, NULL);
+     unixctl_command_register("dpif/show", "", 0, 0, ofproto_unixctl_dpif_show,
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 723c232a1..23a939877 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -305,6 +305,66 @@ parse_command(struct ofpbuf *buffer, uint32_t *seq, const char **br_name,
+     return 0;
+ }
+ 
++/* seamless-ovs { */
++static int
++parse_command_mg(struct ofpbuf *buffer, uint32_t *seq, const char **br_name,
++              const char **port_name, uint32_t *gaddr, uint32_t *filter, uint32_t *compat)
++{
++    static const struct nl_policy policy[] = {
++        [BRC_GENL_A_DP_NAME]   = { .type = NL_A_STRING, .optional = true },
++        [BRC_GENL_A_PORT_NAME]  = { .type = NL_A_STRING,    .optional = true },
++        [BRC_GENL_A_MG_GADDR]  = { .type = NL_A_U32,    .optional = true },
++        [BRC_GENL_A_MG_FILTER] = { .type = NL_A_U32,    .optional = true },
++        [BRC_GENL_A_MG_COMPAT] = { .type = NL_A_U32,    .optional = true },
++    };
++    struct nlattr *attrs[ARRAY_SIZE(policy)];
++
++    VLOG_INFO("parse_command_mg()");
++
++    if (!nl_policy_parse(buffer, NLMSG_HDRLEN + GENL_HDRLEN, policy,
++                         attrs, ARRAY_SIZE(policy))
++        || (br_name && !attrs[BRC_GENL_A_DP_NAME])
++        || (port_name && !attrs[BRC_GENL_A_PORT_NAME])
++        || (gaddr   && !attrs[BRC_GENL_A_MG_GADDR])
++        || (filter  && !attrs[BRC_GENL_A_MG_FILTER])
++        || (compat  && !attrs[BRC_GENL_A_MG_COMPAT])
++    ) 
++    {
++        return EINVAL;
++    }
++
++    *seq = ((struct nlmsghdr *) buffer->data)->nlmsg_seq;
++    VLOG_INFO("parse_command_mg: got seq)");
++
++    if (br_name) {
++        *br_name = nl_attr_get_string(attrs[BRC_GENL_A_DP_NAME]);
++        VLOG_INFO("parse_command_mg: got br_name)");
++    }
++
++    if (port_name) {
++        *port_name = nl_attr_get_string(attrs[BRC_GENL_A_PORT_NAME]);
++        VLOG_INFO("parse_command_mg: got port)");
++    }
++
++    if (gaddr) {
++        *gaddr = nl_attr_get_u32(attrs[BRC_GENL_A_MG_GADDR]);
++        VLOG_INFO("parse_command_mg: got gaddr)");
++    }
++
++    if (filter) {
++        *filter = nl_attr_get_u32(attrs[BRC_GENL_A_MG_FILTER]);
++        VLOG_INFO("parse_command_mg: got filter)");
++    }
++
++    if (compat) {
++        *compat = nl_attr_get_u32(attrs[BRC_GENL_A_MG_COMPAT]);
++        VLOG_INFO("parse_command_mg: got compat)");
++    }
++
++    return 0;
++}
++/* } seamless-ovs */
++
+ /* Composes and returns a reply to a request made by the datapath with error
+  * code 'error'.  The caller may add additional attributes to the message, then
+  * it may send it with send_reply(). */
+@@ -409,6 +469,70 @@ handle_port_cmd(struct ofpbuf *buffer, bool add)
+     return error;
+ }
+ 
++/* seamless-ovs { */
++static int
++handle_mg_add_del_cmd(struct ofpbuf *buffer, bool add)
++{
++    const char *br_name;
++    const char *port_name;
++    uint32_t seq;
++    uint32_t ifidx;
++    uint32_t gaddr;
++    uint32_t filter;
++    uint32_t compat;
++    const char *args[4];
++    int error;
++
++    VLOG_INFO("handle_mg_add_del_cmd(add=%d)", add);
++    
++    if (add) {
++        error = parse_command_mg(buffer, &seq, &br_name, &port_name, &gaddr, &filter, &compat);
++    }
++    else {
++        error = parse_command_mg(buffer, &seq, &br_name, &port_name, &gaddr, NULL, NULL);  
++    }
++
++    VLOG_INFO("handle_mg_add_del_cmd: parse_command_mg() -> %d", error);
++
++    if (!error) {
++        args[0] = NULL;
++        args[1] = xasprintf("%u", gaddr);
++        if (add) {
++            args[2] = xasprintf("%u", filter);
++            args[3] = xasprintf("%u", compat);
++        }
++        else {
++            args[2] = NULL;
++            args[3] = NULL;
++        }
++        
++        VLOG_INFO("handle_mg_add_del_cmd: %s %s %s %s %s", br_name, port_name, args[1], args[2], args[3]);
++
++        const char *appctl_cmd = add ? "mdb/add-grp" : "mdb/del-grp";
++        if (!run_vsctl(appctl_program,
++                       "--", appctl_cmd, br_name, port_name,
++                       args[1],
++                       args[2],
++                       args[3],
++                       (char *) NULL)
++        ) 
++        {
++            error = EINVAL;
++        }
++
++        send_simple_reply(seq, error);
++
++        for (int i = 3; i >= 0; --i) {
++            free(args[i]);
++        }
++    }
++    
++    VLOG_INFO("handle_mg_add_del_cmd: result = %d", error);
++
++    return error;
++}
++/* } seamless-ovs */
++
+ static char *
+ linux_bridge_to_ovs_bridge(const char *linux_name, int *br_vlanp)
+ {
+@@ -1149,6 +1273,16 @@ brc_recv_update(void)
+         handle_set_ulong_val_port_cmd(&buffer, "stp-path-cost");
+         break;
+ 
++    /* seamless-ovs { */
++    case BRC_GENL_C_MG_ADD:
++        handle_mg_add_del_cmd(&buffer, true);
++        break;
++
++    case BRC_GENL_C_MG_DEL:
++        handle_mg_add_del_cmd(&buffer, false);
++        break;
++    /* } seamless-ovs */
++
+     default:
+         VLOG_WARN_RL(&rl, "received unknown brc netlink command: %d\n",
+                      genlmsghdr->cmd);

@@ -1,9 +1,0 @@
-[Unit]
-Description=Check flag file "OVS DB Server started"
-After=ovsdb-server.service network-pre.target systemd-udev-settle.service
-
-[Path]
-PathExists=/tmp/ovsdb_server_started
-
-[Install]
-WantedBy=multi-user.target

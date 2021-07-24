@@ -1,0 +1,130 @@
+From 7d110348c732e8ddf75b773c79f544e388847ded Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Thu, 22 Jul 2021 17:02:33 +0300
+Subject: [PATCH] Commit Title          : Set correct default multicast
+ behavior for Open vSwitch
+
+BugID                 : 25026
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Set correct default multicast behavior for Open vSwitch
+---
+ lib/mcast-snooping.c         | 18 +++++++++---------
+ lib/mcast-snooping.h         |  5 +++++
+ ofproto/ofproto-dpif-xlate.c | 19 +++++++++++--------
+ vswitchd/bridge.c            |  2 +-
+ 4 files changed, 26 insertions(+), 18 deletions(-)
+
+diff --git a/lib/mcast-snooping.c b/lib/mcast-snooping.c
+index 107861296..1caad30e4 100644
+--- a/lib/mcast-snooping.c
++++ b/lib/mcast-snooping.c
+@@ -46,8 +46,8 @@ VLOG_DEFINE_THIS_MODULE(mcast_snooping);
+ COVERAGE_DEFINE(mcast_snooping_learned);
+ COVERAGE_DEFINE(mcast_snooping_expired);
+ 
+-static atomic_bool enable_external_igmp_handler = ATOMIC_VAR_INIT(true);
+-static atomic_bool enable_external_mld_handler = ATOMIC_VAR_INIT(true);
++static atomic_bool enable_external_igmp_handler = ATOMIC_VAR_INIT(false);
++static atomic_bool enable_external_mld_handler = ATOMIC_VAR_INIT(false);
+ 
+ static struct mcast_port_bundle *
+ mcast_snooping_port_lookup(struct ovs_list *list, void *port);
+@@ -183,7 +183,7 @@ mcast_snooping_create(void)
+     ms->idle_time = MCAST_ENTRY_DEFAULT_IDLE_TIME;
+     ms->max_entries = MCAST_DEFAULT_MAX_ENTRIES;
+     ms->need_revalidate = false;
+-    ms->flood_unreg = true;
++    ms->flood_unreg = false;
+     ovs_refcount_init(&ms->ref_cnt);
+     ovs_rwlock_init(&ms->rwlock);
+     return ms;
+@@ -1104,25 +1104,25 @@ mcast_snooping_flush_bundle(struct mcast_snooping *ms, void *port)
+     ovs_rwlock_unlock(&ms->rwlock);
+ }
+ 
+-bool mcast_external_igmp_handler_enabled() {
+-    bool enabled;
++int mcast_external_igmp_handler_enabled() {
++    int enabled;
+     atomic_read_relaxed(&enable_external_igmp_handler, &enabled);
+     return enabled;
+ }
+ 
+-bool mcast_external_mld_handler_enabled() {
+-    bool enabled;
++int mcast_external_mld_handler_enabled() {
++    int enabled;
+     atomic_read_relaxed(&enable_external_mld_handler, &enabled);
+     return enabled;
+ }
+ 
+-int mcast_external_igmp_handler_enable(bool enable)
++int mcast_external_igmp_handler_enable(int enable)
+ {
+     atomic_store_relaxed(&enable_external_igmp_handler, enable);
+     return 0;
+ }
+ 
+-int mcast_external_mld_handler_enable(bool enable)
++int mcast_external_mld_handler_enable(int enable)
+ {
+     atomic_store_relaxed(&enable_external_mld_handler, enable);
+     return 0;
+diff --git a/lib/mcast-snooping.h b/lib/mcast-snooping.h
+index f1b10a683..ea6ad8cb2 100644
+--- a/lib/mcast-snooping.h
++++ b/lib/mcast-snooping.h
+@@ -244,4 +244,9 @@ void mcast_snooping_mdb_flush(struct mcast_snooping *ms);
+ void mcast_snooping_flush(struct mcast_snooping *ms);
+ void mcast_snooping_flush_bundle(struct mcast_snooping *ms, void *port);
+ 
++int mcast_external_igmp_handler_enabled();
++int mcast_external_mld_handler_enabled();
++int mcast_external_igmp_handler_enable(int enable);
++int mcast_external_mld_handler_enable(int enable);
++
+ #endif /* mcast-snooping.h */
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 6113717e5..e22c3829d 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -3284,14 +3284,17 @@ xlate_normal(struct xlate_ctx *ctx)
+                                                  &out);
+             }
+         } else {
+-            if (mcast_snooping_flood_unreg(ms)) {
+-                xlate_report(ctx, OFT_DETAIL,
+-                             "unregistered multicast, flooding");
+-                out.flood = true;
+-            } else {
+-                xlate_normal_mcast_send_mrouters(ctx, ms, in_xbundle, &xvlan,
+-                                                 &out);
+-                xlate_normal_mcast_send_fports(ctx, ms, in_xbundle, &out);
++            if (!(flow->dl_type == htons(ETH_TYPE_IP) && mcast_external_igmp_handler_enabled() ||
++                flow->dl_type == htons(ETH_TYPE_IPV6) && mcast_external_mld_handler_enabled())) {
++                if (mcast_snooping_flood_unreg(ms)) {
++                    xlate_report(ctx, OFT_DETAIL,
++                                 "unregistered multicast, flooding");
++                    out.flood = true;
++                } else {
++                    xlate_normal_mcast_send_mrouters(ctx, ms, in_xbundle, &xvlan,
++                                                     &out);
++                    xlate_normal_mcast_send_fports(ctx, ms, in_xbundle, &out);
++                }
+             }
+         }
+         ovs_rwlock_unlock(&ms->rwlock);
+diff --git a/vswitchd/bridge.c b/vswitchd/bridge.c
+index 4e4c6c10d..aed6c8264 100644
+--- a/vswitchd/bridge.c
++++ b/vswitchd/bridge.c
+@@ -2208,7 +2208,7 @@ bridge_configure_mcast_snooping(struct bridge *br)
+                             : MCAST_DEFAULT_MAX_ENTRIES);
+ 
+         br_s.flood_unreg = !smap_get_bool(
+-            oc, "mcast-snooping-disable-flood-unregistered", false);
++            oc, "mcast-snooping-disable-flood-unregistered", true);
+ 
+         /* Configure multicast snooping on the bridge */
+         if (ofproto_set_mcast_snooping(br->ofproto, &br_s)) {

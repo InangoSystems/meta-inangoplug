@@ -1,0 +1,274 @@
+From 87d9130bacec09f0d3c1ad8c147eb7fc6ec497b5 Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Wed, 14 Jul 2021 18:13:26 +0500
+Subject: [PATCH] Commit Title          : Implement logic for handle control
+ mcast traffic
+
+BugID                 : 24802
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Implement logic for handle control mcast traffic
+- Implement logic for handle control mcast ipv6 traffic
+---
+ lib/mcast-snooping.c         |  55 ++++++++++++++++++--
+ lib/mcast-snooping.h         |   4 ++
+ ofproto/ofproto-dpif-xlate.c | 116 ++++++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 169 insertions(+), 6 deletions(-)
+
+diff --git a/lib/mcast-snooping.c b/lib/mcast-snooping.c
+index 6730301b6..c7865361e 100644
+--- a/lib/mcast-snooping.c
++++ b/lib/mcast-snooping.c
+@@ -38,12 +38,11 @@
+ COVERAGE_DEFINE(mcast_snooping_learned);
+ COVERAGE_DEFINE(mcast_snooping_expired);
+ 
++static atomic_bool enable_external_igmp_handler = ATOMIC_VAR_INIT(true);
++static atomic_bool enable_external_mld_handler = ATOMIC_VAR_INIT(true);
++
+ static struct mcast_port_bundle *
+ mcast_snooping_port_lookup(struct ovs_list *list, void *port);
+-static struct mcast_mrouter_bundle *
+-mcast_snooping_mrouter_lookup(struct mcast_snooping *ms, uint16_t vlan,
+-                              void *port)
+-    OVS_REQ_RDLOCK(ms->rwlock);
+ 
+ bool
+ mcast_snooping_enabled(const struct mcast_snooping *ms)
+@@ -489,6 +488,28 @@ mcast_snooping_add_report(struct mcast_snooping *ms,
+     return count;
+ }
+ 
++struct in6_addr *
++mcast_snooping_get_mld_grp(const struct dp_packet *p)
++{
++    const struct in6_addr *addr;
++    size_t offset;
++    const struct mld_header *mld;
++    const struct mld2_record *record;
++    int count = 0;
++    int ngrp;
++    bool ret;
++
++    offset = (char *) dp_packet_l4(p) - (char *) dp_packet_data(p);
++    mld = dp_packet_at(p, offset, MLD_HEADER_LEN);
++    if (!mld) {
++        return NULL;
++    }
++    ngrp = ntohs(mld->ngrp);
++    offset += MLD_HEADER_LEN;
++    addr = dp_packet_at(p, offset, sizeof(struct in6_addr));
++    return addr;
++}
++
+ int
+ mcast_snooping_add_mld(struct mcast_snooping *ms,
+                           const struct dp_packet *p,
+@@ -627,7 +648,7 @@ mrouter_get_lru(const struct mcast_snooping *ms,
+     }
+ }
+ 
+-static struct mcast_mrouter_bundle *
++struct mcast_mrouter_bundle *
+ mcast_snooping_mrouter_lookup(struct mcast_snooping *ms, uint16_t vlan,
+                               void *port)
+     OVS_REQ_RDLOCK(ms->rwlock)
+@@ -973,3 +994,27 @@ mcast_snooping_flush_bundle(struct mcast_snooping *ms, void *port)
+ 
+     ovs_rwlock_unlock(&ms->rwlock);
+ }
++
++bool mcast_external_igmp_handler_enabled() {
++    bool enabled;
++    atomic_read_relaxed(&enable_external_igmp_handler, &enabled);
++    return enabled;
++}
++
++bool mcast_external_mld_handler_enabled() {
++    bool enabled;
++    atomic_read_relaxed(&enable_external_mld_handler, &enabled);
++    return enabled;
++}
++
++int mcast_external_igmp_handler_enable(bool enable)
++{
++    atomic_store_relaxed(&enable_external_igmp_handler, enable);
++    return 0;
++}
++
++int mcast_external_mld_handler_enable(bool enable)
++{
++    atomic_store_relaxed(&enable_external_mld_handler, enable);
++    return 0;
++}
+diff --git a/lib/mcast-snooping.h b/lib/mcast-snooping.h
+index f120405da..4e8fe2432 100644
+--- a/lib/mcast-snooping.h
++++ b/lib/mcast-snooping.h
+@@ -205,6 +205,10 @@ bool mcast_snooping_leave_group(struct mcast_snooping *ms,
+ bool mcast_snooping_leave_group4(struct mcast_snooping *ms, ovs_be32 ip4,
+                                  uint16_t vlan, void *port)
+     OVS_REQ_WRLOCK(ms->rwlock);
++struct mcast_mrouter_bundle *
++mcast_snooping_mrouter_lookup(struct mcast_snooping *ms, uint16_t vlan,
++                              void *port)
++    OVS_REQ_RDLOCK(ms->rwlock);
+ bool mcast_snooping_add_mrouter(struct mcast_snooping *ms, uint16_t vlan,
+                                 void *port)
+     OVS_REQ_WRLOCK(ms->rwlock);
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index c8c345a81..51b8ed2dd 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2784,6 +2784,97 @@ mcast_output_finish(struct xlate_ctx *ctx, struct mcast_output *out,
+     free(out->xbundles);
+ }
+ 
++static void
++mcast_xlate_query_external_handler(struct xlate_ctx *ctx,
++                              struct mcast_snooping *ms OVS_UNUSED,
++                              struct xbundle *in_xbundle,
++                              struct xvlan *xvlan,
++                              struct mcast_group *grp,
++                              struct mcast_output *out)
++{
++    struct mcast_group_bundle *b;
++    struct xbundle *mcast_xbundle;
++    LIST_FOR_EACH(b, bundle_node, &grp->bundle_lru) {
++            mcast_xbundle = xbundle_lookup(ctx->xcfg, b->port);
++            if (mcast_xbundle && mcast_xbundle != in_xbundle) {
++                if (! mcast_snooping_mrouter_lookup(ms, xvlan, mcast_xbundle->ofbundle))
++                {
++                    VLOG_ERR("forwarding query to mcast group port");
++                    xlate_report(ctx, OFT_DETAIL, "forwarding query to mcast group port");
++                    mcast_output_add(out, mcast_xbundle);
++                } else {
++                    VLOG_ERR("query not forwarded to mrouter port");
++
++                    xlate_report(ctx, OFT_WARN,
++                            "mcast group port is router port, dropping");
++                }
++            } else if (!mcast_xbundle) {
++                xlate_report(ctx, OFT_WARN,
++                            "mcast group port is unknown, dropping");
++            } else {
++                    VLOG_ERR("query not forwarded to input port");
++                xlate_report(ctx, OFT_DETAIL,
++                            "mcast group port is input port, dropping");
++            }
++        }
++}
++
++static void
++mcast_xlate_igmp_external_handler(struct xlate_ctx *ctx,
++                              struct mcast_snooping *ms OVS_UNUSED,
++                              struct xbundle *in_xbundle,
++                              struct xvlan *xvlan,
++                              struct mcast_output *out)
++    OVS_REQ_RDLOCK(ms->rwlock)
++{
++    struct xbundle *xbundle;
++    struct flow *flow = &ctx->xin->flow;
++    if (mcast_snooping_is_membership(flow->tp_src)) {
++        VLOG_ERR("Membership request will handle in external application");
++        xlate_report(ctx, OFT_DETAIL, "Membership request will handle in external application");
++        return;
++    } else if ( mcast_snooping_is_query(flow->tp_src)) {
++        ovs_be32 ip4_grp = flow->igmp_group_ip4;
++        struct mcast_group *grp;
++        grp = mcast_snooping_lookup4(ms, ip4_grp, xvlan);
++        mcast_xlate_query_external_handler(ctx,ms,in_xbundle,xvlan,grp,out);
++        return;
++    } else {
++        return;
++    }
++}
++
++static void
++mcast_xlate_mld_external_handler(struct xlate_ctx *ctx,
++                              struct mcast_snooping *ms OVS_UNUSED,
++                              struct xbundle *in_xbundle,
++                              struct xvlan *xvlan,
++                              struct mcast_output *out)
++    OVS_REQ_RDLOCK(ms->rwlock)
++{
++    struct xbundle *xbundle;
++    struct flow *flow = &ctx->xin->flow;
++    struct dp_packet *p;
++    struct flow_wildcards *wc = ctx->wc;
++
++    if (is_mld_query(flow, wc)) {
++        /* TODO. Add mld query handler */
++        const struct in6_addr *addr;
++        struct mcast_group *grp;
++        addr = mcast_snooping_get_mld_grp(p);
++        if (!addr) {
++            return;
++        }
++        grp = mcast_snooping_lookup(ms, addr, xvlan);
++        mcast_xlate_query_external_handler(ctx,ms,in_xbundle,xvlan,grp,out);
++        return;
++    } else {
++        VLOG_ERR("Membership request will handle in external application");
++        xlate_report(ctx, OFT_DETAIL, "Membership request will handle in external application");
++        return;
++    }
++}
++
+ /* send the packet to ports having the multicast group learned */
+ static void
+ xlate_normal_mcast_send_group(struct xlate_ctx *ctx,
+@@ -3018,6 +3109,7 @@ xlate_normal(struct xlate_ctx *ctx)
+         && !eth_addr_is_broadcast(flow->dl_dst)
+         && eth_addr_is_multicast(flow->dl_dst)
+         && is_ip_any(flow)) {
++
+         struct mcast_snooping *ms = ctx->xbridge->ms;
+         struct mcast_group *grp = NULL;
+         xin->flow_type = BROADCAST_FLOW_TYPE;
+@@ -3030,6 +3122,17 @@ xlate_normal(struct xlate_ctx *ctx)
+              */
+             ctx->xout->slow |= SLOW_ACTION;
+ 
++            if (mcast_external_igmp_handler_enabled()) {
++                struct mcast_output out = MCAST_OUTPUT_INIT;
++
++                ovs_rwlock_rdlock(&ms->rwlock);
++                mcast_xlate_igmp_external_handler(ctx, ms, in_xbundle, &xvlan, &out);
++                ovs_rwlock_unlock(&ms->rwlock);
++
++                mcast_output_finish(ctx, &out, in_xbundle, &xvlan);
++                return;
++            }
++
+             memset(&wc->masks.tp_src, 0xff, sizeof wc->masks.tp_src);
+             if (mcast_snooping_is_membership(flow->tp_src) ||
+                 mcast_snooping_is_query(flow->tp_src)) {
+@@ -3042,7 +3145,6 @@ xlate_normal(struct xlate_ctx *ctx)
+             if (mcast_snooping_is_membership(flow->tp_src)) {
+                 struct mcast_output out = MCAST_OUTPUT_INIT;
+ 
+-                /* TODO: enable/disable handling */
+                 ovs_rwlock_rdlock(&ms->rwlock);
+                 xlate_normal_mcast_send_mrouters(ctx, ms, in_xbundle, &xvlan,
+                                                  &out);
+@@ -3065,6 +3167,18 @@ xlate_normal(struct xlate_ctx *ctx)
+             return;
+         } else if (is_mld(flow, wc)) {
+             ctx->xout->slow |= SLOW_ACTION;
++
++            if (mcast_external_mld_handler_enabled()) {
++                struct mcast_output out = MCAST_OUTPUT_INIT;
++
++                ovs_rwlock_rdlock(&ms->rwlock);
++                mcast_xlate_mld_external_handler(ctx, ms, in_xbundle, &xvlan, &out);
++                ovs_rwlock_unlock(&ms->rwlock);
++
++                mcast_output_finish(ctx, &out, in_xbundle, &xvlan);
++                return;
++            }
++
+             if (ctx->xin->allow_side_effects && ctx->xin->packet) {
+                 update_mcast_snooping_table(ctx, flow, vlan,
+                                             in_xbundle, ctx->xin->packet);

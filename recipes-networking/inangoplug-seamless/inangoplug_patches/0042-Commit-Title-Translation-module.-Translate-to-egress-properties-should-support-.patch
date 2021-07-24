@@ -1,0 +1,53 @@
+From b4e1195ec94e02bace9db1d7a46bf99c3122ff11 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Wed, 7 Jul 2021 22:55:41 +0300
+Subject: [PATCH] Commit Title          : Translation module. Translate to
+ egress properties should support multiple output port
+
+BugID                 : 24798
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Added support multiple output port through change egress_port to array variable.
+---
+ datapath/translate_dp_am.c | 18 ++++++------------
+ 1 file changed, 6 insertions(+), 12 deletions(-)
+
+diff --git a/datapath/translate_dp_am.c b/datapath/translate_dp_am.c
+index f402b58a1..051667762 100644
+--- a/datapath/translate_dp_am.c
++++ b/datapath/translate_dp_am.c
+@@ -240,13 +240,11 @@ int translate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *act
+ 	int rem;
+ 	struct sw_flow_key *egr_key = (struct sw_flow_key *)&session->match.egress;
+ 
+-	if (!acts)
++	if (!acts || !dp)
+ 		return -EINVAL;
+ 
+-	if (!acts->actions || acts->actions_len == 0) {
+-		session->match.egress_port = 0;
++	if (!acts->actions || acts->actions_len == 0)
+ 		return 0;
+-	}
+ 
+ 	memcpy(egr_key, ingr_key, sizeof(struct sw_flow_key));
+ 
+@@ -256,14 +254,10 @@ int translate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *act
+ 
+ 		switch (nla_type(a)) {
+ 		case OVS_ACTION_ATTR_OUTPUT: {
+-			// TODO support more than one port as egress (for multicast/flood)
+-			if (session->match.egress_port == 0 && dp != NULL) {
+-				struct vport * port = ovs_vport_rcu(dp, nla_get_u32(a));
+-				if (port && port->dev) {
+-					session->match.egress_port = port->dev->ifindex;
+-				} else {
+-					return -EINVAL;
+-				}
++			struct vport * port = ovs_vport_rcu(dp, nla_get_u32(a));
++			if (port && port->dev && session->match.egress_ports_len < PP_AM_EGRESS_PORTS_MAX) {
++				session->match.egress_ports[session->match.egress_ports_len] = port->dev->ifindex;
++				session->match.egress_ports_len++;
+ 			} else {
+ 				return -EINVAL;
+ 			}

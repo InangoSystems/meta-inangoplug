@@ -1,0 +1,38 @@
+From 2040f786b8ac34dfcce455d4b6c3353a0b258a82 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Fri, 16 Jul 2021 01:33:47 +0300
+Subject: [PATCH] Commit Title          : Integration mcast helper
+ functionality.
+
+BugID                 : 24806
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Added support mcast helper functionality, added call of mcast_helper_five_tuple_br_info() from OVS.
+---
+ datapath/vport.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/datapath/vport.c b/datapath/vport.c
+index 4c206a3f7..56bc33de7 100644
+--- a/datapath/vport.c
++++ b/datapath/vport.c
+@@ -45,6 +45,7 @@
+ #include "gso.h"
+ #include "vport.h"
+ #include "vport-internal_dev.h"
++#include "acceleration_module.h"
+ 
+ static LIST_HEAD(vport_ops_list);
+ static bool compat_gre_loaded = false;
+@@ -627,6 +628,11 @@ void ovs_vport_send(struct vport *vport, struct sk_buff *skb, u8 mac_proto)
+ 		goto drop;
+ 	}
+ 
++	if (vport->type != OVS_VPORT_TYPE_INTERNAL &&
++		    OVS_CB(skb)->input_vport->type != OVS_VPORT_TYPE_INTERNAL) {
++		pp_am_skb_postprocess(PP_AM_SET_FORWARD_UDP, NULL, 0, skb);
++	}
++
+ 	skb->dev = vport->dev;
+ 	vport->ops->send(skb);
+ 	return;

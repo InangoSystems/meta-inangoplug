@@ -1,0 +1,110 @@
+From cc0be3d1825069b0d0e865ff9d6543bafd85489e Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Mon, 19 Jul 2021 17:11:43 +0500
+Subject: [PATCH] Commit Title          : Implement logic for handle data mcast
+ traffic traffic
+
+BugID                 : 24803
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Implement logic for handle data mcast traffic
+---
+ ofproto/ofproto-dpif-xlate.c | 68 +++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 64 insertions(+), 4 deletions(-)
+
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 2eb8d9574..6113717e5 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2874,6 +2874,57 @@ mcast_xlate_mld_external_handler(struct xlate_ctx *ctx,
+     }
+ }
+ 
++static void
++mcast_xlate_igmp_external_data_handler(struct xlate_ctx *ctx,
++                              struct mcast_snooping *ms OVS_UNUSED,
++                              struct xbundle *in_xbundle,
++                              struct xvlan *xvlan,
++                              struct mcast_group *grp,
++                              struct in6_addr *addr,
++                              struct mcast_output *out)
++    OVS_REQ_RDLOCK(ms->rwlock)
++{
++    struct flow *flow = &ctx->xin->flow;
++    struct xbundle *mcast_xbundle;
++    struct mcast_group_bundle *b;
++    bool found = false;
++    struct mcast_group_src_addr *sadrr;
++    bool forward = true;
++
++    LIST_FOR_EACH(b, bundle_node, &grp->bundle_lru) {
++        found = false;
++        if (!ovs_list_is_empty(&b->src_addrs)) {
++            LIST_FOR_EACH(sadrr, node, &b->src_addrs) {
++                if (ipv6_addr_equals(&sadrr->addr, addr)) {
++                    found = true;
++                    break;
++                }
++            }
++        }
++        mcast_xbundle = xbundle_lookup(ctx->xcfg, b->port);
++        if (found) {
++            forward = b->filter_mode == IGMPV3_MODE_IS_INCLUDE ? true : false;
++        } else if (!found) {
++            forward = b->filter_mode == IGMPV3_MODE_IS_EXCLUDE ? true : false;
++        }
++        if (forward && mcast_xbundle && mcast_xbundle != in_xbundle) {
++            xlate_report(ctx, OFT_DETAIL, "forwarding to mcast group port");
++            mcast_output_add(out, mcast_xbundle);
++        } else if (!forward) {
++            xlate_report(ctx, OFT_WARN,
++                         "mcast shouldn't forward to port, dropping");
++        } else if (!mcast_xbundle) {
++            xlate_report(ctx, OFT_WARN,
++                         "mcast group port is unknown, dropping");
++        } else {
++            xlate_report(ctx, OFT_DETAIL,
++                         "mcast group port is input port, dropping");
++        }
++    }
++
++    return;
++}
++
+ /* send the packet to ports having the multicast group learned */
+ static void
+ xlate_normal_mcast_send_group(struct xlate_ctx *ctx,
+@@ -3210,19 +3261,28 @@ xlate_normal(struct xlate_ctx *ctx)
+ 
+         /* forwarding to group base ports */
+         struct mcast_output out = MCAST_OUTPUT_INIT;
++        struct in6_addr addr;
+         xin->flow_type = MULTICAST_FLOW_TYPE;
+ 
+         ovs_rwlock_rdlock(&ms->rwlock);
+         if (flow->dl_type == htons(ETH_TYPE_IP)) {
+             grp = mcast_snooping_lookup4(ms, flow->nw_dst, vlan);
++            addr = in6_addr_mapped_ipv4(flow->nw_src);
+         } else if (flow->dl_type == htons(ETH_TYPE_IPV6)) {
+             grp = mcast_snooping_lookup(ms, &flow->ipv6_dst, vlan);
++            addr = flow->ipv6_src;
+         }
++
+         if (grp) {
+-            xlate_normal_mcast_send_group(ctx, ms, grp, in_xbundle, &out);
+-            xlate_normal_mcast_send_fports(ctx, ms, in_xbundle, &out);
+-            xlate_normal_mcast_send_mrouters(ctx, ms, in_xbundle, &xvlan,
+-                                             &out);
++            if (flow->dl_type == htons(ETH_TYPE_IP) && mcast_external_igmp_handler_enabled() ||
++                flow->dl_type == htons(ETH_TYPE_IPV6) && mcast_external_mld_handler_enabled()) {
++                mcast_xlate_igmp_external_data_handler(ctx, ms, in_xbundle, &xvlan, grp, &addr, &out);
++            } else {
++                xlate_normal_mcast_send_group(ctx, ms, grp, in_xbundle, &out);
++                xlate_normal_mcast_send_fports(ctx, ms, in_xbundle, &out);
++                xlate_normal_mcast_send_mrouters(ctx, ms, in_xbundle, &xvlan,
++                                                 &out);
++            }
+         } else {
+             if (mcast_snooping_flood_unreg(ms)) {
+                 xlate_report(ctx, OFT_DETAIL,

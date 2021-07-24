@@ -22,4 +22,5 @@ RDEPENDS_${PN}_append_puma7 = "\
     inangoplug-chandler \
     inangoplug-pp-acceleration-mod \
     ${@bb.utils.contains('DISTRO_FEATURES', 'systemd', 'inangoplug-rsc-init-atom-systemd', '', d)} \
+    inangoplug-mngm \
 "

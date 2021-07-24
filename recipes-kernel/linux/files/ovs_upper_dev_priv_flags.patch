@@ -1,0 +1,13 @@
+diff --git a/net/lantiq/mcast_helper.c b/net/lantiq/mcast_helper.c
+index 35f25ba..92bfa4d 100644
+--- a/net/lantiq/mcast_helper.c
++++ b/net/lantiq/mcast_helper.c
+@@ -1415,7 +1415,7 @@ static int mcast_helper_add_entry(struct net_device *netdev,struct net_device *r
+ 		rtnl_lock();
+                 upper_dev = netdev_master_upper_dev_get(rxnetdev);
+                 rtnl_unlock();
+-                if (upper_dev && (upper_dev->priv_flags & IFF_EBRIDGE)) {
++                if (upper_dev && ((upper_dev->priv_flags & IFF_EBRIDGE) || (upper_dev->priv_flags & IFF_OPENVSWITCH))) {
+                         flag = mcast_helper_update_mac_list(gitxmc_rec,gimc_rec,mc_rec->macaddr,MC_F_ADD);
+                         mch_br_capture_pkt = 1;
+                 } else {

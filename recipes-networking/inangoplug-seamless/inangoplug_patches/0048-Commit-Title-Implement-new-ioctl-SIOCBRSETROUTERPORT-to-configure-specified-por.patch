@@ -1,0 +1,300 @@
+From 4c16570c5f40f4aae6a5e4f7dae360b14af2ea2c Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Mon, 12 Jul 2021 01:18:08 +0300
+Subject: [PATCH] Commit Title          : Implement new ioctl
+ SIOCBRSETROUTERPORT to configure specified port as router port.
+
+BugID                 : 24800
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Add new ioctl SIOCBRSETROUTERPORT to set specified port as router port.
+---
+ datapath/brcompat_main.c               | 43 ++++++++++++++++++++++++++
+ include/openvswitch/brcompat-netlink.h |  1 +
+ lib/mcast-snooping.c                   | 33 ++++++++++++++++++++
+ lib/mcast-snooping.h                   |  8 +++++
+ ofproto/ofproto-dpif.c                 | 56 ++++++++++++++++++++++++++++++++++
+ vswitchd/ovs-brcompatd.c               | 32 +++++++++++++++++++
+ 6 files changed, 173 insertions(+)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index f6c34e9f4..4ec4e93f8 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -72,6 +72,12 @@ struct br_grp_mem {
+ };
+ typedef struct br_grp_mem br_grp_mem_t;
+ 
++/* Set router port ioctl request */
++struct brc_router_port {
++	ptype_t type;
++	u32 if_index;	/* interface index */
++	u32 expires;	/* expiry time */
++};
+ 
+ static char *br_list[BRIDGE_LIST_MAX];
+ static unsigned int size_list = BRIDGE_LIST_MAX;
+@@ -626,6 +632,41 @@ exit:
+ 	return ret;
+ }
+ 
++/* Set router port ioctl request */
++static int brc_mc_snoop_set_router_port(struct net_device *br_dev, struct ifreq *rq)
++{
++	struct brc_router_port mcs_rp;
++	struct net_device *p_dev;
++	struct sk_buff *request;
++	int err;
++
++	if (copy_from_user((void *)&mcs_rp, rq->ifr_data, sizeof(struct brc_router_port)))
++		return -EFAULT;
++
++	p_dev = dev_get_by_index(dev_net(br_dev), mcs_rp.if_index);
++	if (p_dev == NULL)
++		return -EINVAL;
++
++	request = brc_make_request(BRC_GENL_C_SET_MCSNOOP_ROUT_PORT, br_dev->name, p_dev->name);
++	if (!request)
++		return -ENOMEM;
++
++	if (nla_put_u64_64bit(request, BRC_GENL_A_ULONG_VAL, mcs_rp.type, BRC_GENL_A_PAD))
++		goto nla_put_failure;
++	if (nla_put_u64_64bit(request, BRC_GENL_A_FDB_COUNT, mcs_rp.expires, BRC_GENL_A_PAD))
++		goto nla_put_failure;
++
++	rtnl_unlock();
++	err = brc_send_simple_command(dev_net(br_dev), request);
++	rtnl_lock();
++
++	return err;
++
++nla_put_failure:
++	kfree_skb(request);
++	return -ENOMEM;
++}
++
+ /* Legacy ioctl's through SIOCDEVPRIVATE.  Called with rtnl_lock. */
+ static int old_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+ {
+@@ -691,6 +732,8 @@ static int brc_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+ 	case SIOCBRMGADD:
+ 	case SIOCBRMGDEL:
+ 		return brc_add_del_mg_rec(dev, rq->ifr_data, (cmd == SIOCBRMGADD));
++	case SIOCBRSETROUTERPORT:
++		return brc_mc_snoop_set_router_port(dev, rq);
+ 	case SIOCBRENABLESNOOPING:
+ 	{
+ 		bool brc_snooping_enabled;
+diff --git a/include/openvswitch/brcompat-netlink.h b/include/openvswitch/brcompat-netlink.h
+index e9a6792d0..a8454ae58 100644
+--- a/include/openvswitch/brcompat-netlink.h
++++ b/include/openvswitch/brcompat-netlink.h
+@@ -131,6 +131,7 @@ enum brc_genl_command {
+     BRC_GENL_C_SET_PORT_PATH_COST, /* K: Set the port path cost. */
+     BRC_GENL_C_MG_ADD,    /* K: seamless-ovs */
+     BRC_GENL_C_MG_DEL,    /* K: seamless-ovs */
++    BRC_GENL_C_SET_MCSNOOP_ROUT_PORT, /* K: Set the port as router port. */
+ 
+     __BRC_GENL_C_MAX,
+     BRC_GENL_C_MAX = __BRC_GENL_C_MAX - 1
+diff --git a/lib/mcast-snooping.c b/lib/mcast-snooping.c
+index c7865361e..cde217c57 100644
+--- a/lib/mcast-snooping.c
++++ b/lib/mcast-snooping.c
+@@ -16,6 +16,11 @@
+  * limitations under the License.
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #include <config.h>
+ #include "mcast-snooping.h"
+ 
+@@ -691,6 +696,34 @@ mcast_snooping_add_mrouter(struct mcast_snooping *ms, uint16_t vlan,
+     return ms->need_revalidate;
+ }
+ 
++bool
++mcast_snooping_add_mrouter_ex(struct mcast_snooping *ms, uint16_t vlan,
++                           void *port, unsigned int expires)
++    OVS_REQ_WRLOCK(ms->rwlock)
++{
++    struct mcast_mrouter_bundle *mrouter;
++
++    /* Avoid duplicate packets. */
++    if (mcast_snooping_port_lookup(&ms->fport_list, port)) {
++        return false;
++    }
++
++    mrouter = mcast_snooping_mrouter_lookup(ms, vlan, port);
++    if (mrouter) {
++        ovs_list_remove(&mrouter->mrouter_node);
++    } else {
++        mrouter = xmalloc(sizeof *mrouter);
++        mrouter->vlan = vlan;
++        mrouter->port = port;
++        COVERAGE_INC(mcast_snooping_learned);
++        ms->need_revalidate = true;
++    }
++
++    mrouter->expires = time_now() + expires;
++    ovs_list_push_back(&ms->mrouter_lru, &mrouter->mrouter_node);
++    return ms->need_revalidate;
++}
++
+ static void
+ mcast_snooping_flush_mrouter(struct mcast_mrouter_bundle *mrouter)
+ {
+diff --git a/lib/mcast-snooping.h b/lib/mcast-snooping.h
+index 4e8fe2432..88e322a19 100644
+--- a/lib/mcast-snooping.h
++++ b/lib/mcast-snooping.h
+@@ -16,6 +16,11 @@
+  * limitations under the License.
+  */
+ 
++/*
++ * Includes Inango Systems Ltd’s changes/modifications dated: 2021.
++ * Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++ */
++
+ #ifndef MCAST_SNOOPING_H
+ #define MCAST_SNOOPING_H 1
+ 
+@@ -212,6 +217,9 @@ mcast_snooping_mrouter_lookup(struct mcast_snooping *ms, uint16_t vlan,
+ bool mcast_snooping_add_mrouter(struct mcast_snooping *ms, uint16_t vlan,
+                                 void *port)
+     OVS_REQ_WRLOCK(ms->rwlock);
++bool mcast_snooping_add_mrouter_ex(struct mcast_snooping *ms, uint16_t vlan,
++                                   void *port, unsigned int expires)
++    OVS_REQ_WRLOCK(ms->rwlock);
+ bool mcast_snooping_is_query(ovs_be16 igmp_type);
+ bool mcast_snooping_is_membership(ovs_be16 igmp_type);
+ 
+diff --git a/ofproto/ofproto-dpif.c b/ofproto/ofproto-dpif.c
+index a6eee3941..520d58b6b 100644
+--- a/ofproto/ofproto-dpif.c
++++ b/ofproto/ofproto-dpif.c
+@@ -6056,6 +6056,60 @@ ofproto_unixctl_mcast_snooping_del_grp(struct unixctl_conn *conn,
+ 
+     unixctl_command_reply(conn, "ofproto_unixctl_mcast_snooping_del_grp success");
+ }
++
++static void
++ofproto_unixctl_mcast_snooping_set_mrouter_port(struct unixctl_conn *conn,
++                                               int argc OVS_UNUSED,
++                                               const char *argv[],
++                                               void *aux OVS_UNUSED)
++{
++    const struct ofproto_dpif *ofproto;
++
++    VLOG_INFO("ofproto_unixctl_mcast_snooping_set_mrouter_port(argc=%d, argv[1]=%s)", argc, argv[1]);
++
++    ofproto = ofproto_dpif_lookup_by_name(argv[1]);
++    if (!ofproto) {
++        unixctl_command_reply_error(conn, "no such bridge");
++        return;
++    }
++
++    if (!mcast_snooping_enabled(ofproto->ms)) {
++        unixctl_command_reply_error(conn, "multicast snooping is disabled");
++        return;
++    }
++
++    if (argc < 5) {
++        unixctl_command_reply_error(conn, "less than 5 args");
++        return;
++    }
++
++    struct ofport_dpif *ofport;
++    ofport = ofport_dpif_cast(shash_find_data(&ofproto->up.port_by_name, argv[2]));
++
++    VLOG_INFO("ofport %p", ofport);
++    if (!ofport) {
++        unixctl_command_reply_error(conn, "no such port in bridge");
++        return;
++    }
++
++    unsigned int ip_type;
++    if (!str_to_uint(argv[3], 10, &ip_type)) {
++        unixctl_command_reply_error(conn, "invalid type of protocol");
++        return;
++    }
++
++    unsigned int expires;
++    if (!str_to_uint(argv[4], 10, &expires)) {
++        unixctl_command_reply_error(conn, "invalid expires");
++        return;
++    }
++
++    VLOG_INFO("ofproto_unixctl_mcast_snooping_set_mrouter_port: port=%s, ip_type=%u, expires=%u", argv[2], ip_type, expires);
++
++    mcast_snooping_add_mrouter_ex(ofproto->ms, 0, ofport->bundle, expires);
++
++    unixctl_command_reply(conn, "ofproto_unixctl_mcast_snooping_set_mrouter_port success");
++}
+ /* } seamless-ovs */
+ 
+ /* Store the current ofprotos in 'ofproto_shash'.  Returns a sorted list
+@@ -6506,6 +6560,8 @@ ofproto_unixctl_init(void)
+                              ofproto_unixctl_mcast_snooping_add_grp, NULL);
+     unixctl_command_register("mdb/del-grp", "bridge ifidx gaddr", 3, 3,
+                              ofproto_unixctl_mcast_snooping_del_grp, NULL);
++    unixctl_command_register("mdb/set-mrouter-port", "bridge port ip_type expires", 4, 4,
++                             ofproto_unixctl_mcast_snooping_set_mrouter_port, NULL);
+     unixctl_command_register("dpif/dump-dps", "", 0, 0,
+                              ofproto_unixctl_dpif_dump_dps, NULL);
+     unixctl_command_register("dpif/show", "", 0, 0, ofproto_unixctl_dpif_show,
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 23a939877..b4f343541 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -951,6 +951,34 @@ handle_set_boolean_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+     return error;
+ }
+ 
++static int
++handle_set_mc_router_port_cmd(struct ofpbuf *buffer)
++{
++    const char *br_name, *p_name;
++    const char *str_key_value_type, *str_key_value_expires;
++    uint64_t ip_type, expires;
++    uint32_t seq;
++    int error;
++
++    error = parse_command(buffer, &seq, &br_name, &p_name, &expires, NULL, &ip_type);
++
++    if (!error) {
++        str_key_value_type = xasprintf("%llu", ip_type);
++        str_key_value_expires = xasprintf("%llu", expires);
++
++        if (!run_vsctl(appctl_program,
++                       "--", "mdb/set-mrouter-port", br_name, p_name, str_key_value_type,
++                        str_key_value_expires, (char *) NULL)) {
++            error = EINVAL;
++        }
++        send_simple_reply(seq, error);
++
++        free(str_key_value_type);
++        free(str_key_value_expires);
++    }
++    return error;
++}
++
+ static int
+ handle_get_ulong_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+ {
+@@ -1281,6 +1309,10 @@ brc_recv_update(void)
+     case BRC_GENL_C_MG_DEL:
+         handle_mg_add_del_cmd(&buffer, false);
+         break;
++
++    case BRC_GENL_C_SET_MCSNOOP_ROUT_PORT:
++        handle_set_mc_router_port_cmd(&buffer);
++        break;
+     /* } seamless-ovs */
+ 
+     default:

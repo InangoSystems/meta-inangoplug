@@ -1,0 +1,38 @@
+From 876db001a6cfba9023d504baaecb001bbb78bed3 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Fri, 9 Jul 2021 11:16:58 +0300
+Subject: [PATCH] Commit Title          : Add new ioctl SIOCBRENABLESNOOPING to
+ disable/enable multicast snooping inside ovs bridge
+
+BugID                 : 24801
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Added support for new ioctl SIOCBRENABLESNOOPING to disable/enable multicast snooping per bridge.
+---
+ datapath/brcompat_main.c | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 423e3d73c..f6c34e9f4 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -691,10 +691,15 @@ static int brc_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+ 	case SIOCBRMGADD:
+ 	case SIOCBRMGDEL:
+ 		return brc_add_del_mg_rec(dev, rq->ifr_data, (cmd == SIOCBRMGADD));
+-	/* TODO: implement handling
+-	 * case SIOCBRSETROUTERPORT:
+-	 * case SIOCBRENABLESNOOPING:
+-	 */
++	case SIOCBRENABLESNOOPING:
++	{
++		bool brc_snooping_enabled;
++
++		if (copy_from_user((void *) &brc_snooping_enabled, rq->ifr_data, sizeof(bool)))
++			return -EFAULT;
++
++		return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_BRIDGE_MULTICAST_SNOOPING, brc_snooping_enabled ? 1 : 0);
++	}
+ 
+ 	default:
+ 		err = -EOPNOTSUPP;

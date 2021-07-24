@@ -1,8 +1,8 @@
 [Unit]
 Description=Open vSwitch Brcompatd Unit
 After=ovs-vswitchd.service network-pre.target systemd-udev-settle.service
-# PsmSsp.service dependency is required for seamless ovs boot up
-Before=network.target network.service PsmSsp.service
+# CcspPandMSsp.service dependency is required for seamless ovs boot up
+Before=network.target network.service CcspPandMSsp.service
 PartOf=openvswitch.service
 
 [Service]
