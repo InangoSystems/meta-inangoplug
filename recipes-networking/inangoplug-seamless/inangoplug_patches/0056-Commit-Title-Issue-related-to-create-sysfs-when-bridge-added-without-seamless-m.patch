@@ -1,0 +1,167 @@
+From 54f011fac6bec5a9b684285edb6283e6fc4168e8 Mon Sep 17 00:00:00 2001
+From: Andrii Mazurok <a.mazurok@inango-systems.com>
+Date: Thu, 22 Jul 2021 11:08:10 +0300
+Subject: [PATCH] Commit Title: Issue related to create sysfs when bridge added
+ without seamless module
+
+BugID: 24003
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description:
+- Added receiving of bridge name from ovs
+---
+ datapath/brcompat_main.c               |  2 ++
+ datapath/datapath.c                    | 28 ++++++++--------------
+ include/openvswitch/brcompat-netlink.h |  1 +
+ vswitchd/ovs-brcompatd.c               | 43 ++++++++++++++++++++++++++++++++++
+ 4 files changed, 56 insertions(+), 18 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index a3f5ad854..4d76ace77 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -822,6 +822,8 @@ static int brc_dev_sysfs_string(struct net_device *dev, char *ustring, int cmd)
+ 	switch (cmd) {
+ 	case BRC_GENL_C_GET_BRIDGE_ROOT_ID:
+ 		return brc_get_string(dev, BRC_GENL_C_GET_BRIDGE_ROOT_ID, ustring);
++	case BRC_GENL_C_GET_BRIDGE_BY_PORT:
++		return brc_get_string(dev, BRC_GENL_C_GET_BRIDGE_BY_PORT, ustring);
+ 
+ 	default:
+ 		err = -1;
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 792517990..13bc91795 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -68,6 +68,7 @@
+ #include "gso.h"
+ #include "vport-internal_dev.h"
+ #include "vport-netdev.h"
++#include "openvswitch/brcompat-netlink.h"
+ 
+ unsigned int ovs_net_id __read_mostly;
+ 
+@@ -2157,19 +2158,16 @@ static void update_headroom(struct datapath *dp)
+ }
+ 
+ /* Function to get the name of the bridge through its associated interface*/
+-static char* get_bridge_by_port(br_pair_t *head, const char *port)
++static char* get_bridge_by_port(struct net_device *dev, const char* portName, char *buf)
+ {
+-	br_pair_t *iter = head;
+-	char *bridge;
+-
+-	while(iter) {
+-		if(!(strcmp(iter->prname, port)))
+-			bridge = iter->brname;
+-		iter = iter->next;
+-	}
+-	return bridge;
++	char value[32];
++	memset(value, 0, 32);
++	ovs_dp_sysfs_string_hook(dev, value, BRC_GENL_C_GET_BRIDGE_BY_PORT);
++	sprintf(buf, "%s", value);
++	return buf;
+ }
+ 
++
+ /* Function to get the vport structure through its bridge name*/
+ static struct vport* get_vport_by_bridge(struct datapath *dp, char *bridge)
+ {
+@@ -2196,8 +2194,7 @@ static int ovs_vport_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 	struct sk_buff *reply;
+ 	struct vport *vport;
+ 	struct datapath *dp;
+-	struct br_pair_t *head;
+-	char *bridgeName;
++	char bridgeName[32];
+ 	struct vport *br;
+ 	u32 port_no;
+ 	int err;
+@@ -2261,12 +2258,7 @@ restart:
+ 		ovs_dp_sysfs_add_dp(vport->dp, vport);
+ 	}
+ 	else{
+-		head = ovs_dp_getHead();
+-
+-		if (head == NULL)
+-			goto cont_wo_sysfs;
+-
+-		bridgeName = get_bridge_by_port(head, parms.name);
++		get_bridge_by_port(vport->dev, parms.name, bridgeName);
+ 
+ 		if (bridgeName == NULL)
+ 			goto cont_wo_sysfs;
+diff --git a/include/openvswitch/brcompat-netlink.h b/include/openvswitch/brcompat-netlink.h
+index 04517825d..34e74170e 100644
+--- a/include/openvswitch/brcompat-netlink.h
++++ b/include/openvswitch/brcompat-netlink.h
+@@ -136,6 +136,7 @@ enum brc_genl_command {
+     BRC_GENL_C_MG_DEL,    /* K: seamless-ovs */
+     BRC_GENL_C_SET_MCSNOOP_ROUT_PORT, /* K: Set the port as router port. */
+     BRC_GENL_C_SET_MC_SNOOPING_FLAG, /* K: Set the multicast snooping flag. */
++    BRC_GENL_C_GET_BRIDGE_BY_PORT, /* K: Get bridge name by port. */
+ 
+     __BRC_GENL_C_MAX,
+     BRC_GENL_C_MAX = __BRC_GENL_C_MAX - 1
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 311db7a71..e1d58255d 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -931,6 +931,46 @@ handle_get_string_value(struct ofpbuf *buffer, const char *sub_cmd)
+     return 0;
+ }
+ 
++static int
++handle_get_bridge_name_value(struct ofpbuf *buffer)
++{
++    const char *port_name;
++    uint32_t seq;
++    char *output, *result;
++    int error, size;
++    struct ofpbuf *reply;
++
++    /* Parse Netlink command.
++     *
++     * The command doesn't actually have any arguments, but we need the
++     * sequence number to send the reply. */
++    /* Parse Netlink command. */
++    error = parse_command(buffer, &seq, &port_name, NULL, NULL, NULL, NULL);
++    if (error) {
++        return error;
++    }
++    output = capture_vsctl(vsctl_program, VSCTL_OPTIONS, "port-to-br", port_name,
++                           (char *) NULL);
++    if (!output) {
++        VLOG_ERR("handle_get_bridge_name_value get output error!\n");
++        result = "";
++        size = strlen(result);
++        error = EINVAL;
++    } else {
++        result = output;
++        size = (strchr(result, '\n') - result);
++    }
++
++    /* Compose and send reply. */
++    reply = compose_reply(0);
++    nl_msg_put_unspec(reply, BRC_GENL_A_GET_STRING,
++                      result, size * sizeof *result);
++    send_reply(reply, seq);
++
++    free(output);
++    return 0;
++}
++
+ static int
+ handle_set_ulong_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+ {
+@@ -1397,6 +1437,9 @@ brc_recv_update(void)
+     case BRC_GENL_C_SET_MC_SNOOPING_FLAG:
+         handle_set_mc_snooping_flag_cmd(&buffer);
+         break;
++    case BRC_GENL_C_GET_BRIDGE_BY_PORT:
++        handle_get_bridge_name_value(&buffer);
++        break;
+ 
+     /* seamless-ovs { */
+     case BRC_GENL_C_MG_ADD:

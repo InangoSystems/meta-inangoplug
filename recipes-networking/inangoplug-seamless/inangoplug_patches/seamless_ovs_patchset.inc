@@ -55,5 +55,10 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0053-Commit-Title-Set-correct-default-multicast-behavior-for-Open-vSwitch.patch \
     file://0054-Commit-Title-Integration-mcast-helper-functionality.patch \
     file://0055-Commit-Title-Support-ioctl-s-to-configure-ipv6-multicast-snooping.patch \
+    file://0056-Commit-Title-Issue-related-to-create-sysfs-when-bridge-added-without-seamless-m.patch \
+    file://0057-Commit-Title-Issue-related-to-create-sysfs-when-bridge-added-without-seamless-m.patch \
+    file://0058-Commit-Title-Incorrect-behavior-when-bridge-create-without-seamless-but-remove-.patch \
+    file://0059-Commit-Title-Handle-errors-during-retrieve-stats-and-remove.patch \
+    file://0060-Commit-Title-Pass-board-type-through-OVS.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

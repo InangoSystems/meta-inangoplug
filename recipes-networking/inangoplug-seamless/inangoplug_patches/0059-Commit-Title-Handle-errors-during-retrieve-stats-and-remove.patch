@@ -1,0 +1,55 @@
+From afa63dc33baf5252587ee54a08e720cb7dc195bd Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Mon, 26 Jul 2021 20:10:49 +0500
+Subject: [PATCH] Commit Title          : Handle errors during retrieve stats
+ and remove session
+
+BugID                 : 25059
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Handle errors during retrieve stats and remove session
+---
+ datapath/am_pp.c | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index 344359903..7915d7d3c 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -97,11 +97,11 @@ int am_remove_session(struct sw_flow *flow)
+ 
+ 	err = pp_am_delete_session((struct pp_am_flow_id *)&flow->id, flow->pp_am_id, &response);
+ 
+-	if (err != PP_AM_OK)
+-		return err;
+ 
+ 	flow->acl_state = REMOVED;
+-	update_flow_am_stats(flow, &response);
++
++	if (err == PP_AM_OK)
++		update_flow_am_stats(flow, &response);
+ 
+ 	return err;
+ }
+@@ -109,6 +109,7 @@ int am_remove_session(struct sw_flow *flow)
+ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *stats, unsigned long *used)
+ {
+ 	struct pp_am_stats response;
++	int err = PP_AM_OK;
+ 
+ 	if (!stats || !flow || !used)
+ 		return;
+@@ -116,9 +117,10 @@ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *sta
+ 	if (flow->acl_state == ACCELERATED) {
+ 		memset(&response, 0, sizeof(struct pp_am_stats));
+ 
+-		pp_am_get_session_stats((struct pp_am_flow_id *)&flow->id, flow->pp_am_id, &response);
++		err = pp_am_get_session_stats((struct pp_am_flow_id *)&flow->id, flow->pp_am_id, &response);
+ 
+-		update_flow_am_stats((struct sw_flow *)flow, &response);
++		if (err == PP_AM_OK)
++			update_flow_am_stats((struct sw_flow *)flow, &response);
+ 	}
+ 
+ 	stats->n_packets += flow->am_stats.packets;

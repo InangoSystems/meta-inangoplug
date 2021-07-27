@@ -1,0 +1,170 @@
+From 2665512cd1538622b4f99f8a276f94e86f3571b8 Mon Sep 17 00:00:00 2001
+From: Andrii Mazurok <a.mazurok@inango-systems.com>
+Date: Sat, 24 Jul 2021 20:11:59 +0300
+Subject: [PATCH] Commit Title: Issue related to create sysfs when bridge added
+ without seamless module
+
+BugID: 24003
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description:
+- Removed unused code
+---
+ datapath/brcompat_main.c | 60 ------------------------------------------------
+ datapath/datapath.c      | 10 ++------
+ datapath/datapath.h      |  1 -
+ vswitchd/ovs-brcompatd.c |  2 +-
+ 4 files changed, 3 insertions(+), 70 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 4d76ace77..fd0bea168 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -108,7 +108,6 @@ static DEFINE_SPINLOCK(brc_lock);    /* Ensure atomic access to these vars. */
+ static DECLARE_COMPLETION(brc_done); /* Userspace signaled operation done? */
+ static struct sk_buff *brc_reply;    /* Reply from userspace. */
+ static u32 brc_seq;		     /* Sequence number for current op. */
+-static br_pair_t *head = NULL;       /* Bridge-interface pairs sor sysfs*/
+ 
+ static bool check_bridge_list(const char *name);
+ static struct sk_buff *brc_send_command(struct net *,
+@@ -344,57 +343,6 @@ brc_ioctl_deviceless_stub(struct net *net, unsigned int cmd, void __user *uarg)
+ }
+ 
+ 
+-static br_pair_t* getHead(void){
+-	return head;
+-}
+-
+-static br_pair_t* getLast(br_pair_t *head) {
+-    while (head->next)
+-        head = head->next;
+-
+-    return head;
+-}
+-
+-static void pushBack(br_pair_t **head, char *bridge, char *port) {
+-    br_pair_t *tmp = (br_pair_t*)kmalloc(sizeof(br_pair_t),GFP_KERNEL);
+-    tmp->brname = bridge;
+-    tmp->prname = port;
+-    tmp->next = NULL;
+-
+-    if (*head == NULL) {
+-        *head = tmp;
+-    }
+-    else {
+-        br_pair_t *last = getLast(*head);
+-        last->next = tmp;
+-    }
+-}
+-
+-
+-static void delete_node(br_pair_t** head, char * name) {
+-    br_pair_t* curr = *head;
+-    br_pair_t* prev = NULL;
+-
+-    if(curr == NULL)
+-        return;
+-
+-    while((strcmp(curr->brname, name))) {
+-        if(curr->next == NULL) {
+-            return;
+-        } else {
+-            prev = curr;
+-            curr = curr->next;
+-        }
+-    }
+-
+-    if(curr == *head)
+-        *head = (*head)->next;
+-    else
+-        prev->next = curr->next;
+-
+-    kfree(curr);
+-}
+-
+ static int brc_add_del_port(struct net_device *dev, int port_ifindex, int add)
+ {
+ 	struct sk_buff *request;
+@@ -415,11 +363,6 @@ static int brc_add_del_port(struct net_device *dev, int port_ifindex, int add)
+ 	if (!request)
+ 		return -ENOMEM;
+ 
+-	mutex_lock(&brc_serial);
+-	if(add == 1) pushBack(&head, dev->name, port->name);
+-	else delete_node(&head, dev->name);
+-	mutex_unlock(&brc_serial);
+-
+ 	rtnl_unlock();
+ 	err = brc_send_simple_command(dev_net(dev), request);
+ 	rtnl_lock();
+@@ -1055,9 +998,6 @@ static int __init brc_init(void)
+ 	ovs_brc_mcsnoop_hook = brc_mcsnoop_hook;
+ #endif
+ 
+-	/*For transfering a pair bridge - interface to datapath*/
+-	ovs_dp_getHead = getHead;
+-
+ 	/* Randomize the initial sequence number.  This is not a security
+ 	 * feature; it only helps avoid crossed wires between userspace and
+ 	 * the kernel when the module is unloaded and reloaded. */
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 13bc91795..707bddf52 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -75,9 +75,6 @@ unsigned int ovs_net_id __read_mostly;
+ int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
+ EXPORT_SYMBOL(ovs_dp_ioctl_hook);
+ 
+-br_pair_t* (*ovs_dp_getHead)(void);
+-EXPORT_SYMBOL(ovs_dp_getHead);
+-
+ int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
+ EXPORT_SYMBOL(ovs_dp_sysfs_hook);
+ 
+@@ -2160,10 +2157,7 @@ static void update_headroom(struct datapath *dp)
+ /* Function to get the name of the bridge through its associated interface*/
+ static char* get_bridge_by_port(struct net_device *dev, const char* portName, char *buf)
+ {
+-	char value[32];
+-	memset(value, 0, 32);
+-	ovs_dp_sysfs_string_hook(dev, value, BRC_GENL_C_GET_BRIDGE_BY_PORT);
+-	sprintf(buf, "%s", value);
++	ovs_dp_sysfs_string_hook(dev, buf, BRC_GENL_C_GET_BRIDGE_BY_PORT);
+ 	return buf;
+ }
+ 
+@@ -2194,7 +2188,7 @@ static int ovs_vport_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 	struct sk_buff *reply;
+ 	struct vport *vport;
+ 	struct datapath *dp;
+-	char bridgeName[32];
++	char bridgeName[IFNAMSIZ];
+ 	struct vport *br;
+ 	u32 port_no;
+ 	int err;
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index 7f0889fcf..e234418e5 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -259,7 +259,6 @@ extern struct notifier_block ovs_dp_device_notifier;
+ extern struct genl_family dp_vport_genl_family;
+ extern const struct genl_multicast_group ovs_dp_vport_multicast_group;
+ extern int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
+-extern br_pair_t* (*ovs_dp_getHead)(void);
+ extern int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
+ extern int (*ovs_dp_sysfs_string_hook)(struct net_device *dev, char *ustring, int cmd);
+ 
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index e1d58255d..0bc6dd233 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -964,7 +964,7 @@ handle_get_bridge_name_value(struct ofpbuf *buffer)
+     /* Compose and send reply. */
+     reply = compose_reply(0);
+     nl_msg_put_unspec(reply, BRC_GENL_A_GET_STRING,
+-                      result, size * sizeof *result);
++                      result, size * sizeof(*result));
+     send_reply(reply, seq);
+ 
+     free(output);

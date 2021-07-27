@@ -1,0 +1,220 @@
+From b32b2bbe906fb99fb85e5e2dd838ee4c42e53030 Mon Sep 17 00:00:00 2001
+From: Andrii Mazurok <a.mazurok@inango-systems.com>
+Date: Fri, 23 Jul 2021 09:41:37 +0300
+Subject: [PATCH] Commit Title: Incorrect behavior when bridge create without
+ seamless but remove with him
+
+BugID: 24016
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description:
+- Delete bridge via ovs if bridge exists in ovs-vsctl
+---
+ datapath/brcompat_main.c               | 26 ++++++++++------
+ include/openvswitch/brcompat-netlink.h |  1 +
+ vswitchd/ovs-brcompatd.c               | 55 ++++++++++++++++++++++++++++++++--
+ 3 files changed, 70 insertions(+), 12 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index fd0bea168..4de461660 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -115,6 +115,7 @@ static struct sk_buff *brc_send_command(struct net *,
+ 					struct nlattr **attrs);
+ static int brc_send_simple_command(struct net *, struct sk_buff *);
+ static int brc_get_ulong_val_cmd(struct net_device *dev, int oper, unsigned long *uvalue);
++static int brc_get_ulong_val_cmd_with_net(struct net *net, const char *bridge, int oper, unsigned long *uvalue);
+ 
+ static struct sk_buff *brc_make_request(int op, const char *bridge,
+ 					const char *port)
+@@ -165,8 +166,7 @@ static int brc_add_del_bridge(struct net *net, char __user *uname, int add)
+ 		return -EFAULT;
+ 
+ 	name[IFNAMSIZ - 1] = 0;
+-	request = brc_make_request(add ? BRC_GENL_C_DP_ADD : BRC_GENL_C_DP_DEL,
+-				   name, NULL);
++	request = brc_make_request(add, name, NULL);
+ 	if (!request)
+ 		return -ENOMEM;
+ #ifdef CONFIG_LTQ_MCAST_SNOOPING
+@@ -292,14 +292,17 @@ static int old_deviceless(struct net *net, void __user *uarg)
+ 	case BRCTL_ADD_BRIDGE:
+ 	{
+ 		if (check_bridge_list((char __user *)args[1]))
+-			return brc_add_del_bridge(net, (void __user *)args[1], 1);
++			return brc_add_del_bridge(net, (void __user *)args[1], BRC_GENL_C_DP_ADD);
+ 		else
+ 			return bridge_ioctl_hook(net, SIOCSIFBR, uarg);
+ 	}
+ 	case BRCTL_DEL_BRIDGE:
+ 	{
+-		if (check_bridge_list((char __user *)args[1]))
+-			return brc_add_del_bridge(net, (void __user *)args[1], 0);
++		unsigned long br_exist_exit_code = 1;
++		brc_get_ulong_val_cmd_with_net(net, (char __user *)args[1], BRC_GENL_C_GET_BRIDGE_EXISTS, &br_exist_exit_code);
++
++		if (check_bridge_list((char __user *)args[1]) || br_exist_exit_code == 0)
++			return brc_add_del_bridge(net, (void __user *)args[1], BRC_GENL_C_DP_DEL);
+ 		else
+ 			return bridge_ioctl_hook(net, SIOCSIFBR, uarg);
+ 	}
+@@ -326,14 +329,14 @@ brc_ioctl_deviceless_stub(struct net *net, unsigned int cmd, void __user *uarg)
+ 	case SIOCBRADDBR:
+ 	{
+ 		if (check_bridge_list((char __user *)uarg))
+-			return brc_add_del_bridge(net, uarg, 1);
++			return brc_add_del_bridge(net, uarg, BRC_GENL_C_DP_ADD);
+ 		else
+ 			return bridge_ioctl_hook(net, cmd, uarg);
+ 	}
+ 	case SIOCBRDELBR:
+ 	{
+ 		if (check_bridge_list((char __user *)uarg))
+-			return brc_add_del_bridge(net, uarg, 0);
++			return brc_add_del_bridge(net, uarg, BRC_GENL_C_DP_DEL);
+ 		else
+ 			return bridge_ioctl_hook(net, cmd, uarg);
+ 	}
+@@ -591,16 +594,21 @@ nla_put_failure:
+ }
+ 
+ static int brc_get_ulong_val_cmd(struct net_device *dev, int oper, unsigned long *uvalue)
++{
++	return brc_get_ulong_val_cmd_with_net(dev_net(dev), dev->name, oper, uvalue);
++}
++
++static int brc_get_ulong_val_cmd_with_net(struct net *net, const char *bridge, int oper, unsigned long *uvalue)
+ {
+ 	struct nlattr *attrs[BRC_GENL_A_MAX + 1];
+ 	struct sk_buff *request, *reply;
+ 	int ret;
+ 
+-	request = brc_make_request(oper, dev->name, NULL);
++	request = brc_make_request(oper, bridge, NULL);
+ 	if (!request)
+ 		return -ENOMEM;
+ 
+-	reply = brc_send_command(dev_net(dev), request, attrs);
++	reply = brc_send_command(net, request, attrs);
+ 	ret = PTR_ERR(reply);
+ 	if (IS_ERR(reply))
+ 		goto exit;
+diff --git a/include/openvswitch/brcompat-netlink.h b/include/openvswitch/brcompat-netlink.h
+index 34e74170e..c6ee4f1ba 100644
+--- a/include/openvswitch/brcompat-netlink.h
++++ b/include/openvswitch/brcompat-netlink.h
+@@ -137,6 +137,7 @@ enum brc_genl_command {
+     BRC_GENL_C_SET_MCSNOOP_ROUT_PORT, /* K: Set the port as router port. */
+     BRC_GENL_C_SET_MC_SNOOPING_FLAG, /* K: Set the multicast snooping flag. */
+     BRC_GENL_C_GET_BRIDGE_BY_PORT, /* K: Get bridge name by port. */
++    BRC_GENL_C_GET_BRIDGE_EXISTS, /* K: Check that bridge exists. */
+ 
+     __BRC_GENL_C_MAX,
+     BRC_GENL_C_MAX = __BRC_GENL_C_MAX - 1
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 0bc6dd233..2704f489c 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -122,7 +122,7 @@ static const struct nl_policy brc_multicast_policy[] = {
+ };
+ 
+ static char *
+-capture_vsctl_valist(const char *arg0, va_list args)
++capture_vsctl_valist(const char *arg0, va_list args, int *exit_code)
+ {
+     char *stdout_log, *stderr_log;
+     enum vlog_level log_level;
+@@ -152,8 +152,10 @@ capture_vsctl_valist(const char *arg0, va_list args)
+     /* Log results. */
+     if (WIFEXITED(status)) {
+         int code = WEXITSTATUS(status);
++        *exit_code = code;
+         log_level = code == 0 ? VLL_DBG : code == 1 ? VLL_WARN : VLL_ERR;
+     } else {
++        *exit_code = status;
+         log_level = VLL_ERR;
+     }
+     msg = process_status_msg(status);
+@@ -182,9 +184,23 @@ capture_vsctl(const char *arg0, ...)
+ {
+     char *stdout_log;
+     va_list args;
++    int exit_code;
+ 
+     va_start(args, arg0);
+-    stdout_log = capture_vsctl_valist(arg0, args);
++    stdout_log = capture_vsctl_valist(arg0, args, &exit_code);
++    va_end(args);
++
++    return stdout_log;
++}
++
++static char * SENTINEL(0)
++capture_vsctl_with_exit_code(int *exit_code, const char *arg0, ...)
++{
++    char *stdout_log;
++    va_list args;
++
++    va_start(args, arg0);
++    stdout_log = capture_vsctl_valist(arg0, args, exit_code);
+     va_end(args);
+ 
+     return stdout_log;
+@@ -196,9 +212,10 @@ run_vsctl(const char *arg0, ...)
+     char *stdout_log;
+     va_list args;
+     bool ok;
++    int exit_code;
+ 
+     va_start(args, arg0);
+-    stdout_log = capture_vsctl_valist(arg0, args);
++    stdout_log = capture_vsctl_valist(arg0, args, &exit_code);
+     va_end(args);
+ 
+     ok = stdout_log != NULL;
+@@ -971,6 +988,35 @@ handle_get_bridge_name_value(struct ofpbuf *buffer)
+     return 0;
+ }
+ 
++static int
++handle_get_bridge_exists(struct ofpbuf *buffer)
++{
++    const char *br_name;
++    uint32_t seq;
++    int error, size;
++    struct ofpbuf *reply;
++    int exit_code = 1;
++
++    /* Parse Netlink command.
++     *
++     * The command doesn't actually have any arguments, but we need the
++     * sequence number to send the reply. */
++    /* Parse Netlink command. */
++    error = parse_command(buffer, &seq, &br_name, NULL, NULL, NULL, NULL);
++    if (error) {
++        return error;
++    }
++    capture_vsctl_with_exit_code(&exit_code, vsctl_program, VSCTL_OPTIONS, "br-exists", br_name,
++                           (char *) NULL);
++
++    /* Compose and send reply. */
++    reply = compose_reply(0);
++    nl_msg_put_u32(reply, BRC_GENL_A_GET_ULONG, exit_code);
++    send_reply(reply, seq);
++
++    return 0;
++}
++
+ static int
+ handle_set_ulong_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+ {
+@@ -1440,6 +1486,9 @@ brc_recv_update(void)
+     case BRC_GENL_C_GET_BRIDGE_BY_PORT:
+         handle_get_bridge_name_value(&buffer);
+         break;
++    case BRC_GENL_C_GET_BRIDGE_EXISTS:
++        handle_get_bridge_exists(&buffer);
++        break;
+ 
+     /* seamless-ovs { */
+     case BRC_GENL_C_MG_ADD:
