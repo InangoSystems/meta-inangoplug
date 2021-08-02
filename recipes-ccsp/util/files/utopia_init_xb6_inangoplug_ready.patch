@@ -1,0 +1,30 @@
+diff --git a/source/scripts/init/system/utopia_init_xb6.sh b/source/scripts/init/system/utopia_init_xb6.sh
+index f6f97be..e9c9c35 100755
+--- a/source/scripts/init/system/utopia_init_xb6.sh
++++ b/source/scripts/init/system/utopia_init_xb6.sh
+@@ -738,3 +738,25 @@ fi
+       
+ echo "[utopia][init] completed creating utopia_inited flag"
+ touch /tmp/utopia_inited
++
++OVS_ENABLE=`syscfg get CONFIG_INANGO_INANGOPLUG_ENABLE`
++loopBreakCounter=0
++
++if [ "$OVS_ENABLE" == "true" ]
++then
++    while [ ! -f /tmp/inangoplug_started ]
++    do
++        if [ "$loopBreakCounter" -ne 30 ]; then
++            echo "[utopia][init] inangoplug is not ready yet..." > /dev/console
++            loopBreakCounter=$((loopBreakCounter+1))
++            sleep 1
++        else
++            break
++        fi
++    done
++    if [ -f /tmp/inangoplug_started ]; then
++        echo "[utopia][init] inangoplug is enabled and started successful" > /dev/console
++    else
++        echo "[utopia][init] inangoplug is enabled but not started properly" > /dev/console
++    fi
++fi

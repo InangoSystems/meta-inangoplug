@@ -1,0 +1,33 @@
+From eb93c27d8b84df3607db1cf7ee6876c241b646bf Mon Sep 17 00:00:00 2001
+From: Andrii Mazurok <a.mazurok@inango-systems.com>
+Date: Wed, 28 Jul 2021 11:00:08 +0300
+Subject: [PATCH] Commit Title: OVS bridges are built as not master device
+
+BugID: 24021
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description:
+- Fixed goto statement to error_put
+---
+ datapath/vport-netdev.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/datapath/vport-netdev.c b/datapath/vport-netdev.c
+index b1f0db9d4..879a48d83 100644
+--- a/datapath/vport-netdev.c
++++ b/datapath/vport-netdev.c
+@@ -109,12 +109,12 @@ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
+ 		char bridgeName[IFNAMSIZ] = {0};
+ 		get_bridge_by_port(vport->dev, name, bridgeName);
+ 		if (bridgeName == NULL)
+-			goto error_unlock;
++			goto error_put;
+ 
+ 		bridge = get_vport_by_bridge(vport->dp, bridgeName);
+ 
+ 		if (bridge == NULL)
+-			goto error_unlock;
++			goto error_put;
+ 	}
+ 
+ 	rtnl_lock();

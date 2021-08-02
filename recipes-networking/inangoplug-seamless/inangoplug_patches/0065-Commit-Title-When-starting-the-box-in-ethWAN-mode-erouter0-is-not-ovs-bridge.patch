@@ -1,0 +1,34 @@
+From debeecc2714aa33ac276a1781c890226214e986a Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Thu, 29 Jul 2021 14:44:31 +0300
+Subject: [PATCH] Commit Title          : When starting the box in ethWAN mode,
+ erouter0 is not ovs bridge
+
+BugID                 : 25062
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Added trigger through files flag /tmp/utopia_inited and /tmp/inangoplug_started
+---
+ utilities/ovs-ctl.in | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/utilities/ovs-ctl.in b/utilities/ovs-ctl.in
+index d75527830..f34f166c8 100644
+--- a/utilities/ovs-ctl.in
++++ b/utilities/ovs-ctl.in
+@@ -268,6 +268,7 @@ do_start_brcompatd () {
+ start_brcompatd () {
+     if test X"$OVS_BRCOMPATD" = Xyes; then
+         do_start_brcompatd || return 1
++        touch /tmp/inangoplug_started
+     fi
+ 
+     return 0
+@@ -300,6 +301,7 @@ stop_forwarding () {
+ stop_brcompatd () {
+     if test X"$OVS_BRCOMPATD" = Xyes; then
+         stop_daemon ovs-brcompatd
++        rm -f /tmp/inangoplug_started
+     fi
+ }
+ 

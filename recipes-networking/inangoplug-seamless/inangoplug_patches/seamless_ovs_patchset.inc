@@ -60,5 +60,10 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0058-Commit-Title-Incorrect-behavior-when-bridge-create-without-seamless-but-remove-.patch \
     file://0059-Commit-Title-Handle-errors-during-retrieve-stats-and-remove.patch \
     file://0060-Commit-Title-Pass-board-type-through-OVS.patch \
+    file://0061-Commit-Title-OVS-bridges-are-built-as-not-master-device.patch \
+    file://0062-Commit-Title-OVS-bridges-are-built-as-not-master-device.patch \
+    file://0063-Commit-Title-Add-support-of-brforward-file-and-stubs-for-nf_disable_-files.patch \
+    file://0064-Commit-Title-Open-vSwitch-fails-with-kernel-bug.patch \
+    file://0065-Commit-Title-When-starting-the-box-in-ethWAN-mode-erouter0-is-not-ovs-bridge.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

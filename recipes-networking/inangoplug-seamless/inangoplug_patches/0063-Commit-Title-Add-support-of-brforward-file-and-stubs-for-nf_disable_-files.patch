@@ -1,0 +1,331 @@
+From 6b00ddd822329b1bd6e164af58dd2608e19bdded Mon Sep 17 00:00:00 2001
+From: Dmytro Titov <d.titov@inango-systems.com>
+Date: Wed, 28 Jul 2021 19:22:36 +0300
+Subject: [PATCH] Commit Title: Add support of brforward file and stubs for
+ nf_disable_* files
+
+BugID: 24017
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description:
+- Added support of brforward sysfs file
+- Added stubs for nf_disable_* sysfs files
+---
+ datapath/brcompat_main.c |  28 ++++++----
+ datapath/datapath.c      |   4 ++
+ datapath/datapath.h      |   1 +
+ datapath/dp_sysfs_dp.c   | 137 +++++++++++++++++++++++++++++++++++++++++++++++
+ vswitchd/ovs-brcompatd.c |  16 ++++--
+ 5 files changed, 174 insertions(+), 12 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 4de461660..fc375e4ae 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -514,13 +514,14 @@ static int brc_get_port_list(struct net_device *dev, int __user *uindices,
+ 
+ /*
+  * Format up to a page worth of forwarding table entries
+- * userbuf -- where to copy result
+- * maxnum  -- maximum number of entries desired
+- *            (limited to a page for sanity)
+- * offset  -- number of records to skip
++ * buf         -- where to copy result
++ * maxnum      -- maximum number of entries desired
++ *                (limited to a page for sanity)
++ * offset      -- number of records to skip
++ * is_user_buf -- need copy_to_user
+  */
+-static int brc_get_fdb_entries(struct net_device *dev, void __user *userbuf,
+-			       unsigned long maxnum, unsigned long offset)
++static int brc_get_fdb_entries(struct net_device *dev, void *buf,
++			       unsigned long maxnum, unsigned long offset, bool is_user_buf)
+ {
+ 	struct nlattr *attrs[BRC_GENL_A_MAX + 1];
+ 	struct sk_buff *request, *reply;
+@@ -557,8 +558,12 @@ static int brc_get_fdb_entries(struct net_device *dev, void __user *userbuf,
+ 		goto exit_free_skb;
+ 
+ 	retval = len / sizeof(struct __fdb_entry);
+-	if (copy_to_user(userbuf, nla_data(attrs[BRC_GENL_A_FDB_DATA]), len))
+-		retval = -EFAULT;
++	if (is_user_buf) {
++		if (copy_to_user(buf, nla_data(attrs[BRC_GENL_A_FDB_DATA]), len))
++			retval = -EFAULT;
++	} else {
++		memcpy(buf, nla_data(attrs[BRC_GENL_A_FDB_DATA]), len);
++	}
+ 
+ exit_free_skb:
+ 	kfree_skb(reply);
+@@ -690,7 +695,7 @@ static int old_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+ 
+ 	case BRCTL_GET_FDB_ENTRIES:
+ 		return brc_get_fdb_entries(dev, (void __user *)args[1],
+-					   args[2], args[3]);
++					   args[2], args[3], true);
+ 	case BRCTL_SET_AGEING_TIME:
+ 		return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_AGEING_TIME, args[1] / 100);
+ 
+@@ -1001,6 +1006,8 @@ static int __init brc_init(void)
+ 	ovs_dp_sysfs_hook = brc_dev_sysfs;
+ 	ovs_dp_sysfs_string_hook = brc_dev_sysfs_string;
+ 
++	ovs_get_fdb_entries = brc_get_fdb_entries;
++
+ #ifdef CONFIG_LTQ_MCAST_SNOOPING
+ 	/* Set multicast snooping hooks */
+ 	ovs_brc_mcsnoop_hook = brc_mcsnoop_hook;
+@@ -1029,6 +1036,9 @@ static void brc_cleanup(void)
+ 	/* Unregister ioctl hooks */
+ 	ovs_dp_ioctl_hook = NULL;
+ 
++	/* Unregister brc_get_fdb_entries */
++	ovs_get_fdb_entries = NULL;
++
+ 	/* Back the hook of the linux bridge to socket module */
+ 	brioctl_set(bridge_ioctl_hook);
+ 
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 40f23438f..f25699aa1 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -81,6 +81,10 @@ EXPORT_SYMBOL(ovs_dp_sysfs_hook);
+ int (*ovs_dp_sysfs_string_hook)(struct net_device *dev, char *ustring, int cmd);
+ EXPORT_SYMBOL(ovs_dp_sysfs_string_hook);
+ 
++int (*ovs_get_fdb_entries)(struct net_device *dev, void *user,
++			       unsigned long maxnum, unsigned long offset, bool is_user_buf);
++EXPORT_SYMBOL(ovs_get_fdb_entries);
++
+ static struct genl_family dp_packet_genl_family;
+ static struct genl_family dp_flow_genl_family;
+ static struct genl_family dp_datapath_genl_family;
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index 87ae6ec4b..31fb0fec9 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -266,6 +266,7 @@ extern const struct genl_multicast_group ovs_dp_vport_multicast_group;
+ extern int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
+ extern int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
+ extern int (*ovs_dp_sysfs_string_hook)(struct net_device *dev, char *ustring, int cmd);
++extern int (*ovs_get_fdb_entries)(struct net_device *dev, void *userbuf, unsigned long maxnum, unsigned long offset, bool is_user_buf);
+ 
+ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key);
+ void ovs_dp_detach_port(struct vport *);
+diff --git a/datapath/dp_sysfs_dp.c b/datapath/dp_sysfs_dp.c
+index a8d131120..e73be3057 100644
+--- a/datapath/dp_sysfs_dp.c
++++ b/datapath/dp_sysfs_dp.c
+@@ -59,6 +59,10 @@
+ #define DEV_ATTR(NAME) dev_attr_##NAME
+ #endif
+ 
++static bool nf_disable_arptables_value = false;
++static bool nf_disable_ip6tables_value = false;
++static bool nf_disable_iptables_value = false;
++
+ /*
+  * Common code for storing bridge parameters.
+  */
+@@ -483,6 +487,90 @@ static ssize_t store_nf_call_arptables(DEVICE_PARAMS, const char *buf, size_t le
+ 
+ static INTERNAL_DEVICE_ATTR(nf_call_arptables, S_IRUGO | S_IWUSR, show_nf_call_arptables, store_nf_call_arptables);
+ 
++static int show_nf_disable_arptables(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", nf_disable_arptables_value);
++}
++
++/*
++ * Stub for saving nf_disable_arptables
++ */
++static ssize_t store_nf_disable_arptables(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	char *endp;
++	unsigned long val;
++
++	val = simple_strtoul(buf, &endp, 0);
++	if (endp == buf) {
++		return -EINVAL;
++	}
++
++	nf_disable_arptables_value = !!val;
++
++	pr_warn("%s: Changing the value of nf_disable_arptables is handled by the "
++		"stub function. It has no effect.", __func__);
++
++	return len;
++}
++
++static INTERNAL_DEVICE_ATTR(nf_disable_arptables, S_IRUGO | S_IWUSR, show_nf_disable_arptables, store_nf_disable_arptables);
++
++/*
++ * Stub for saving nf_disable_ip6tables
++ */
++static int show_nf_disable_ip6tables(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", nf_disable_ip6tables_value);
++}
++
++static ssize_t store_nf_disable_ip6tables(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	char *endp;
++	unsigned long val;
++
++	val = simple_strtoul(buf, &endp, 0);
++	if (endp == buf) {
++		return -EINVAL;
++	}
++
++	nf_disable_ip6tables_value = !!val;
++
++	pr_warn("%s: Changing the value of nf_disable_ip6tables is handled by the "
++		"stub function. It has no effect.", __func__);
++
++	return len;
++}
++
++static INTERNAL_DEVICE_ATTR(nf_disable_ip6tables, S_IRUGO | S_IWUSR, show_nf_disable_ip6tables, store_nf_disable_ip6tables);
++
++static int show_nf_disable_iptables(DEVICE_PARAMS, char *buf)
++{
++	return sprintf(buf, "%d\n", nf_disable_iptables_value);
++}
++
++/*
++ * Stub for saving nf_disable_iptables
++ */
++static ssize_t store_nf_disable_iptables(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	char *endp;
++	unsigned long val;
++
++	val = simple_strtoul(buf, &endp, 0);
++	if (endp == buf) {
++		return -EINVAL;
++	}
++
++	nf_disable_iptables_value = !!val;
++
++	pr_warn("%s: Changing the value of nf_disable_iptables is handled by the "
++		"stub function. It has no effect.", __func__);
++
++	return len;
++}
++
++static INTERNAL_DEVICE_ATTR(nf_disable_iptables, S_IRUGO | S_IWUSR, show_nf_disable_iptables, store_nf_disable_iptables);
++
+ static ssize_t show_topology_change(DEVICE_PARAMS, char *buf)
+ {
+ 	return sprintf(buf, "%d\n", 0);
+@@ -522,6 +610,9 @@ static struct attribute *bridge_attrs[] = {
+ 	&DEV_ATTR(multicast_startup_query_interval).attr,
+ 	&DEV_ATTR(nf_call_arptables).attr,
+ 	&DEV_ATTR(nf_call_iptables).attr,
++	&DEV_ATTR(nf_disable_arptables).attr,
++	&DEV_ATTR(nf_disable_ip6tables).attr,
++	&DEV_ATTR(nf_disable_iptables).attr,
+ 	&DEV_ATTR(topology_change).attr,
+ 	&DEV_ATTR(topology_change_timer).attr,
+ 	NULL
+@@ -532,6 +623,44 @@ static struct attribute_group bridge_group = {
+ 	.attrs = bridge_attrs,
+ };
+ 
++static ssize_t brforward_show(struct file *file, struct kobject *kobj, 
++				struct bin_attribute *attr,
++				char *buf, loff_t off, size_t count) {
++	struct device *dev = container_of(kobj, struct device, kobj);
++	struct net_device *net_dev = container_of(dev, struct net_device, dev);
++	unsigned long maxnum = count / sizeof(struct __fdb_entry);
++	unsigned long offset = off / sizeof(struct __fdb_entry);
++	int res;
++
++	if (off % sizeof(struct __fdb_entry) != 0)
++		return -EINVAL;
++
++	if (ovs_get_fdb_entries == NULL) {
++		pr_err("%s: ovs_get_fdb_entries is not defined\n", __func__);
++		return -EAGAIN;
++	}
++
++	if (!rtnl_trylock())
++		return restart_syscall();
++
++	res = ovs_get_fdb_entries(net_dev, buf, maxnum, offset, false);
++
++	rtnl_unlock();
++	
++	if (res > 0)
++		res *= sizeof(struct __fdb_entry);
++
++	return res;
++}
++
++static struct bin_attribute brforward_attribute = {
++	.attr = {
++		.name = SYSFS_BRIDGE_FDB,
++		.mode = 0444,
++	},
++	.read = brforward_show,
++};
++
+ /*
+  * Add entries in sysfs onto the existing network class device
+  * for the bridge.
+@@ -553,6 +682,14 @@ int ovs_dp_sysfs_add_dp(struct datapath *dp, struct vport *vport)
+ 	if (!kobj->sd)
+ 		return -ENOENT;
+ #endif
++	/* Create /sys/class/net/<devname>/brforward file */
++	err = sysfs_create_bin_file(kobj, &brforward_attribute);
++	if (err) {
++		pr_info("%s: can't add attribute file %s/%s\n", 
++			__func__, ovs_dp_name(dp), brforward_attribute.attr.name);
++		goto out1;
++	}
++
+ 	/* Create /sys/class/net/<devname>/bridge directory. */
+ 	err = sysfs_create_group(kobj, &bridge_group);
+ 	if (err) {
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 2704f489c..e10a0e68d 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -758,7 +758,8 @@ handle_fdb_query_cmd(struct ofpbuf *buffer)
+     strtok_r(output, "\n", &save_ptr); /* Skip header line. */
+     while (count > 0) {
+         struct __fdb_entry *entry;
+-        int port, vlan, age;
++        int port = 0, vlan, age;
++        char port_str[16] = {0};
+         struct eth_addr mac;
+         char *line;
+         bool is_local;
+@@ -768,14 +769,23 @@ handle_fdb_query_cmd(struct ofpbuf *buffer)
+             break;
+         }
+ 
+-        if (sscanf(line, "%d %d "ETH_ADDR_SCAN_FMT" %d",
+-                   &port, &vlan, ETH_ADDR_SCAN_ARGS(mac), &age)
++        while (line[0] && isspace(line[0]))
++            ++line;
++
++        if (sscanf(line, "%s %d "ETH_ADDR_SCAN_FMT" %d",
++                   port_str, &vlan, ETH_ADDR_SCAN_ARGS(mac), &age)
+             != 2 + ETH_ADDR_SCAN_COUNT + 1) {
+             static struct vlog_rate_limit rl_l = VLOG_RATE_LIMIT_INIT(1, 1);
+             VLOG_INFO_RL(&rl_l, "fdb/show output has invalid format: %s", line);
+             continue;
+         }
+ 
++        if (strcmp(port_str, "LOCAL") && sscanf(port_str, "%d", &port) != 1) {
++            static struct vlog_rate_limit rl_l = VLOG_RATE_LIMIT_INIT(1, 1);
++            VLOG_INFO_RL(&rl_l, "fdb/show port has invalid format: %s", line);
++            continue;
++        }
++
+         if (vlan != br_vlan) {
+             continue;
+         }

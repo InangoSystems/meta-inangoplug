@@ -63,6 +63,7 @@ do_install_append () {
     install -D -m 0644 ${S}/scripts/CcspInangoplugComponent.service ${D}${systemd_unitdir}/system/CcspInangoplugComponent.service
     install -m 0644 ${S}/scripts/CcspInangoplugComponent.path ${D}${systemd_unitdir}/system/CcspInangoplugComponent.path
     install -m 0644 ${S}/scripts/check_inangoplug_enabled.service ${D}${systemd_unitdir}/system/check_inangoplug_enabled.service
+    install -m 0644 ${S}/scripts/check_inangoplug_enabled.path ${D}${systemd_unitdir}/system/check_inangoplug_enabled.path
     install -m 0644 ${S}/scripts/connect_inangoplug.path ${D}${systemd_unitdir}/system/connect_inangoplug.path
     install -m 0644 ${S}/scripts/connect_inangoplug.service ${D}${systemd_unitdir}/system/connect_inangoplug.service
     install -d ${D}${sysconfdir}/scripts
@@ -73,6 +74,7 @@ do_install_append () {
 SYSTEMD_SERVICE_${PN} += "CcspInangoplugComponent.service \
                           CcspInangoplugComponent.path \
                           check_inangoplug_enabled.service \
+                          check_inangoplug_enabled.path \
                           connect_inangoplug.path \
                           connect_inangoplug.service \
                          "

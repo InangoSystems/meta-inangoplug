@@ -1,0 +1,91 @@
+From 3ea8d92a80baceb8c899a513da0b0a3082cef0c6 Mon Sep 17 00:00:00 2001
+From: Andrii Mazurok <a.mazurok@inango-systems.com>
+Date: Thu, 29 Jul 2021 11:53:25 +0300
+Subject: [PATCH] Commit Title: Open vSwitch fails with kernel bug
+
+BugID: 25151
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description:
+- Added verifying that bridge was assigned
+- Assigned err before goto statement
+---
+ datapath/datapath.c     |  2 +-
+ datapath/vport-netdev.c | 26 ++++++++++++++++++++------
+ 2 files changed, 21 insertions(+), 7 deletions(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index f25699aa1..2cac1a425 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -2258,7 +2258,7 @@ restart:
+ 	else{
+ 		get_bridge_by_port(vport->dev, parms.name, bridgeName);
+ 
+-		if (bridgeName == NULL)
++		if (!bridgeName[0])
+ 			goto cont_wo_sysfs;
+ 
+ 		br = get_vport_by_bridge(vport->dp, bridgeName);
+diff --git a/datapath/vport-netdev.c b/datapath/vport-netdev.c
+index 879a48d83..227df2604 100644
+--- a/datapath/vport-netdev.c
++++ b/datapath/vport-netdev.c
+@@ -84,10 +84,19 @@ static rx_handler_result_t netdev_frame_hook(struct sk_buff **pskb)
+ 	return RX_HANDLER_CONSUMED;
+ }
+ 
++static struct net_device *get_dpdev(const struct datapath *dp)
++{
++	struct vport *local;
++
++	local = ovs_vport_ovsl(dp, OVSP_LOCAL);
++	BUG_ON(!local);
++	return local->dev;
++}
++
+ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
+ {
+ 	int err;
+-	struct vport *bridge;
++	struct vport *bridge = NULL;
+ 
+ 	vport->dev = dev_get_by_name(ovs_dp_get_net(vport->dp), name);
+ 	if (!vport->dev) {
+@@ -107,18 +116,23 @@ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
+ 	 * /sys/class/net/<bridgename>. */
+ 	if (!ovs_is_internal_dev(vport->dev)) {
+ 		char bridgeName[IFNAMSIZ] = {0};
++
+ 		get_bridge_by_port(vport->dev, name, bridgeName);
+-		if (bridgeName == NULL)
++		if (!bridgeName[0]) {
++			err = -EINVAL;
+ 			goto error_put;
++		}
+ 
+ 		bridge = get_vport_by_bridge(vport->dp, bridgeName);
+-
+-		if (bridge == NULL)
++		if (bridge == NULL) {
++			err = -EINVAL;
+ 			goto error_put;
++		}
+ 	}
+ 
+ 	rtnl_lock();
+-	err = netdev_master_upper_dev_link(vport->dev, bridge->dev,
++	err = netdev_master_upper_dev_link(vport->dev,
++					bridge ? bridge->dev : get_dpdev(vport->dp),
+ 					NULL, NULL, NULL);
+ 	if (err)
+ 		goto error_unlock;
+@@ -136,7 +150,7 @@ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
+ 	return vport;
+ 
+ error_master_upper_dev_unlink:
+-	netdev_upper_dev_unlink(vport->dev, bridge->dev);
++	netdev_upper_dev_unlink(vport->dev, bridge ? bridge->dev : get_dpdev(vport->dp));
+ error_unlock:
+ 	rtnl_unlock();
+ error_put:

@@ -1,0 +1,123 @@
+From 00f1f7fde0a887f00e45d99151c51a2936204f24 Mon Sep 17 00:00:00 2001
+From: Andrii Mazurok <a.mazurok@inango-systems.com>
+Date: Mon, 26 Jul 2021 12:05:53 +0300
+Subject: [PATCH] Commit Title: OVS bridges are built as not master device
+
+BugID: 24021
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description:
+- Now master device for an interface is a bridge
+---
+ datapath/datapath.c     |  6 +++---
+ datapath/datapath.h     |  5 +++++
+ datapath/vport-netdev.c | 31 ++++++++++++++++++-------------
+ 3 files changed, 26 insertions(+), 16 deletions(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 707bddf52..40f23438f 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -2155,7 +2155,7 @@ static void update_headroom(struct datapath *dp)
+ }
+ 
+ /* Function to get the name of the bridge through its associated interface*/
+-static char* get_bridge_by_port(struct net_device *dev, const char* portName, char *buf)
++char* get_bridge_by_port(struct net_device *dev, const char* portName, char *buf)
+ {
+ 	ovs_dp_sysfs_string_hook(dev, buf, BRC_GENL_C_GET_BRIDGE_BY_PORT);
+ 	return buf;
+@@ -2163,7 +2163,7 @@ static char* get_bridge_by_port(struct net_device *dev, const char* portName, ch
+ 
+ 
+ /* Function to get the vport structure through its bridge name*/
+-static struct vport* get_vport_by_bridge(struct datapath *dp, char *bridge)
++struct vport* get_vport_by_bridge(struct datapath *dp, char *bridge)
+ {
+ 	int i;
+ 
+@@ -2188,7 +2188,7 @@ static int ovs_vport_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 	struct sk_buff *reply;
+ 	struct vport *vport;
+ 	struct datapath *dp;
+-	char bridgeName[IFNAMSIZ];
++	char bridgeName[IFNAMSIZ] = {0};
+ 	struct vport *br;
+ 	u32 port_no;
+ 	int err;
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index e234418e5..87ae6ec4b 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -195,6 +195,11 @@ int lockdep_ovsl_is_held(void);
+ #define rcu_dereference_ovsl(p)					\
+ 	rcu_dereference_check(p, lockdep_ovsl_is_held())
+ 
++/* Function to get the name of the bridge through its associated interface*/
++char* get_bridge_by_port(struct net_device *dev, const char* portName, char *buf);
++/* Function to get the vport structure through its bridge name*/
++struct vport* get_vport_by_bridge(struct datapath *dp, char *bridge);
++
+ static inline struct net *ovs_dp_get_net(const struct datapath *dp)
+ {
+ 	return rpl_read_pnet(&dp->net);
+diff --git a/datapath/vport-netdev.c b/datapath/vport-netdev.c
+index dbedb7d18..b1f0db9d4 100644
+--- a/datapath/vport-netdev.c
++++ b/datapath/vport-netdev.c
+@@ -84,18 +84,10 @@ static rx_handler_result_t netdev_frame_hook(struct sk_buff **pskb)
+ 	return RX_HANDLER_CONSUMED;
+ }
+ 
+-static struct net_device *get_dpdev(const struct datapath *dp)
+-{
+-	struct vport *local;
+-
+-	local = ovs_vport_ovsl(dp, OVSP_LOCAL);
+-	BUG_ON(!local);
+-	return local->dev;
+-}
+-
+ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
+ {
+ 	int err;
++	struct vport *bridge;
+ 
+ 	vport->dev = dev_get_by_name(ovs_dp_get_net(vport->dp), name);
+ 	if (!vport->dev) {
+@@ -111,10 +103,23 @@ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
+ 		goto error_put;
+ 	}
+ 
++	/* Create symlink from /sys/class/net/<devname>/master to
++	 * /sys/class/net/<bridgename>. */
++	if (!ovs_is_internal_dev(vport->dev)) {
++		char bridgeName[IFNAMSIZ] = {0};
++		get_bridge_by_port(vport->dev, name, bridgeName);
++		if (bridgeName == NULL)
++			goto error_unlock;
++
++		bridge = get_vport_by_bridge(vport->dp, bridgeName);
++
++		if (bridge == NULL)
++			goto error_unlock;
++	}
++
+ 	rtnl_lock();
+-	err = netdev_master_upper_dev_link(vport->dev,
+-					   get_dpdev(vport->dp),
+-					   NULL, NULL, NULL);
++	err = netdev_master_upper_dev_link(vport->dev, bridge->dev,
++					NULL, NULL, NULL);
+ 	if (err)
+ 		goto error_unlock;
+ 
+@@ -131,7 +136,7 @@ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
+ 	return vport;
+ 
+ error_master_upper_dev_unlink:
+-	netdev_upper_dev_unlink(vport->dev, get_dpdev(vport->dp));
++	netdev_upper_dev_unlink(vport->dev, bridge->dev);
+ error_unlock:
+ 	rtnl_unlock();
+ error_put:

@@ -1,5 +1,5 @@
 INANGOPLUG_SRCREV_pn-inangoplug-rsc ?= "4bb0590cb9d6e6c33531c1c3cf5c8a40915dd3c2"
 INANGOPLUG_SRCREV_pn-inangoplug-chandler ?= "8cb6bfcefd2c13423610c14239a2c7d5e4c0240b"
 INANGOPLUG_SRCREV_pn-inangoplug-rsc-proxy ?= "2271a215b113e5e16d8a815dc9739b4aa6555d42"
-INANGOPLUG_SRCREV_pn-inangoplug-pp-acceleration-mod ?= "8e1e38097b867b5f303915aaca05e71b4b6f59a5"
-INANGOPLUG_SRCREV_pn-inangoplug-mngm ?= "68b2bd7d6f7926e425ab271ecffe57fedf96f4f0"
+INANGOPLUG_SRCREV_pn-inangoplug-pp-acceleration-mod ?= "7f666ef1205a81438f142f8e8f80028bef0639a6"
+INANGOPLUG_SRCREV_pn-inangoplug-mngm ?= "b9e96dc3025878ab720e192465de16b190312aeb"
