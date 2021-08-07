@@ -9,6 +9,7 @@ FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
 SRCREV = "${INANGOPLUG_SRCREV}"
 SRC_URI = "${INANGOPLUG_SRC_URI} \
            file://chandler.service \
+           file://chandler.conf \
           "
 
 S = "${WORKDIR}/git"
@@ -27,4 +28,9 @@ do_install() {
 
     install -d ${D}${systemd_unitdir}/system
     install -m 0644 ${WORKDIR}/chandler.service ${D}${systemd_unitdir}/system
+
+    install -d ${D}${datadir}/openvswitch
+    install -m 0644 ${WORKDIR}/chandler.conf ${D}${datadir}/openvswitch
 }
+
+FILES_${PN} += "${datadir}/openvswitch/chandler.conf"

@@ -4,5 +4,5 @@ After=puma_fs.service
 
 [Service]
 EnvironmentFile=/etc/systemd/rsc-server_default.conf
-ExecStart=/usr/bin/rsc-server -i $net_interface -p $tcp_port
+ExecStart=/usr/bin/rsc-server -i $net_interface -p $tcp_port -s -f /var/log/rsc-server.log -d 2 -c 2 -m 1000000
 Type=simple

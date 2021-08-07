@@ -1,8 +1,8 @@
 diff --git a/config/ccsp_tr069_pa_mapper_arm.xml b/config/ccsp_tr069_pa_mapper_arm.xml
-index 7a95923..4935bc9 100644
+index 7a95923..a2d0510 100644
 --- a/config/ccsp_tr069_pa_mapper_arm.xml
 +++ b/config/ccsp_tr069_pa_mapper_arm.xml
-@@ -7203,7 +7203,19 @@
+@@ -7203,7 +7203,25 @@
          <Param>
              <Name>Device.DSLite.InterfaceSetting.{i}.X_RDKCENTRAL-COM_IPv6FragEnable</Name>
          </Param>
@@ -12,13 +12,19 @@ index 7a95923..4935bc9 100644
 +            <Name>Device.X_INANGO_Inangoplug.InangoplugEnable</Name>
 +        </Param>
 +        <Param>
-+            <Name>Device.X_INANGO_Inangoplug.InangoplugLogin</Name>
-+        </Param>
-+        <Param>
-+            <Name>Device.X_INANGO_Inangoplug.InangoplugPassword</Name>
-+        </Param>
-+        <Param>
 +            <Name>Device.X_INANGO_Inangoplug.InangoplugSOServer</Name>
++        </Param>
++         <Param>
++            <Name>Device.X_INANGO_Inangoplug.InangoplugDatapathID</Name>
++        </Param>
++         <Param>
++            <Name>Device.X_INANGO_Inangoplug.InangoplugPrivateKey</Name>
++        </Param>
++        <Param>
++            <Name>Device.X_INANGO_Inangoplug.InangoplugCertificate</Name>
++        </Param>
++         <Param>
++            <Name>Device.X_INANGO_Inangoplug.InangoplugCACertificate</Name>
 +        </Param>
      </ParamList>
  	<RpcMapper>

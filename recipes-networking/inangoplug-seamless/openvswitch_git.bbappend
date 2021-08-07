@@ -11,8 +11,10 @@ RDEPENDS_${PN} += " ${PN}-brcompat ${PN}-testcontroller "
 FILESEXTRAPATHS_prepend := "${THISDIR}/inangoplug_files:${THISDIR}/inangoplug_patches:"
 
 SRCREV = "71d553b995d0bd527d3ab1e9fbaf5a2ae34de2f3"
-SRC_URI_append = " file://ovs-brcompatd.service \
-                 "
+SRC_URI_append = " \
+    file://ovs-brcompatd.service \
+    file://openvswitch.conf \
+    "
 
 PACKAGECONFIG += "pp-offload"
 PACKAGECONFIG[pp-offload] = "--enable-pp-offload, --disable-pp-offload,,"
@@ -84,6 +86,10 @@ do_install_append() {
         ${D}/${systemd_unitdir}/system/openvswitch.service
     install -m 644 ${S}/rhel/usr_lib_systemd_system_ovsdb-server.service \
         ${D}/${systemd_unitdir}/system/ovsdb-server.service
+
+    # Install logrotate config
+    install -d ${D}${sysconfdir}/logrotate.d/
+    install -m 644 ${WORKDIR}/openvswitch.conf ${D}${sysconfdir}/logrotate.d/
 }
 
 # added for compatibility with rdk-mesh

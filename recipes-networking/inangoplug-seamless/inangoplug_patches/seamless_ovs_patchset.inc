@@ -65,5 +65,8 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0063-Commit-Title-Add-support-of-brforward-file-and-stubs-for-nf_disable_-files.patch \
     file://0064-Commit-Title-Open-vSwitch-fails-with-kernel-bug.patch \
     file://0065-Commit-Title-When-starting-the-box-in-ethWAN-mode-erouter0-is-not-ovs-bridge.patch \
+    file://0066-Commit-Title-Send-neighbor-events-to-kernel-from-OVS.patch \
+    file://0067-Commit-Title-LAN-CPE-does-not-get-DHCPv6-Advertise-packet.patch \
+    file://0068-Commit-Title-Integrate-CH.-OVS-daemons-are-restarted-in-case-they-freeze-or-kil.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

@@ -4,7 +4,7 @@ Requires=openvswitch.service
 After=openvswitch.service
 
 [Service]
-ExecStart=/usr/bin/chandler
+ExecStart=/usr/bin/chandler -s -f /var/log/chandler.log -l 3 -r 2 -m 1000000 -c /usr/share/openvswitch/chandler.conf
 
 [Install]
 WantedBy=multi-user.target

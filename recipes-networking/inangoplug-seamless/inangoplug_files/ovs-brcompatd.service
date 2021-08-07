@@ -7,7 +7,7 @@ PartOf=openvswitch.service
 
 [Service]
 Type=forking
-Restart=on-failure
+Restart=always
 EnvironmentFile=/etc/openvswitch/default.conf
 EnvironmentFile=-/nvram/openvswitch.conf
 EnvironmentFile=-/run/openvswitch/useropts

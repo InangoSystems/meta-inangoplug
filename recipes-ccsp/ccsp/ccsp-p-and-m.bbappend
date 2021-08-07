@@ -1,5 +1,5 @@
 FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
 
 SRC_URI_append = " \
-                  file://0010-integrate-inangoplug-management.patch \
+                  file://0054-remove-inangoplug-files.patch   \
                  "

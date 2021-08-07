@@ -1,0 +1,330 @@
+From e83e263ff41de1e8ba101c56f5139361ddf5a386 Mon Sep 17 00:00:00 2001
+From: "Puz, Dmytro" <d.puz@inango-systems.com>
+Date: Fri, 16 Jul 2021 16:18:23 +0300
+Subject: [PATCH] Commit Title          :Send neighbor events to kernel from
+ OVS
+
+BugID                 : 24948
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Added netlink mechanism for sending RTM_NEWNEIGH and RTM_DELNEIGH events to the kernel
+---
+ datapath/datapath.c                               | 123 ++++++++++++++++++++++
+ datapath/linux/compat/include/linux/openvswitch.h |   5 +-
+ lib/dpif-netlink.c                                |  48 +++++++++
+ lib/dpif-netlink.h                                |   4 +
+ lib/mac-learning.c                                |   2 +
+ lib/mac-learning.h                                |   1 +
+ ofproto/ofproto-dpif-xlate.c                      |   8 ++
+ 7 files changed, 190 insertions(+), 1 deletion(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 2cac1a425..c51306568 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -1965,6 +1965,112 @@ static int ovs_dp_cmd_dump(struct sk_buff *skb, struct netlink_callback *cb)
+ 	return skb->len;
+ }
+ 
++static inline size_t rtnl_fdb_nlmsg_size(void)
++{
++        return NLMSG_ALIGN(sizeof(struct ndmsg)) +
++               nla_total_size(ETH_ALEN) +       /* NDA_LLADDR */
++               nla_total_size(sizeof(u16)) +    /* NDA_VLAN */
++               0;
++}
++
++static int ovs_vport_cmd_newneigh(struct sk_buff *skbn, struct genl_info *info)
++{
++    struct nlattr **a = info->attrs;
++    struct nlmsghdr *nlh;
++    struct ndmsg *ndm;
++    struct sk_buff *skb;
++    struct net *net;
++    struct net_device *dev;
++    struct ovs_header *ovs_header = info->userhdr;
++    int ifindex = ovs_header->dp_ifindex;
++    u8 mac_addr[ETH_ALEN];
++
++    if (a[OVS_VPORT_ATTR_MAC]) {
++        struct nlattr *mac_attr = a[OVS_VPORT_ATTR_MAC];
++        memcpy(mac_addr, nla_data(mac_attr), nla_len(mac_attr));
++    } else {
++          goto error;
++    }
++
++    skb = nlmsg_new(rtnl_fdb_nlmsg_size(), GFP_ATOMIC);
++    nlh = nlmsg_put(skb, 0, 0,  RTM_NEWNEIGH, sizeof(*ndm), 0);
++
++    ndm = nlmsg_data(nlh);
++    ndm->ndm_family  = AF_BRIDGE;
++    ndm->ndm_pad1    = 0;
++    ndm->ndm_pad2    = 0;
++    ndm->ndm_flags   = NTF_SELF;
++    ndm->ndm_type    = 0;
++    ndm->ndm_ifindex = ifindex;
++    ndm->ndm_state   = NUD_REACHABLE;
++
++    dev = dev_get_by_index(&init_net, ifindex);
++
++    if (nla_put(skb, NDA_LLADDR, ETH_ALEN, &mac_addr))
++        goto nla_put_failure;
++
++    nlmsg_end(skb, nlh);
++    net = dev_net(dev);
++    rtnl_notify(skb, net, 0, RTNLGRP_NEIGH, NULL, GFP_ATOMIC);
++
++    return 0;
++
++nla_put_failure:
++    nlmsg_cancel(skb, nlh);
++
++error:
++    return -EMSGSIZE;
++}
++
++static int ovs_vport_cmd_delneigh(struct sk_buff *skbn, struct genl_info *info)
++{
++    struct nlattr **a = info->attrs;
++    struct nlmsghdr *nlh;
++    struct ndmsg *ndm;
++    struct sk_buff *skb;
++    struct net *net;
++    struct net_device *dev;
++    struct ovs_header *ovs_header = info->userhdr;
++    int ifindex = ovs_header->dp_ifindex;
++    u8 mac_addr[ETH_ALEN];
++
++    if (a[OVS_VPORT_ATTR_MAC]) {
++        struct nlattr *mac_attr = a[OVS_VPORT_ATTR_MAC];
++        memcpy(mac_addr, nla_data(mac_attr), nla_len(mac_attr));
++    } else {
++          goto error;
++    }
++
++    skb = nlmsg_new(rtnl_fdb_nlmsg_size(), GFP_ATOMIC);
++    nlh = nlmsg_put(skb, 0, 0,  RTM_DELNEIGH, sizeof(*ndm), 0);
++
++    ndm = nlmsg_data(nlh);
++    ndm->ndm_family  = AF_BRIDGE;
++    ndm->ndm_pad1    = 0;
++    ndm->ndm_pad2    = 0;
++    ndm->ndm_flags   = NTF_SELF;
++    ndm->ndm_type    = 0;
++    ndm->ndm_ifindex = ifindex;
++    ndm->ndm_state   = NUD_FAILED;
++
++    dev = dev_get_by_index(&init_net, ifindex);
++
++    if (nla_put(skb, NDA_LLADDR, ETH_ALEN, &mac_addr))
++        goto nla_put_failure;
++
++    nlmsg_end(skb, nlh);
++    net = dev_net(dev);
++    rtnl_notify(skb, net, 0, RTNLGRP_NEIGH, NULL, GFP_ATOMIC);
++
++    return 0;
++
++nla_put_failure:
++    nlmsg_cancel(skb, nlh);
++
++error:
++    return -EMSGSIZE;
++}
++
+ static const struct nla_policy datapath_policy[OVS_DP_ATTR_MAX + 1] = {
+ 	[OVS_DP_ATTR_NAME] = { .type = NLA_NUL_STRING, .len = IFNAMSIZ - 1 },
+ 	[OVS_DP_ATTR_UPCALL_PID] = { .type = NLA_U32 },
+@@ -2473,6 +2579,7 @@ static const struct nla_policy vport_policy[OVS_VPORT_ATTR_MAX + 1] = {
+ 	[OVS_VPORT_ATTR_OPTIONS] = { .type = NLA_NESTED },
+ 	[OVS_VPORT_ATTR_IFINDEX] = { .type = NLA_U32 },
+ 	[OVS_VPORT_ATTR_NETNSID] = { .type = NLA_S32 },
++	[OVS_VPORT_ATTR_MAC] = { .type = NLA_UNSPEC },
+ };
+ 
+ static const struct genl_ops dp_vport_genl_ops[] = {
+@@ -2509,6 +2616,22 @@ static const struct genl_ops dp_vport_genl_ops[] = {
+ 	  .policy = vport_policy,
+ 	  .doit = ovs_vport_cmd_set,
+ 	},
++	{ .cmd = OVS_VPORT_CMD_NEWNEIGH,
++#ifdef HAVE_GENL_VALIDATE_FLAGS
++	  .validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
++#endif
++	  .flags = GENL_UNS_ADMIN_PERM, /* Requires CAP_NET_ADMIN privilege. */
++	  .policy = datapath_policy,
++	  .doit = ovs_vport_cmd_newneigh,
++	},
++	{ .cmd = OVS_VPORT_CMD_DELNEIGH,
++#ifdef HAVE_GENL_VALIDATE_FLAGS
++	  .validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
++#endif
++	  .flags = GENL_UNS_ADMIN_PERM, /* Requires CAP_NET_ADMIN privilege. */
++	  .policy = datapath_policy,
++	  .doit = ovs_vport_cmd_delneigh,
++	},
+ };
+ 
+ struct genl_family dp_vport_genl_family __ro_after_init = {
+diff --git a/datapath/linux/compat/include/linux/openvswitch.h b/datapath/linux/compat/include/linux/openvswitch.h
+index b72346eb9..aab03612d 100644
+--- a/datapath/linux/compat/include/linux/openvswitch.h
++++ b/datapath/linux/compat/include/linux/openvswitch.h
+@@ -235,7 +235,9 @@ enum ovs_vport_cmd {
+ 	OVS_VPORT_CMD_NEW,
+ 	OVS_VPORT_CMD_DEL,
+ 	OVS_VPORT_CMD_GET,
+-	OVS_VPORT_CMD_SET
++	OVS_VPORT_CMD_SET,
++	OVS_VPORT_CMD_NEWNEIGH,
++	OVS_VPORT_CMD_DELNEIGH
+ };
+ 
+ enum ovs_vport_type {
+@@ -292,6 +294,7 @@ enum ovs_vport_attr {
+ 	OVS_VPORT_ATTR_NAME,	/* string name, up to IFNAMSIZ bytes long */
+ 	OVS_VPORT_ATTR_OPTIONS, /* nested attributes, varies by vport type */
+ 	OVS_VPORT_ATTR_UPCALL_PID, /* array of u32 Netlink socket PIDs for */
++	OVS_VPORT_ATTR_MAC,     /* mac address */
+ 				/* receiving upcalls */
+ 	OVS_VPORT_ATTR_STATS,	/* struct ovs_vport_stats */
+ 	OVS_VPORT_ATTR_PAD,
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index 9a55b1a60..128fc786f 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -4174,6 +4174,12 @@ dpif_netlink_vport_to_ofpbuf(const struct dpif_netlink_vport *vport,
+         nl_msg_put_nested(buf, OVS_VPORT_ATTR_OPTIONS,
+                           vport->options, vport->options_len);
+     }
++
++    if (vport->cmd == OVS_VPORT_CMD_NEWNEIGH || vport->cmd == OVS_VPORT_CMD_DELNEIGH) {
++        nl_msg_put_unspec(buf, OVS_VPORT_ATTR_MAC,
++                          vport->ea,
++                          sizeof(vport->ea));
++    }
+ }
+ 
+ /* Clears 'vport' to "empty" values. */
+@@ -4243,6 +4249,48 @@ dpif_netlink_vport_get(const char *name, struct dpif_netlink_vport *reply,
+     return dpif_netlink_vport_transact(&request, reply, bufp);
+ }
+ 
++static int
++dpif_netlink_mac_send(int ifindex, const struct eth_addr src_mac, uint8_t cmd)
++{
++    struct dpif_netlink_vport request;
++
++    dpif_netlink_vport_init(&request);
++    request.cmd = cmd;
++    request.dp_ifindex = ifindex;
++
++    memcpy(request.ea, src_mac.ea, sizeof(src_mac.ea));
++
++    return dpif_netlink_vport_transact(&request, NULL, NULL);
++}
++
++int
++dpif_netlink_rtm_newneigh(int ifindex, const struct eth_addr src_mac)
++{
++    int error;
++
++    error = dpif_netlink_mac_send(ifindex, src_mac, OVS_VPORT_CMD_NEWNEIGH);
++
++    if (!error) {
++        return -1;
++    } 
++
++    return 0;
++}
++
++int
++dpif_netlink_rtm_delneigh(int ifindex, const struct eth_addr src_mac)
++{
++    int error;
++
++    error = dpif_netlink_mac_send(ifindex, src_mac, OVS_VPORT_CMD_DELNEIGH);
++
++    if (!error) {
++        return -1;
++    } 
++
++    return 0;
++}
++
+ /* Parses the contents of 'buf', which contains a "struct ovs_header" followed
+  * by Netlink attributes, into 'dp'.  Returns 0 if successful, otherwise a
+  * positive errno value.
+diff --git a/lib/dpif-netlink.h b/lib/dpif-netlink.h
+index 24294bc42..4e1b93855 100644
+--- a/lib/dpif-netlink.h
++++ b/lib/dpif-netlink.h
+@@ -45,6 +45,7 @@ struct dpif_netlink_vport {
+     const uint32_t *upcall_pids;           /* OVS_VPORT_ATTR_UPCALL_PID. */
+     const struct ovs_vport_stats *stats;   /* OVS_VPORT_ATTR_STATS. */
+     const struct nlattr *options;          /* OVS_VPORT_ATTR_OPTIONS. */
++    uint8_t ea[6];                         /* OVS_VPORT_ATTR_MAC. */
+     size_t options_len;
+ };
+ 
+@@ -56,6 +57,9 @@ int dpif_netlink_vport_transact(const struct dpif_netlink_vport *request,
+ int dpif_netlink_vport_get(const char *name, struct dpif_netlink_vport *reply,
+                            struct ofpbuf **bufp);
+ 
++int dpif_netlink_rtm_newneigh(int ifindex, const struct eth_addr src_mac);
++int dpif_netlink_rtm_delneigh(int ifindex, const struct eth_addr src_mac);
++
+ bool dpif_netlink_is_internal_device(const char *name);
+ 
+ enum ovs_vport_type netdev_to_ovs_vport_type(const char *type);
+diff --git a/lib/mac-learning.c b/lib/mac-learning.c
+index f6183480d..0e05df4da 100644
+--- a/lib/mac-learning.c
++++ b/lib/mac-learning.c
+@@ -338,6 +338,7 @@ mac_learning_insert(struct mac_learning *ml,
+         e->mlport = NULL;
+         COVERAGE_INC(mac_learning_learned);
+         ml->total_learned++;
++        dpif_netlink_rtm_newneigh(ml->ifindex, e->mac);
+     } else {
+         ovs_list_remove(&e->lru_node);
+     }
+@@ -512,6 +513,7 @@ mac_learning_expire(struct mac_learning *ml, struct mac_entry *e)
+ {
+     ml->need_revalidate = true;
+     mac_entry_set_port(ml, e, NULL);
++    dpif_netlink_rtm_delneigh(ml->ifindex, e->mac);
+     hmap_remove(&ml->table, &e->hmap_node);
+     ovs_list_remove(&e->lru_node);
+     free(e);
+diff --git a/lib/mac-learning.h b/lib/mac-learning.h
+index ad2f1fe4e..c1050f047 100644
+--- a/lib/mac-learning.h
++++ b/lib/mac-learning.h
+@@ -159,6 +159,7 @@ struct mac_learning {
+     struct ovs_refcount ref_cnt;
+     struct ovs_rwlock rwlock;
+     bool need_revalidate;
++    int ifindex;
+ 
+     /* Statistics */
+     uint64_t total_learned;
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 7c14a01f3..798e2f34c 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2566,6 +2566,14 @@ update_learning_table__(const struct xbridge *xbridge,
+                         struct xbundle *in_xbundle, struct eth_addr dl_src,
+                         int vlan, bool is_grat_arp)
+ {
++    struct netdev *netdev;
++    struct xport *xport;
++    xport = CONTAINER_OF(ovs_list_front(&in_xbundle->xports), struct xport,
++                             bundle_node);
++
++    netdev = xport->netdev;
++    xbridge->ml->ifindex = netdev_get_ifindex(netdev);
++
+     return (in_xbundle == &ofpp_none_bundle
+             || !mac_learning_update(xbridge->ml, dl_src, vlan,
+                                     is_grat_arp,

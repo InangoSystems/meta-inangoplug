@@ -1,0 +1,16 @@
+diff --git a/source-arm/TR-181/board_sbapi/cosa_x_cisco_com_devicecontrol_apis.c b/source-arm/TR-181/board_sbapi/cosa_x_cisco_com_devicecontrol_apis.c
+index 4aa9b71..284100c 100755
+--- a/source-arm/TR-181/board_sbapi/cosa_x_cisco_com_devicecontrol_apis.c
++++ b/source-arm/TR-181/board_sbapi/cosa_x_cisco_com_devicecontrol_apis.c
+@@ -1744,6 +1744,11 @@ void* restoreAllDBs(void* arg)
+     v_secure_system("rm -f /nvram/.FirmwareUpgradeEndTime");
+     v_secure_system("rm -f /nvram/.FirmwareUpgradeStartTime");
+ 
++    //Remove Inangoplug's files
++    v_secure_system("rm -f /nvram/openvswitch/inangoplug-sc-privkey.pem");
++    v_secure_system("rm -f /nvram/openvswitch/inangoplug-sc-cert.pem");
++    v_secure_system("rm -f /nvram/openvswitch/inangoplug-cacert.pem");
++
+ 	// We have syscfg running on the ATOM side when mesh is running. We need to clear out the
+     // syscfg.db on the ATOM side during factory reset.
+ #if defined(_COSA_INTEL_USG_ARM_)
