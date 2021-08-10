@@ -1,0 +1,236 @@
+From bb04ef8a2c80b182744383db5d454e24b0ab243f Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Tue, 10 Aug 2021 03:30:41 +0300
+Subject: [PATCH] =?UTF-8?q?Commit=20Title=20=20=20=20=20=20=20=20=20=20:?=
+ =?UTF-8?q?=20Error=20on=20start=20"=D1=81ould=20not=20open=20network=20de?=
+ =?UTF-8?q?vice=20tmp2=20(No=20such=20device)"?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+BugID                 : 25268
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Added list to brcompat module in order to exclude simultaneously netlink interactions.
+---
+ datapath/brcompat_main.c | 104 +++++++++++++++++++++++++++++++++++++++++++----
+ datapath/datapath.c      |   7 ++++
+ datapath/datapath.h      |   1 +
+ 3 files changed, 105 insertions(+), 7 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index fc375e4ae..a5dd024b6 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -108,6 +108,7 @@ static DEFINE_SPINLOCK(brc_lock);    /* Ensure atomic access to these vars. */
+ static DECLARE_COMPLETION(brc_done); /* Userspace signaled operation done? */
+ static struct sk_buff *brc_reply;    /* Reply from userspace. */
+ static u32 brc_seq;		     /* Sequence number for current op. */
++static br_pair_t *head = NULL;       /* Bridge-interface pairs sor sysfs*/
+ 
+ static bool check_bridge_list(const char *name);
+ static struct sk_buff *brc_send_command(struct net *,
+@@ -227,7 +228,7 @@ static int brc_get_string(struct net_device *dev, int oper, char *ustring)
+ 	struct nlattr *attrs[BRC_GENL_A_MAX + 1];
+ 	struct sk_buff *request, *reply;
+ 	char *string;
+-	int ret;
++	int ret = 0;
+ 	int len;
+ 
+ 	request = brc_make_request(oper, dev->name, NULL);
+@@ -243,18 +244,20 @@ static int brc_get_string(struct net_device *dev, int oper, char *ustring)
+ 	if (ret < 0)
+ 		goto exit_free_skb;
+ 
+-	ret = -EINVAL;
+-	if (!attrs[BRC_GENL_A_GET_STRING])
++	if (!attrs[BRC_GENL_A_GET_STRING]) {
++		ret = -EINVAL;
+ 		goto exit_free_skb;
++	}
+ 
+ 	len = nla_len(attrs[BRC_GENL_A_GET_STRING]);
+ 	string = nla_data(attrs[BRC_GENL_A_GET_STRING]);
+ 
+-	if(string == NULL)
++	if(string == NULL) {
++		ret = -EINVAL;
+ 		goto exit_free_skb;
+-	else
++	} else {
+ 		memcpy(ustring, string, len);
+-
++	}
+ exit_free_skb:
+ 	kfree_skb(reply);
+ exit:
+@@ -345,6 +348,73 @@ brc_ioctl_deviceless_stub(struct net *net, unsigned int cmd, void __user *uarg)
+ 	return -EOPNOTSUPP;
+ }
+ 
++static br_pair_t* getLast(void)
++{
++	br_pair_t* curr = head;
++
++	while (curr->next)
++		curr = curr->next;
++
++	return curr;
++}
++
++static void pushBack(char *bridge, char *port)
++{
++	br_pair_t *tmp;
++	br_pair_t* curr;
++
++	for (curr = head; curr != NULL; curr = curr->next)
++		if (!strcmp(curr->prname, port) && !strcmp(curr->brname, bridge))
++			return;
++
++	tmp = (br_pair_t*)kmalloc(sizeof(br_pair_t),GFP_KERNEL);
++	tmp->brname = bridge;
++	tmp->prname = port;
++	tmp->next = NULL;
++
++	if (head == NULL) {
++		head = tmp;
++	} else {
++		br_pair_t *last = getLast();
++		last->next = tmp;
++	}
++}
++
++static void delete_node(char * name)
++{
++	br_pair_t* curr = head;
++	br_pair_t* prev = NULL;
++
++	if(curr == NULL)
++		return;
++
++	while((strcmp(curr->prname, name))) {
++		if(curr->next == NULL) {
++			return;
++		} else {
++			prev = curr;
++			curr = curr->next;
++		}
++	}
++
++	if(curr == head)
++		head = head->next;
++	else
++		prev->next = curr->next;
++
++	kfree(curr);
++}
++
++void brc_add_del_entry_to_brlist(struct net_device *br_dev, struct net_device *p_dev, bool add)
++{
++	mutex_lock(&brc_serial);
++	if(add)
++		pushBack(br_dev->name, p_dev->name);
++	else
++		delete_node(p_dev->name);
++
++	mutex_unlock(&brc_serial);
++}
+ 
+ static int brc_add_del_port(struct net_device *dev, int port_ifindex, int add)
+ {
+@@ -366,6 +436,13 @@ static int brc_add_del_port(struct net_device *dev, int port_ifindex, int add)
+ 	if (!request)
+ 		return -ENOMEM;
+ 
++	mutex_lock(&brc_serial);
++	if(add == 1)
++		pushBack(dev->name, port->name);
++	else
++		delete_node(port->name);
++	mutex_unlock(&brc_serial);
++
+ 	rtnl_unlock();
+ 	err = brc_send_simple_command(dev_net(dev), request);
+ 	rtnl_lock();
+@@ -778,8 +855,17 @@ static int brc_dev_sysfs_string(struct net_device *dev, char *ustring, int cmd)
+ 	switch (cmd) {
+ 	case BRC_GENL_C_GET_BRIDGE_ROOT_ID:
+ 		return brc_get_string(dev, BRC_GENL_C_GET_BRIDGE_ROOT_ID, ustring);
+-	case BRC_GENL_C_GET_BRIDGE_BY_PORT:
++	case BRC_GENL_C_GET_BRIDGE_BY_PORT: {
++		br_pair_t *iter = head;
++		while(iter) {
++			if(strcmp(iter->prname, dev->name) == 0) {
++				memcpy(ustring, iter->brname, IFNAMSIZ);
++				return 0;
++			}
++			iter = iter->next;
++		}
+ 		return brc_get_string(dev, BRC_GENL_C_GET_BRIDGE_BY_PORT, ustring);
++	}
+ 
+ 	default:
+ 		err = -1;
+@@ -1007,6 +1093,8 @@ static int __init brc_init(void)
+ 	ovs_dp_sysfs_string_hook = brc_dev_sysfs_string;
+ 
+ 	ovs_get_fdb_entries = brc_get_fdb_entries;
++	/* Set the openvswitch device handler to add/del ports in list */
++	ovs_add_del_entry_to_brlist = brc_add_del_entry_to_brlist;
+ 
+ #ifdef CONFIG_LTQ_MCAST_SNOOPING
+ 	/* Set multicast snooping hooks */
+@@ -1038,6 +1126,8 @@ static void brc_cleanup(void)
+ 
+ 	/* Unregister brc_get_fdb_entries */
+ 	ovs_get_fdb_entries = NULL;
++	/* Unregister the openvswitch device handler to add/del ports in list */
++	ovs_add_del_entry_to_brlist = NULL;
+ 
+ 	/* Back the hook of the linux bridge to socket module */
+ 	brioctl_set(bridge_ioctl_hook);
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index c51306568..6ffcb9e27 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -85,6 +85,9 @@ int (*ovs_get_fdb_entries)(struct net_device *dev, void *user,
+ 			       unsigned long maxnum, unsigned long offset, bool is_user_buf);
+ EXPORT_SYMBOL(ovs_get_fdb_entries);
+ 
++void (*ovs_add_del_entry_to_brlist)(struct net_device *br_dev, struct net_device *p_dev, bool add) = NULL;
++EXPORT_SYMBOL(ovs_add_del_entry_to_brlist);
++
+ static struct genl_family dp_packet_genl_family;
+ static struct genl_family dp_flow_genl_family;
+ static struct genl_family dp_datapath_genl_family;
+@@ -332,6 +335,8 @@ void ovs_dp_detach_port(struct vport *p)
+ 
+ 	if (p->port_no != OVSP_LOCAL) {
+ 		ovs_dp_sysfs_del_if(p);
++		if (ovs_add_del_entry_to_brlist)
++			ovs_add_del_entry_to_brlist(NULL, p->dev, false);
+ 	}
+ 
+ 	dp_ifinfo_notify(RTM_DELLINK, p);
+@@ -2373,6 +2378,8 @@ restart:
+ 			goto cont_wo_sysfs;
+ 
+ 		ovs_dp_sysfs_add_if(vport, br);
++		if (ovs_add_del_entry_to_brlist)
++			ovs_add_del_entry_to_brlist(br->dev, vport->dev, true);
+ 	}
+ 
+ cont_wo_sysfs:
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index 31fb0fec9..394a55a4b 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -267,6 +267,7 @@ extern int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cm
+ extern int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
+ extern int (*ovs_dp_sysfs_string_hook)(struct net_device *dev, char *ustring, int cmd);
+ extern int (*ovs_get_fdb_entries)(struct net_device *dev, void *userbuf, unsigned long maxnum, unsigned long offset, bool is_user_buf);
++extern void (*ovs_add_del_entry_to_brlist)(struct net_device *br_dev, struct net_device *p_dev, bool add);
+ 
+ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key);
+ void ovs_dp_detach_port(struct vport *);

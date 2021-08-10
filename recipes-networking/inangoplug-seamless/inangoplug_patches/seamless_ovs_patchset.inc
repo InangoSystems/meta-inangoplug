@@ -68,5 +68,7 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0066-Commit-Title-Send-neighbor-events-to-kernel-from-OVS.patch \
     file://0067-Commit-Title-LAN-CPE-does-not-get-DHCPv6-Advertise-packet.patch \
     file://0068-Commit-Title-Integrate-CH.-OVS-daemons-are-restarted-in-case-they-freeze-or-kil.patch \
+    file://0069-Commit-Title-Error-on-start-ould-not-open-network-device-tmp2-No-such-device.patch \
+    file://0070-Commit-Title-add-dev-put-after-get-device.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

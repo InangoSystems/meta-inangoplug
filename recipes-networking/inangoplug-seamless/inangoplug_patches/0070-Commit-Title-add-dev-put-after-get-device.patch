@@ -1,0 +1,101 @@
+From d7c01f804ccbd7cbec2e6fa98cce62c1cbb9b954 Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Mon, 9 Aug 2021 23:13:08 +0500
+Subject: [PATCH] Commit Title          : add dev put after get device
+
+BugID                 : 25298
+Bug Fixed(y/N[blankN]): y
+CodeReviewId          : 0
+Description           :
+- use dev_put for each place when we get dev via dev_get_by_ifindex
+---
+ datapath/brcompat_main.c | 7 +++++--
+ datapath/datapath.c      | 5 ++++-
+ datapath/vport-netdev.c  | 2 ++
+ 3 files changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index a5dd024b6..2bfe14fac 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -728,8 +728,10 @@ static int brc_mc_snoop_set_router_port(struct net_device *br_dev, struct ifreq
+ 		return -EINVAL;
+ 
+ 	request = brc_make_request(BRC_GENL_C_SET_MCSNOOP_ROUT_PORT, br_dev->name, p_dev->name);
+-	if (!request)
++	if (!request){
++		dev_put(p_dev);
+ 		return -ENOMEM;
++	}
+ 
+ 	if (nla_put_u64_64bit(request, BRC_GENL_A_ULONG_VAL, mcs_rp.type, BRC_GENL_A_PAD))
+ 		goto nla_put_failure;
+@@ -739,10 +741,11 @@ static int brc_mc_snoop_set_router_port(struct net_device *br_dev, struct ifreq
+ 	rtnl_unlock();
+ 	err = brc_send_simple_command(dev_net(br_dev), request);
+ 	rtnl_lock();
+-
++	dev_put(p_dev);
+ 	return err;
+ 
+ nla_put_failure:
++	dev_put(p_dev);
+ 	kfree_skb(request);
+ 	return -ENOMEM;
+ }
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 6ffcb9e27..a720db4ce 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -2017,13 +2017,14 @@ static int ovs_vport_cmd_newneigh(struct sk_buff *skbn, struct genl_info *info)
+     nlmsg_end(skb, nlh);
+     net = dev_net(dev);
+     rtnl_notify(skb, net, 0, RTNLGRP_NEIGH, NULL, GFP_ATOMIC);
+-
++	dev_put(dev);
+     return 0;
+ 
+ nla_put_failure:
+     nlmsg_cancel(skb, nlh);
+ 
+ error:
++	dev_put(dev);
+     return -EMSGSIZE;
+ }
+ 
+@@ -2066,6 +2067,7 @@ static int ovs_vport_cmd_delneigh(struct sk_buff *skbn, struct genl_info *info)
+     nlmsg_end(skb, nlh);
+     net = dev_net(dev);
+     rtnl_notify(skb, net, 0, RTNLGRP_NEIGH, NULL, GFP_ATOMIC);
++	dev_put(dev);
+ 
+     return 0;
+ 
+@@ -2073,6 +2075,7 @@ nla_put_failure:
+     nlmsg_cancel(skb, nlh);
+ 
+ error:
++	dev_put(dev);
+     return -EMSGSIZE;
+ }
+ 
+diff --git a/datapath/vport-netdev.c b/datapath/vport-netdev.c
+index 227df2604..7aa6b8e12 100644
+--- a/datapath/vport-netdev.c
++++ b/datapath/vport-netdev.c
+@@ -114,6 +114,7 @@ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
+ 
+ 	/* Create symlink from /sys/class/net/<devname>/master to
+ 	 * /sys/class/net/<bridgename>. */
++	#if 0
+ 	if (!ovs_is_internal_dev(vport->dev)) {
+ 		char bridgeName[IFNAMSIZ] = {0};
+ 
+@@ -129,6 +130,7 @@ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
+ 			goto error_put;
+ 		}
+ 	}
++	#endif
+ 
+ 	rtnl_lock();
+ 	err = netdev_master_upper_dev_link(vport->dev,
