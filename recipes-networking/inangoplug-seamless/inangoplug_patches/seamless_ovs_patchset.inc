@@ -70,5 +70,11 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0068-Commit-Title-Integrate-CH.-OVS-daemons-are-restarted-in-case-they-freeze-or-kil.patch \
     file://0069-Commit-Title-Error-on-start-ould-not-open-network-device-tmp2-No-such-device.patch \
     file://0070-Commit-Title-add-dev-put-after-get-device.patch \
+    file://0071-Commit-Title-Wrong-return-value-when-add-del-port-operation-performed.patch \
+    file://0072-Commit-Title-Can-t-remove-bridge-via-brctl-when-bridge-configured-as-master.patch \
+    file://0073-Commit-Title-brlan0-bridge-has-another-MAC-address-comparing-with-reference-ima.patch \
+    file://0074-Commit-Title-OVS-use-new-PP-API.patch \
+    file://0075-Commit-Title-OVS-fixed-typos.patch \
+    file://0076-Commit-Title-Moved-setting-callback-to-DP-init.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

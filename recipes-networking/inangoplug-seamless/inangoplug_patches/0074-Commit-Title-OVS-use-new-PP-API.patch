@@ -1,0 +1,180 @@
+From c65342fa306f71c7b1dd391e0e9b6a6f51904cb0 Mon Sep 17 00:00:00 2001
+From: Oleksii Poshyvailo <o.poshyvailo@inango-systems.com>
+Date: Mon, 16 Aug 2021 20:14:32 +0300
+Subject: [PATCH] Commit Title: OVS: use new PP API
+
+BugID: 25362
+Bug Fixed(y/N[blankN]):
+CodeReviewId: 0
+Description:
+
+* Updated API of PP used by OVS
+* Added callback for setting AM session ID for OVS flows by UFIDs
+---
+ datapath/am_pp.c           | 39 ++++++++++++++++++++++++++++++++++++---
+ datapath/am_pp.h           |  2 +-
+ datapath/datapath.c        |  2 +-
+ datapath/translate_dp_am.c | 30 ++++++++++++++++++++++++++++++
+ datapath/translate_dp_am.h |  3 +++
+ 5 files changed, 71 insertions(+), 5 deletions(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index 7915d7d3c..0ce4f4838 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -27,6 +27,9 @@
+ #include "am_pp.h"
+ #include "datapath.h"
+ 
++static int is_callback_set = 0;
++static notify_datapath = NULL;
++
+ static void update_flow_am_stats(struct sw_flow *flow, struct pp_am_stats *stats)
+ {
+ 	flow->am_stats.packets = stats->packets;
+@@ -34,6 +37,25 @@ static void update_flow_am_stats(struct sw_flow *flow, struct pp_am_stats *stats
+ 	flow->am_stats.last_used = stats->last_used;
+ }
+ 
++int notify_am_id(u32 ufid[PP_AM_MAX_UFID_LENGTH], u32 am_id)
++{
++	struct sw_flow *flow = NULL;
++
++	if (!notify_datapath) {
++		return -1;
++	}
++
++	struct sw_flow_id id = {
++		.ufid_len = MAX_UFID_LENGTH
++	};
++	memcpy(&id.ufid, ufid, sizeof(ufid));
++
++	flow = ovs_flow_tbl_lookup_ufid(&notify_datapath->table, ufid);
++	flow->pp_am_id = am_id;
++
++	return 0;
++}
++
+ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_flag)
+ {
+ 	struct pm_am_session new_session;
+@@ -47,6 +69,12 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 	if (err)
+ 		return err;
+ 
++	if (!is_callback_set) {
++		notify_datapath = dp;
++		pp_am_set_am_id_by_ufid_callback(notify_am_id);
++		is_callback_set = 1;
++	}
++
+ 	new_session.proactive_session = proactive_flag;
+ 
+ 	err = pp_am_create_session(&new_session, &flow->pp_am_id);
+@@ -57,9 +85,10 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 	return err;
+ }
+ 
+-int am_mod_session(struct datapath *dp, struct sw_flow *flow)
++int am_mod_session(struct datapath *dp, struct sw_flow *flow, sw_flow_actions *old_acts)
+ {
+ 	struct pm_am_session new_session;
++	struct pm_am_session old_session;
+ 	int err;
+ 
+ 	if (!dp || !flow)
+@@ -73,9 +102,13 @@ int am_mod_session(struct datapath *dp, struct sw_flow *flow)
+ 	if (err)
+ 		return err;
+ 
+-	err = pp_am_modify_session(&new_session, &flow->pp_am_id);
++	err = translate_to_am_session_old_acts(dp, flow, &old_session, old_acts);
++	if (err)
++		return err;
++
++	err = pp_am_modify_session(&new_session, &old_session,  &flow->pp_am_id);
+ 
+-	if (err != PP_AM_OK)
++	if (err != PP_AM_OK || err_old_acts != PP_AM_OK)
+ 		flow->acl_state = NOT_ACCELERATE;
+ 
+ 	return err;
+diff --git a/datapath/am_pp.h b/datapath/am_pp.h
+index 26c4d89a5..4abc474c1 100644
+--- a/datapath/am_pp.h
++++ b/datapath/am_pp.h
+@@ -37,7 +37,7 @@ enum acl_state {
+ };
+ 
+ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_flag);
+-int am_mod_session(struct datapath *dp, struct sw_flow *flow);
++int am_mod_session(struct datapath *dp, struct sw_flow *flow, sw_flow_actions *old_acts);
+ int am_remove_session(struct sw_flow *flow);
+ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *stats, unsigned long *used);
+ void am_skb_preprocessing(pp_am_skb_process_action action, struct sw_flow *flow/*const struct sw_flow_id *ufid*/, struct sk_buff *skb);
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 91bed3245..4feb3012e 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -1166,7 +1166,7 @@ static int ovs_flow_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 		/* Update actions. */
+ 		old_acts = ovsl_dereference(flow->sf_acts);
+ 		rcu_assign_pointer(flow->sf_acts, acts);
+-		am_mod_session(dp, flow);
++		am_mod_session(dp, flow, old_acts);
+ 
+ 		if (unlikely(reply)) {
+ 			error = ovs_flow_cmd_fill_info(flow,
+diff --git a/datapath/translate_dp_am.c b/datapath/translate_dp_am.c
+index ae7a060b6..310056b7c 100644
+--- a/datapath/translate_dp_am.c
++++ b/datapath/translate_dp_am.c
+@@ -361,3 +361,33 @@ int translate_to_am_session(struct datapath *dp, struct sw_flow *flow,
+ 
+ 	return err;
+ }
++
++int translate_to_am_session_old_acts(struct datapath *dp, struct sw_flow *flow,
++                    struct pm_am_session *session, sw_flow_actions * old_acts)
++{
++	int err;
++	struct vport *port;
++
++	if (!dp || !flow || !session)
++		return -EINVAL;
++
++	memset(session, 0, sizeof(struct pm_am_session));
++
++	err = translate_to_egr_prop(dp, old_acts, &flow->key, session);
++
++	memcpy(&session->match.ingress, &flow->key, sizeof(struct pp_am_flow_key));
++
++	port = ovs_vport_rcu(dp, flow->key.phy.in_port);
++	if (port && port->dev)
++		session->match.ingress_port = port->dev->ifindex;
++
++	session->wildcard = (struct pp_am_flow_mask *)flow->mask;
++	memcpy(&session->ufid, &flow->id, sizeof(struct pp_am_flow_id));
++	session->idle_timeout = -1;
++	session->hard_timeout = -1;
++	session->actions = (struct pp_am_flow_actions *)old_acts;
++	session->proactive_session = false;
++	session->routing = flow->flow_type;
++
++	return err;
++}
+\ No newline at end of file
+diff --git a/datapath/translate_dp_am.h b/datapath/translate_dp_am.h
+index f2cf6f12b..f4dcf6376 100644
+--- a/datapath/translate_dp_am.h
++++ b/datapath/translate_dp_am.h
+@@ -50,6 +50,9 @@ int translate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *act
+ int translate_to_am_session(struct datapath *dp, struct sw_flow *flow,
+                                               struct pm_am_session *session);
+ 
++int translate_to_am_session_old_acts(struct datapath *dp, struct sw_flow *flow,
++                    struct pm_am_session *session, sw_flow_actions * old_acts);
++
+ static inline void invalidate_flow_key(struct sw_flow_key *key)
+ {
+ 	key->mac_proto |= SW_FLOW_KEY_INVALID;

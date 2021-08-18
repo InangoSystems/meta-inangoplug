@@ -16,9 +16,8 @@ SRC_URI_append = " \
     file://openvswitch.conf \
     "
 
-PACKAGECONFIG += "pp-offload"
+PACKAGECONFIG += "pp-offload ssl"
 PACKAGECONFIG[pp-offload] = "--enable-pp-offload, --disable-pp-offload,,"
-
 EXTRA_OECONF_class-target += "--with-linux=${STAGING_KERNEL_BUILDDIR} \
                               --with-linux-source=${STAGING_KERNEL_DIR} \
                               KARCH=x86 \

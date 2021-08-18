@@ -1,0 +1,20 @@
+diff --git a/source/scripts/init/defaults/system_defaults_arm b/source/scripts/init/defaults/system_defaults_arm
+index 0276cd0..6e59772 100755
+--- a/source/scripts/init/defaults/system_defaults_arm
++++ b/source/scripts/init/defaults/system_defaults_arm
+@@ -1020,6 +1020,7 @@ $X_RDKCENTRAL-COM_NotifyComp_LogLevel=4
+ $X_RDKCENTRAL-COM_Wecb_LogLevel=4
+ $X_RDKCENTRAL-COM_PowerMgr_LogLevel=4
+ $X_RDKCENTRAL-COM_EthAgent_LogLevel=4
++$X_INANGO_Inangoplug_LogLevel=4
+ 
+ # RDK LogEnable
+ $X_RDKCENTRAL-COM_LoggerEnable=1
+@@ -1035,6 +1036,7 @@ $X_RDKCENTRAL-COM_NotifyComp_LoggerEnable=1
+ $X_RDKCENTRAL-COM_Wecb_LoggerEnable=1
+ $X_RDKCENTRAL-COM_PowerMgr_LoggerEnable=1
+ $X_RDKCENTRAL-COM_EthAgent_LoggerEnable=1
++$X_INANGO_Inangoplug_LoggerEnable=1
+ 
+ # RDK Xi5 MoCA Enable
+ $X_RDKCENTRAL-COM_EnableMoCAforXi5=false

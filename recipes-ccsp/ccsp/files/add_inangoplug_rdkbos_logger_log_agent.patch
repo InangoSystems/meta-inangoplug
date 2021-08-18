@@ -1,0 +1,150 @@
+diff --git a/scripts/LogAgent.xml b/scripts/LogAgent.xml
+index 5831277..1aff474 100644
+--- a/scripts/LogAgent.xml
++++ b/scripts/LogAgent.xml
+@@ -254,6 +254,18 @@
+             <syntax>bool</syntax>
+             <writable>true</writable>
+         </parameter>
++        <parameter>
++            <name>X_INANGO_Inangoplug_LogLevel</name>
++            <type>unsignedInt</type>
++            <syntax>uint32</syntax>
++            <writable>true</writable>
++        </parameter>
++        <parameter>
++            <name>X_INANGO_Inangoplug_LoggerEnable</name>
++            <type>boolean</type>
++            <syntax>bool</syntax>
++            <writable>true</writable>
++        </parameter>
+       </parameters>
+     </object>
+  </objects>
+diff --git a/source/LogComponent/cosa_apis_logagentplugin.c b/source/LogComponent/cosa_apis_logagentplugin.c
+index 6557723..be2961f 100755
+--- a/source/LogComponent/cosa_apis_logagentplugin.c
++++ b/source/LogComponent/cosa_apis_logagentplugin.c
+@@ -40,6 +40,7 @@
+ #define MESH_PROC_NAME "meshAgent"
+ #define ETHAGENT_PROC_NAME "CcspEthAgent"
+ #define TELCOVOIPAGENT_PROC_NAME "telcovoip_agent"
++#define INANGOPLUG_PROC_NAME "inangoplug_component"
+ /*RDKB-7469, CID-33124, defines*/
+ #define LOGAGENT_MAX_MSG_LENGTH    256
+ #define LOGAGENT_MAX_BUF_SIZE      241
+@@ -343,6 +344,20 @@ LogAgent_GetParamUlongValue
+             *puLong  = TELCOVOIPAGENT_RDKLogLevel;
+             return TRUE;
+         }
++    if (AnscEqualString(ParamName, "X_INANGO_Inangoplug_LogLevel", TRUE))
++    {
++       syscfg_get( NULL, "X_INANGO_Inangoplug_LogLevel", buf, sizeof(buf));
++       if( buf[0] != '\0' )
++       {
++            *puLong  = (ULONG )atoi(buf);
++            INANGOPLUG_RDKLogLevel = *puLong;
++        }
++        else
++        {
++            AnscTraceWarning(("Error in syscfg_get for INANGOPLUG_LogLevel\n"));
++        }
++        return TRUE;
++    }
+         return FALSE;
+ }
+  /**********************************************************************  
+@@ -803,6 +818,25 @@ LogAgent_SetParamUlongValue
+     }
+ #endif /* _HUB4_PRODUCT_REQ_ */
+ 
++    if (AnscEqualString(ParamName, "X_INANGO_Inangoplug_LogLevel", TRUE))
++    {
++        char buf[8]={ 0 };
++        INANGOPLUG_RDKLogLevel = uValue;
++        snprintf(buf,sizeof(buf),"%lu",uValue);
++        if (syscfg_set(NULL, "X_INANGO_Inangoplug_LogLevel", buf) != 0)
++        {
++            AnscTraceWarning(("syscfg_set failed\n"));
++        }
++        else
++        {
++            if (syscfg_commit() != 0)
++            {
++                AnscTraceWarning(("syscfg_commit failed\n"));
++            }
++        }
++        SendSignal(INANGOPLUG_PROC_NAME);
++        return TRUE;
++    }
+ 	return FALSE;
+ }
+      
+@@ -1259,6 +1293,20 @@ LogAgent_GetParamBoolValue
+         return TRUE;
+     }
+ 
++    if (AnscEqualString(ParamName, "X_INANGO_Inangoplug_LoggerEnable", TRUE))
++    {
++        syscfg_get( NULL, "X_INANGO_Inangoplug_LoggerEnable", buf, sizeof(buf));
++        if( buf[0] != '\0' )
++        {
++            *pBool = (BOOL)atoi(buf);
++             INANGOPLUG_RDKLogEnable = *pBool;
++        }
++        else
++        {
++            AnscTraceWarning(("Error in syscfg_get for INANGOPLUG_LoggerEnable\n"));
++        }
++        return TRUE;
++    }
+     /* AnscTraceWarning(("Unsupported parameter '%s'\n", ParamName)); */
+     return FALSE;
+ }
+@@ -1603,6 +1651,25 @@ LogAgent_SetParamBoolValue
+     }
+ #endif /* _HUB4_PRODUCT_REQ_ */
+ 
++    if (AnscEqualString(ParamName, "X_INANGO_Inangoplug_LoggerEnable", TRUE))
++    {
++        char buf[8];
++        INANGOPLUG_RDKLogEnable = bValue;
++        snprintf(buf,sizeof(buf),"%d",bValue);
++        if (syscfg_set(NULL, "X_INANGO_Inangoplug_LoggerEnable", buf) != 0)
++        {
++            AnscTraceWarning(("syscfg_set failed\n"));
++        }
++        else
++        {
++            if (syscfg_commit() != 0)
++            {
++                AnscTraceWarning(("syscfg_commit failed\n"));
++            }
++        }
++        SendSignal(INANGOPLUG_PROC_NAME);
++        return TRUE;
++    }
+     /* AnscTraceWarning(("Unsupported parameter '%s'\n", ParamName)); */
+     return FALSE;
+ }
+diff --git a/source/LogComponent/ssp_main.c b/source/LogComponent/ssp_main.c
+index 65a99a0..96e6acb 100644
+--- a/source/LogComponent/ssp_main.c
++++ b/source/LogComponent/ssp_main.c
+@@ -419,6 +419,16 @@ void ReadLogInfo()
+             TELCOVOIPAGENT_RDKLogEnable = (BOOL)atoi(buf);
+         }
+ #endif /* _HUB4_PRODUCT_REQ_ */
++    syscfg_get( NULL, "X_INANGO_Inangoplug_LogLevel", buf, sizeof(buf));
++    if( buf != NULL )
++    {
++        INANGOPLUG_RDKLogLevel = atoi(buf);
++    }
++    syscfg_get( NULL, "X_INANGO_Inangoplug_LoggerEnable", buf, sizeof(buf));
++    if( buf != NULL )
++    {
++        INANGOPLUG_RDKLogEnable = (BOOL)atoi(buf);
++    }
+ }
+ int main(int argc, char* argv[])
+ {

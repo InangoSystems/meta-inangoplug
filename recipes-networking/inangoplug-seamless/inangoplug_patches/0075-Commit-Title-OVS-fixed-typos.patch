@@ -1,0 +1,226 @@
+From 2ac0ccb6115d112d9dec20683fc283084d9b618d Mon Sep 17 00:00:00 2001
+From: Dmytro Titov <d.titov@inango-systems.com>
+Date: Tue, 17 Aug 2021 13:39:05 +0300
+Subject: [PATCH] Commit Title: OVS: fixed typos
+
+BugID: 25362
+Bug Fixed(y/N[blankN]):
+CodeReviewId: 0
+Description:
+
+* Updated API of PP used by OVS
+* Added callback for setting AM session ID for OVS flows by UFIDs
+---
+ datapath/am_pp.c           | 65 ++++++++++++++++++++++++++++++----------------
+ datapath/am_pp.h           |  2 +-
+ datapath/datapath.c        |  4 +--
+ datapath/translate_dp_am.c |  6 +++--
+ datapath/translate_dp_am.h |  2 +-
+ 5 files changed, 51 insertions(+), 28 deletions(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index 0ce4f4838..5a9e7b13a 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -27,8 +27,8 @@
+ #include "am_pp.h"
+ #include "datapath.h"
+ 
+-static int is_callback_set = 0;
+-static notify_datapath = NULL;
++static bool is_callback_set = false;
++static struct datapath *notify_datapath = NULL;
+ 
+ static void update_flow_am_stats(struct sw_flow *flow, struct pp_am_stats *stats)
+ {
+@@ -37,20 +37,22 @@ static void update_flow_am_stats(struct sw_flow *flow, struct pp_am_stats *stats
+ 	flow->am_stats.last_used = stats->last_used;
+ }
+ 
+-int notify_am_id(u32 ufid[PP_AM_MAX_UFID_LENGTH], u32 am_id)
++int notify_am_id(u32 ufid[PP_AM_MAX_UFID_LENGTH], u32 am_id, u32 *old_am_id)
+ {
+ 	struct sw_flow *flow = NULL;
++	struct sw_flow_id id;
+ 
+-	if (!notify_datapath) {
++	if (notify_datapath == NULL) {
+ 		return -1;
+ 	}
++	
++	id.ufid_len = MAX_UFID_LENGTH;
++	memcpy(&id.ufid, ufid, MAX_UFID_LENGTH);
+ 
+-	struct sw_flow_id id = {
+-		.ufid_len = MAX_UFID_LENGTH
+-	};
+-	memcpy(&id.ufid, ufid, sizeof(ufid));
+-
+-	flow = ovs_flow_tbl_lookup_ufid(&notify_datapath->table, ufid);
++	flow = ovs_flow_tbl_lookup_ufid(&notify_datapath->table, &id);
++	if (old_am_id) {
++		*old_am_id = flow->pp_am_id;
++	}
+ 	flow->pp_am_id = am_id;
+ 
+ 	return 0;
+@@ -69,10 +71,12 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 	if (err)
+ 		return err;
+ 
+-	if (!is_callback_set) {
++	if (notify_datapath == NULL) {
+ 		notify_datapath = dp;
++	}
++	if (!is_callback_set) {
+ 		pp_am_set_am_id_by_ufid_callback(notify_am_id);
+-		is_callback_set = 1;
++		is_callback_set = true;
+ 	}
+ 
+ 	new_session.proactive_session = proactive_flag;
+@@ -85,10 +89,10 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 	return err;
+ }
+ 
+-int am_mod_session(struct datapath *dp, struct sw_flow *flow, sw_flow_actions *old_acts)
++int am_mod_session(struct datapath *dp, struct sw_flow *flow, struct sw_flow_actions *old_acts)
+ {
+-	struct pm_am_session new_session;
+-	struct pm_am_session old_session;
++	struct pm_am_session *new_session = NULL;
++	struct pm_am_session *old_session = NULL;
+ 	int err;
+ 
+ 	if (!dp || !flow)
+@@ -98,24 +102,34 @@ int am_mod_session(struct datapath *dp, struct sw_flow *flow, sw_flow_actions *o
+ 		// TODO neer to understand proactive flag
+ 		return am_create_session(dp, flow, false);
+ 
+-	err = translate_to_am_session(dp, flow, &new_session);
++	new_session = (struct pm_am_session *)kmalloc(sizeof(struct pm_am_session), GFP_KERNEL);
++	memset(new_session, 0, sizeof(struct pm_am_session));
++	err = translate_to_am_session(dp, flow, new_session);
+ 	if (err)
+-		return err;
++		goto out;
+ 
+-	err = translate_to_am_session_old_acts(dp, flow, &old_session, old_acts);
++	old_session = (struct pm_am_session *)kmalloc(sizeof(*old_session), GFP_KERNEL);
++	memset(old_session, 0, sizeof(struct pm_am_session));
++	err = translate_to_am_session_old_acts(dp, flow, old_session, old_acts);
+ 	if (err)
+-		return err;
++		goto out;
+ 
+-	err = pp_am_modify_session(&new_session, &old_session,  &flow->pp_am_id);
++	err = pp_am_modify_session(new_session, old_session,  &flow->pp_am_id);
+ 
+-	if (err != PP_AM_OK || err_old_acts != PP_AM_OK)
++	if (err != PP_AM_OK)
+ 		flow->acl_state = NOT_ACCELERATE;
+ 
++out:
++	if (new_session)
++		kfree(new_session);
++	if (old_session)
++		kfree(old_session);
+ 	return err;
+ }
+ 
+ int am_remove_session(struct sw_flow *flow)
+ {
++	struct pm_am_session session = {0};
+ 	struct pp_am_stats response;
+ 	int err = PP_AM_OK;
+ 
+@@ -126,9 +140,16 @@ int am_remove_session(struct sw_flow *flow)
+ 		return err;
+ 	}
+ 
++	if (notify_datapath == NULL)
++		return -EINVAL;
++
++	err = translate_to_am_session(notify_datapath, flow, &session);
++	if (err)
++		return err;
++
+ 	memset(&response, 0, sizeof(struct pp_am_stats));
+ 
+-	err = pp_am_delete_session((struct pp_am_flow_id *)&flow->id, flow->pp_am_id, &response);
++	err = pp_am_delete_session(&session, flow->pp_am_id, &response);
+ 
+ 
+ 	flow->acl_state = REMOVED;
+diff --git a/datapath/am_pp.h b/datapath/am_pp.h
+index 4abc474c1..1988bbe1c 100644
+--- a/datapath/am_pp.h
++++ b/datapath/am_pp.h
+@@ -37,7 +37,7 @@ enum acl_state {
+ };
+ 
+ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_flag);
+-int am_mod_session(struct datapath *dp, struct sw_flow *flow, sw_flow_actions *old_acts);
++int am_mod_session(struct datapath *dp, struct sw_flow *flow, struct sw_flow_actions *old_acts);
+ int am_remove_session(struct sw_flow *flow);
+ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *stats, unsigned long *used);
+ void am_skb_preprocessing(pp_am_skb_process_action action, struct sw_flow *flow/*const struct sw_flow_id *ufid*/, struct sk_buff *skb);
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 4feb3012e..1b9c45650 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -1333,7 +1333,7 @@ static int ovs_flow_cmd_set(struct sk_buff *skb, struct genl_info *info)
+ 	if (likely(acts)) {
+ 		old_acts = ovsl_dereference(flow->sf_acts);
+ 		rcu_assign_pointer(flow->sf_acts, acts);
+-		am_mod_session(dp, flow);
++		am_mod_session(dp, flow, old_acts);
+ 
+ 		if (unlikely(reply)) {
+ 			error = ovs_flow_cmd_fill_info(flow,
+@@ -1349,7 +1349,7 @@ static int ovs_flow_cmd_set(struct sk_buff *skb, struct genl_info *info)
+ 		reply = ovs_flow_cmd_build_info(flow, ovs_header->dp_ifindex,
+ 						info, OVS_FLOW_CMD_SET, false,
+ 						ufid_flags);
+-		am_mod_session(dp, flow);
++		am_mod_session(dp, flow, NULL);
+ 
+ 		if (unlikely(IS_ERR(reply))) {
+ 			error = PTR_ERR(reply);
+diff --git a/datapath/translate_dp_am.c b/datapath/translate_dp_am.c
+index 310056b7c..5e88e6733 100644
+--- a/datapath/translate_dp_am.c
++++ b/datapath/translate_dp_am.c
+@@ -363,7 +363,7 @@ int translate_to_am_session(struct datapath *dp, struct sw_flow *flow,
+ }
+ 
+ int translate_to_am_session_old_acts(struct datapath *dp, struct sw_flow *flow,
+-                    struct pm_am_session *session, sw_flow_actions * old_acts)
++                    struct pm_am_session *session, struct sw_flow_actions *old_acts)
+ {
+ 	int err;
+ 	struct vport *port;
+@@ -373,7 +373,9 @@ int translate_to_am_session_old_acts(struct datapath *dp, struct sw_flow *flow,
+ 
+ 	memset(session, 0, sizeof(struct pm_am_session));
+ 
+-	err = translate_to_egr_prop(dp, old_acts, &flow->key, session);
++	if (old_acts) {
++		err = translate_to_egr_prop(dp, old_acts, &flow->key, session);
++	}
+ 
+ 	memcpy(&session->match.ingress, &flow->key, sizeof(struct pp_am_flow_key));
+ 
+diff --git a/datapath/translate_dp_am.h b/datapath/translate_dp_am.h
+index f4dcf6376..44f094519 100644
+--- a/datapath/translate_dp_am.h
++++ b/datapath/translate_dp_am.h
+@@ -51,7 +51,7 @@ int translate_to_am_session(struct datapath *dp, struct sw_flow *flow,
+                                               struct pm_am_session *session);
+ 
+ int translate_to_am_session_old_acts(struct datapath *dp, struct sw_flow *flow,
+-                    struct pm_am_session *session, sw_flow_actions * old_acts);
++                    struct pm_am_session *session, struct sw_flow_actions * old_acts);
+ 
+ static inline void invalidate_flow_key(struct sw_flow_key *key)
+ {

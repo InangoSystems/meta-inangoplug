@@ -55,6 +55,9 @@ main()
 
         ovs-vsctl set Bridge ${bridge_name} other-config:list-port-protection=tcp:${rsc_port},tcp:${tcp_port};
         ovs-vsctl set Bridge ${bridge_name} other-config:enable-port-protection=true;
+        ovs-vsctl set Bridge ${bridge_name} fail-mode=secure
+
+        ovs-ofctl -O OpenFlow13 add-flow ${bridge_name} "table=0, priority=0, actions=NORMAL"
     else
         rm /tmp/rsc-server_${bridge_name}.conf /tmp/rsc-proxy_${bridge_name}.conf
         systemctl stop rsc-init@${bridge_name}.service

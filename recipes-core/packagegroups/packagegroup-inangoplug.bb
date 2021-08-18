@@ -1,6 +1,6 @@
 DESCRIPTION = "Inango Plug Packagegroup"
 LICENSE = "Apache-2.0"
-LIC_FILES_CHKSUM = "file://${@bb.utils.which(d.getVar('LICENSE_PATH', True).replace(' ', ':'), 'Apache-2.0')};md5=34f8c1142fd6208a8be89399cb521df9"
+LIC_FILES_CHKSUM = "file://${FILE_DIRNAME}/${PN}/LICENSE;md5=34f8c1142fd6208a8be89399cb521df9"
 
 inherit packagegroup
 

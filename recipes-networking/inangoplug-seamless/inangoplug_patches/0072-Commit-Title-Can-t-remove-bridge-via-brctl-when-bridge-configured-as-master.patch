@@ -1,0 +1,62 @@
+From 48e061463f49085ba7b5f22f7700f064becd6c51 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Fri, 13 Aug 2021 16:52:41 +0300
+Subject: [PATCH] Commit Title          : Can't remove bridge via brctl when
+ bridge configured as master
+
+BugID                 : 25326
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Fixed remove bridge via brctl when bridge configured as master
+---
+ datapath/vport-netdev.c |  2 --
+ vswitchd/bridge.c       | 15 +++++++++++++++
+ 2 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/datapath/vport-netdev.c b/datapath/vport-netdev.c
+index 7aa6b8e12..227df2604 100644
+--- a/datapath/vport-netdev.c
++++ b/datapath/vport-netdev.c
+@@ -114,7 +114,6 @@ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
+ 
+ 	/* Create symlink from /sys/class/net/<devname>/master to
+ 	 * /sys/class/net/<bridgename>. */
+-	#if 0
+ 	if (!ovs_is_internal_dev(vport->dev)) {
+ 		char bridgeName[IFNAMSIZ] = {0};
+ 
+@@ -130,7 +129,6 @@ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
+ 			goto error_put;
+ 		}
+ 	}
+-	#endif
+ 
+ 	rtnl_lock();
+ 	err = netdev_master_upper_dev_link(vport->dev,
+diff --git a/vswitchd/bridge.c b/vswitchd/bridge.c
+index 10e27b81e..de691680a 100644
+--- a/vswitchd/bridge.c
++++ b/vswitchd/bridge.c
+@@ -3602,7 +3602,22 @@ bridge_destroy(struct bridge *br, bool del)
+     if (br) {
+         struct mirror *mirror, *next_mirror;
+         struct port *port, *next_port;
++        struct iface *iface, *next;
++        int internal;
+ 
++        /* Remove non internal ports first to prevent deadlocks */
++        HMAP_FOR_EACH_SAFE (port, next_port, hmap_node, &br->ports) {
++            internal = 0;
++            LIST_FOR_EACH_SAFE (iface, next, port_elem, &port->ifaces) {
++                if (iface_is_internal(iface->cfg, br->cfg)) {
++                    internal = 1;
++                    break;
++                }
++            }
++            if (!internal) {
++                port_destroy(port);
++            }
++        }
+         HMAP_FOR_EACH_SAFE (port, next_port, hmap_node, &br->ports) {
+             port_destroy(port);
+         }

@@ -1,0 +1,80 @@
+From aaa5d511a2ccd79fae982b412e85edb14247be08 Mon Sep 17 00:00:00 2001
+From: Dmytro Kelzikov <d.kelzikov@inango-systems.com>
+Date: Wed, 11 Aug 2021 22:27:09 +0300
+Subject: [PATCH] Commit Title          : Wrong return value when add/del port
+ operation performed
+
+BugID                 : 25313
+Bug Fixed(y/N[blankN]): N
+CodeReviewId          : 0
+Description           : Added flag that exclude mutual lock when add/del port command calls through brctl.
+---
+ datapath/brcompat_main.c | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 2bfe14fac..87c477a41 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -109,6 +109,7 @@ static DECLARE_COMPLETION(brc_done); /* Userspace signaled operation done? */
+ static struct sk_buff *brc_reply;    /* Reply from userspace. */
+ static u32 brc_seq;		     /* Sequence number for current op. */
+ static br_pair_t *head = NULL;       /* Bridge-interface pairs sor sysfs*/
++static bool brc_netlink_flg = false; /* Flag that indicate that exist brcompat netlink processing */
+ 
+ static bool check_bridge_list(const char *name);
+ static struct sk_buff *brc_send_command(struct net *,
+@@ -407,6 +408,10 @@ static void delete_node(char * name)
+ 
+ void brc_add_del_entry_to_brlist(struct net_device *br_dev, struct net_device *p_dev, bool add)
+ {
++	/* If true list will be modified by brcompat module */
++	if (brc_netlink_flg)
++		return;
++
+ 	mutex_lock(&brc_serial);
+ 	if(add)
+ 		pushBack(br_dev->name, p_dev->name);
+@@ -439,14 +444,22 @@ static int brc_add_del_port(struct net_device *dev, int port_ifindex, int add)
+ 	mutex_lock(&brc_serial);
+ 	if(add == 1)
+ 		pushBack(dev->name, port->name);
+-	else
+-		delete_node(port->name);
+ 	mutex_unlock(&brc_serial);
+ 
+ 	rtnl_unlock();
+ 	err = brc_send_simple_command(dev_net(dev), request);
+ 	rtnl_lock();
+ 
++	mutex_lock(&brc_serial);
++
++	if (err && add == 1)
++		delete_node(port->name);
++
++	if (!err && !add)
++		delete_node(port->name);
++
++	mutex_unlock(&brc_serial);
++
+ 	return err;
+ }
+ 
+@@ -980,6 +993,8 @@ static struct sk_buff *brc_send_command(struct net *net,
+ 
+ 	mutex_lock(&brc_serial);
+ 
++	brc_netlink_flg = true;
++
+ 	/* Increment sequence number first, so that we ignore any replies
+ 	 * to stale requests. */
+ 	spin_lock_irqsave(&brc_lock, flags);
+@@ -1008,6 +1023,8 @@ static struct sk_buff *brc_send_command(struct net *net,
+ 	brc_reply = NULL;
+ 	spin_unlock_irqrestore(&brc_lock, flags);
+ 
++	brc_netlink_flg = false;
++
+ 	mutex_unlock(&brc_serial);
+ 
+ 	/* Re-parse message.  Can't fail, since it parsed correctly once

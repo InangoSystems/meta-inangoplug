@@ -28,6 +28,8 @@ LIC_FILES_CHKSUM = "file://LICENSE;md5=34f8c1142fd6208a8be89399cb521df9"
 DEPENDS = "ccsp-common-library dbus openssl hal-cm hal-dhcpv4c hal-ethsw hal-moca hal-mso_mgmt hal-mta hal-platform hal-vlan util-linux utopia cjson"
 DEPENDS_append = " ${@bb.utils.contains('DISTRO_FEATURES', 'safec', ' safec', " ", d)}"
 
+RDEPENDS_${PN}_append = " util-linux-lscpu"
+
 SRC_URI = "${INANGOPLUG_SRC_URI}"
 SRCREV="${INANGOPLUG_SRCREV}"
 S = "${WORKDIR}/git"
@@ -57,8 +59,13 @@ LDFLAGS_append = " \
 do_install_append () {
     # Config files and scripts
     install -d ${D}${exec_prefix}/ccsp/inangoplugcomponent
-    install -m 644 ${S}/scripts/TR-181-InangoplugComponent.xml ${D}${exec_prefix}/ccsp/inangoplugcomponent/TR-181-InangoplugComponent.xml
-    install -m 644 ${S}/scripts/TR-181-InangoplugComponent.xml ${D}/usr/bin/TR-181-InangoplugComponent.xml
+    install -m 644 ${S}/config/TR-181-InangoplugComponent.xml ${D}${exec_prefix}/ccsp/inangoplugcomponent/TR-181-InangoplugComponent.xml
+    install -d ${D}${sysconfdir}/inangoplug
+    install -m 644 ${S}/config/inangoplug.cfg ${D}${sysconfdir}/inangoplug/inangoplug.cfg
+
+    # Set paths for Private Key, Certificate and CA Certificate
+    sed -i -e 's#CONFIG_INANGO_INANGOPLUG_SSL_DIR=#CONFIG_INANGO_INANGOPLUG_SSL_DIR=${CONFIG_INANGO_INANGOPLUG_SSL_DIR}#' ${D}${sysconfdir}/inangoplug/inangoplug.cfg
+
     install -d ${D}${systemd_unitdir}/system
     install -D -m 0644 ${S}/scripts/CcspInangoplugComponent.service ${D}${systemd_unitdir}/system/CcspInangoplugComponent.service
     install -m 0644 ${S}/scripts/CcspInangoplugComponent.path ${D}${systemd_unitdir}/system/CcspInangoplugComponent.path

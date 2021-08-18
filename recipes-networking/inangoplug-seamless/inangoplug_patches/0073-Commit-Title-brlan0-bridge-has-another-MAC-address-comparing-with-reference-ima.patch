@@ -1,0 +1,390 @@
+From 0bb8edfc0552581e158404370fdb215da1cf1345 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Mon, 2 Aug 2021 20:57:09 +0500
+Subject: [PATCH] Commit Title          : brlan0 bridge has another MAC address
+ comparing with reference images
+
+BugID                 : 25185
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Added netlink messages on MAC change from kernel to userspace
+- Added ovs-vsctl invocations in userspace to set other_config:hwaddr in db
+---
+ datapath/brcompat_main.c               | 35 ++++++++++++++-
+ datapath/datapath.c                    |  3 ++
+ datapath/datapath.h                    |  1 +
+ datapath/vport-internal_dev.c          | 39 +++++++++++++++-
+ include/openvswitch/brcompat-netlink.h |  3 ++
+ vswitchd/bridge.c                      | 43 +++++++++++++-----
+ vswitchd/ovs-brcompatd.c               | 82 ++++++++++++++++++++++++++++++++++
+ 7 files changed, 194 insertions(+), 12 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 87c477a41..121beca80 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -839,7 +839,6 @@ static int brc_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+ 
+ 		return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_BRIDGE_MULTICAST_SNOOPING, brc_snooping_enabled ? 1 : 0);
+ 	}
+-
+ 	default:
+ 		err = -EOPNOTSUPP;
+ 		break;
+@@ -848,6 +847,34 @@ static int brc_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+ 	return err;
+ }
+ 
++/* Called with the rtnl_lock. */
++static int brc_dev_mac_addr(struct net_device *dev, void *p)
++{
++	struct sk_buff  *request;
++	int              err;
++	struct sockaddr *addr = p;
++
++	if (!capable(CAP_NET_ADMIN))
++		return -EPERM;
++
++	request = brc_make_request(BRC_GENL_C_SET_MAC_ADDR, dev->name, NULL);
++	if (!request)
++		return -ENOMEM;
++
++	if (nla_put(request, BRC_GENL_A_MAC_ADDR, ETH_ALEN, addr->sa_data))
++		goto brc_dev_mac_addr_put_failure;
++
++	rtnl_unlock();
++	err = brc_send_simple_command(dev_net(dev), request);
++	rtnl_lock();
++
++	return err;
++
++brc_dev_mac_addr_put_failure:
++	kfree_skb(request);
++	return -ENOMEM;
++}
++
+ /* Called with the rtnl_lock. */
+ static int brc_dev_sysfs(struct net_device *dev, unsigned long *ul_value, int cmd, int oper)
+ {
+@@ -1108,6 +1135,9 @@ static int __init brc_init(void)
+ 	/* Set the openvswitch device ioctl handler */
+ 	ovs_dp_ioctl_hook = brc_dev_ioctl;
+ 
++	/* Set the openvswitch device mac address assignment handler */
++	ovs_dp_mac_addr_hook = brc_dev_mac_addr;
++
+ 	/* Set the openvswitch device sysfs handler */
+ 	ovs_dp_sysfs_hook = brc_dev_sysfs;
+ 	ovs_dp_sysfs_string_hook = brc_dev_sysfs_string;
+@@ -1144,6 +1174,9 @@ static void brc_cleanup(void)
+ 	/* Unregister ioctl hooks */
+ 	ovs_dp_ioctl_hook = NULL;
+ 
++	/* Unregister mac address hooks */
++	ovs_dp_mac_addr_hook = NULL;
++
+ 	/* Unregister brc_get_fdb_entries */
+ 	ovs_get_fdb_entries = NULL;
+ 	/* Unregister the openvswitch device handler to add/del ports in list */
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index a720db4ce..91bed3245 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -75,6 +75,9 @@ unsigned int ovs_net_id __read_mostly;
+ int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
+ EXPORT_SYMBOL(ovs_dp_ioctl_hook);
+ 
++int (*ovs_dp_mac_addr_hook)(struct net_device *dev, void *p);
++EXPORT_SYMBOL(ovs_dp_mac_addr_hook);
++
+ int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
+ EXPORT_SYMBOL(ovs_dp_sysfs_hook);
+ 
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index 394a55a4b..0cfde2142 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -264,6 +264,7 @@ extern struct notifier_block ovs_dp_device_notifier;
+ extern struct genl_family dp_vport_genl_family;
+ extern const struct genl_multicast_group ovs_dp_vport_multicast_group;
+ extern int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
++extern int (*ovs_dp_mac_addr_hook)(struct net_device *dev, void *p);
+ extern int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
+ extern int (*ovs_dp_sysfs_string_hook)(struct net_device *dev, char *ustring, int cmd);
+ extern int (*ovs_get_fdb_entries)(struct net_device *dev, void *userbuf, unsigned long maxnum, unsigned long offset, bool is_user_buf);
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index a3e9ca238..7de0ef260 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -118,6 +118,43 @@ static int internal_dev_do_ioctl(struct net_device *dev,
+ 	return -EOPNOTSUPP;
+ }
+ 
++static int internal_eth_mac_addr(struct net_device *dev, void *p)
++{
++	int ret;
++	unsigned char *sa_data = (unsigned char *)(((struct sockaddr *)p)->sa_data);
++
++	#define MAC_FMT_       "\"%02x:%02x:%02x:%02x:%02x:%02x\""
++	#define MAC_ARG_(X__)  X__[0], X__[1], X__[2], X__[3], X__[4], X__[5]
++
++	if (ovs_dp_mac_addr_hook) {
++		if (0 == memcmp(dev->dev_addr, ((struct sockaddr *)p)->sa_data, ETH_ALEN)) {
++			/* Same MAC - nothing to do */
++			return 0;
++		}
++
++		ret = eth_prepare_mac_addr_change(dev, p);
++		if (ret < 0) {
++			
++			printk(KERN_WARNING "internal_eth_mac_addr(dev=\"%s\", mac=" MAC_FMT_ "): error: eth_prepare_mac_addr_change() -> %d\n", dev->name, MAC_ARG_(sa_data), ret);
++			return ret;
++		}
++
++		ret = ovs_dp_mac_addr_hook(dev, p);
++		if (ret < 0) {
++			printk(KERN_WARNING "internal_eth_mac_addr(dev=\"%s\", mac=" MAC_FMT_ "): error: ovs_dp_mac_addr_hook() -> %d\n", dev->name, MAC_ARG_(sa_data), ret);
++			return ret;
++		}
++
++		eth_commit_mac_addr_change(dev, p);
++		return 0;
++	}
++
++	#undef MAC_FMT_
++	#undef MAC_ARG_
++
++	return eth_mac_addr(dev, p);
++}
++
+ static void internal_dev_destructor(struct net_device *dev)
+ {
+ 	struct vport *vport = ovs_internal_dev_get_vport(dev);
+@@ -163,7 +200,7 @@ static const struct net_device_ops internal_dev_netdev_ops = {
+ 	.ndo_stop = internal_dev_stop,
+ 	.ndo_start_xmit = internal_dev_xmit,
+ 	.ndo_do_ioctl = internal_dev_do_ioctl,
+-	.ndo_set_mac_address = eth_mac_addr,
++	.ndo_set_mac_address = internal_eth_mac_addr,
+ #if	!defined(HAVE_NET_DEVICE_WITH_MAX_MTU) && !defined(HAVE_RHEL7_MAX_MTU)
+ 	.ndo_change_mtu = internal_dev_change_mtu,
+ #endif
+diff --git a/include/openvswitch/brcompat-netlink.h b/include/openvswitch/brcompat-netlink.h
+index c6ee4f1ba..adcd5372f 100644
+--- a/include/openvswitch/brcompat-netlink.h
++++ b/include/openvswitch/brcompat-netlink.h
+@@ -91,6 +91,8 @@ enum {
+     BRC_GENL_A_MG_NSRC,     /* Number of source list entries */
+     BRC_GENL_A_MG_SADDR,
+ 
++    BRC_GENL_A_MAC_ADDR,
++
+     BRC_GENL_A_PAD,
+     __BRC_GENL_A_MAX,
+     BRC_GENL_A_MAX = __BRC_GENL_A_MAX - 1
+@@ -138,6 +140,7 @@ enum brc_genl_command {
+     BRC_GENL_C_SET_MC_SNOOPING_FLAG, /* K: Set the multicast snooping flag. */
+     BRC_GENL_C_GET_BRIDGE_BY_PORT, /* K: Get bridge name by port. */
+     BRC_GENL_C_GET_BRIDGE_EXISTS, /* K: Check that bridge exists. */
++    BRC_GENL_C_SET_MAC_ADDR, /* K: Set MAC address. */
+ 
+     __BRC_GENL_C_MAX,
+     BRC_GENL_C_MAX = __BRC_GENL_C_MAX - 1
+diff --git a/vswitchd/bridge.c b/vswitchd/bridge.c
+index de691680a..f368317af 100644
+--- a/vswitchd/bridge.c
++++ b/vswitchd/bridge.c
+@@ -300,7 +300,7 @@ static bool bridge_aa_need_refresh(struct bridge *);
+ static void bridge_configure_remotes(struct bridge *,
+                                      const struct sockaddr_in *managers,
+                                      size_t n_managers);
+-static void bridge_pick_local_hw_addr(struct bridge *, struct eth_addr *ea,
++static bool bridge_pick_local_hw_addr(struct bridge *, struct eth_addr *ea,
+                                       struct iface **hw_addr_iface);
+ static uint64_t bridge_pick_datapath_id(struct bridge *,
+                                         const struct eth_addr bridge_ea,
+@@ -1320,16 +1320,23 @@ bridge_configure_datapath_id(struct bridge *br)
+     struct iface *local_iface;
+     struct iface *hw_addr_iface;
+     char *dpid_string;
++    bool hw_addr_should_be_set;
+ 
+-    bridge_pick_local_hw_addr(br, &ea, &hw_addr_iface);
++    hw_addr_should_be_set = bridge_pick_local_hw_addr(br, &ea, &hw_addr_iface);
+     local_iface = iface_from_ofp_port(br, OFPP_LOCAL);
+     if (local_iface) {
+-        int error = netdev_set_etheraddr(local_iface->netdev, ea);
+-        if (error) {
+-            static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+-            VLOG_ERR_RL(&rl, "bridge %s: failed to set bridge "
+-                        "Ethernet address: %s",
+-                        br->name, ovs_strerror(error));
++        if (hw_addr_should_be_set) {
++            VLOG_DBG("bridge_configure_datapath_id(): bridge %s -> netdev_set_etheraddr()", br->name);
++            int error = netdev_set_etheraddr(local_iface->netdev, ea);
++            if (error) {
++                static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
++                VLOG_ERR_RL(&rl, "bridge %s: failed to set bridge "
++                            "Ethernet address: %s",
++                            br->name, ovs_strerror(error));
++            }
++        }
++        else {
++            VLOG_DBG("bridge_configure_datapath_id(): athaddr is already set for bridge %s ", br->name);
+         }
+     }
+     br->ea = ea;
+@@ -2343,14 +2350,29 @@ find_local_hw_addr(const struct bridge *br, struct eth_addr *ea,
+     hmapx_destroy(&mirror_output_ports);
+ }
+ 
+-static void
++/* Returns 'true' if MAC is needed to be set on interface */
++static bool
+ bridge_pick_local_hw_addr(struct bridge *br, struct eth_addr *ea,
+                           struct iface **hw_addr_iface)
+ {
++    bool should_be_set = true;
++
+     *hw_addr_iface = NULL;
+ 
+     /* Did the user request a particular MAC? */
+     const char *hwaddr = smap_get_def(&br->cfg->other_config, "hwaddr", "");
++    if (*hwaddr == '+') {
++        should_be_set = false;
++        ++hwaddr;
++        VLOG_DBG("bridge_pick_local_hw_addr(): bridge %s: other_config:hwaddr %s came from interface", br->name, hwaddr);
++    }
++    else if (*hwaddr == '\0') {
++        VLOG_DBG("bridge_pick_local_hw_addr(): bridge %s: other_config:hwaddr is empty", br->name);
++    }
++    else {
++        VLOG_DBG("bridge_pick_local_hw_addr(): bridge %s: other_config:hwaddr is %s", br->name, hwaddr);
++    }
++
+     if (eth_addr_from_string(hwaddr, ea)) {
+         if (eth_addr_is_multicast(*ea)) {
+             VLOG_ERR("bridge %s: cannot set MAC address to multicast "
+@@ -2358,12 +2380,13 @@ bridge_pick_local_hw_addr(struct bridge *br, struct eth_addr *ea,
+         } else if (eth_addr_is_zero(*ea)) {
+             VLOG_ERR("bridge %s: cannot set MAC address to zero", br->name);
+         } else {
+-            return;
++            return should_be_set;
+         }
+     }
+ 
+     /* Find a local hw address */
+     find_local_hw_addr(br, ea, NULL, hw_addr_iface);
++    return true;
+ }
+ 
+ /* Choose and returns the datapath ID for bridge 'br' given that the bridge
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index e10a0e68d..9d110ba62 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -448,6 +448,50 @@ parse_command_mg(struct ofpbuf *buffer, uint32_t *seq, const char **br_name,
+ 
+     return 0;
+ }
++
++static int
++parse_command_mac_addr(struct ofpbuf *buffer, uint32_t *seq, const char **br_name,
++                 const char **port_name, const char **value)
++{
++    static const struct nl_policy policy[] = {
++        [BRC_GENL_A_DP_NAME]      = { .type = NL_A_STRING, .optional = true },
++        [BRC_GENL_A_PORT_NAME]    = { .type = NL_A_STRING, .optional = true },
++        [BRC_GENL_A_MAC_ADDR]     = { .type = NL_A_UNSPEC, .optional = true },
++    };
++    struct nlattr  *attrs[ARRAY_SIZE(policy)];
++
++    VLOG_DBG("parse_command_mac_addr()");
++
++    if (!nl_policy_parse(buffer, NLMSG_HDRLEN + GENL_HDRLEN, policy, attrs, ARRAY_SIZE(policy))
++        || (br_name   && !attrs[BRC_GENL_A_DP_NAME])
++        || (port_name && !attrs[BRC_GENL_A_PORT_NAME])
++        || (value     && !attrs[BRC_GENL_A_MAC_ADDR])
++    ) 
++    {
++        VLOG_ERR("parse_command_mac_addr: nl_policy_parse() failed or some attributes are missing");
++        return EINVAL;
++    }
++
++    *seq = ((struct nlmsghdr *) buffer->data)->nlmsg_seq;
++    VLOG_DBG("parse_command_mac_addr: got seq");
++
++    if (br_name) {
++        *br_name = nl_attr_get_string(attrs[BRC_GENL_A_DP_NAME]);
++        VLOG_DBG("parse_command_mac_addr: got br_name");
++    }
++
++    if (port_name) {
++        *port_name = nl_attr_get_string(attrs[BRC_GENL_A_PORT_NAME]);
++        VLOG_DBG("parse_command_mac_addr: got port");
++    }
++
++    if (value) {
++        *value = nl_attr_get_unspec(attrs[BRC_GENL_A_MAC_ADDR], ETH_ALEN);
++        VLOG_DBG("parse_command_mac_addr: got mac");
++    }
++
++    return 0;
++}
+ /* } seamless-ovs */
+ 
+ /* Composes and returns a reply to a request made by the datapath with error
+@@ -1142,6 +1186,40 @@ handle_set_mc_router_port_cmd(struct ofpbuf *buffer)
+     return error;
+ }
+ 
++static int
++handle_set_mac_addr_cmd(struct ofpbuf *buffer)
++{
++    const char  other_config_hwaddr[] = "other-config:hwaddr=+%s";
++    const char *br_name;
++    const unsigned char *mac;
++    char        mac_str[3*ETH_ALEN];
++    char        assignment[sizeof(other_config_hwaddr) + sizeof(mac_str)];
++    uint32_t    seq;
++    int         error;
++
++    VLOG_DBG("handle_set_mac_addr_cmd()");
++
++    error = parse_command_mac_addr(buffer, &seq, &br_name, NULL, (const char **)&mac);
++
++    if (error) {
++        VLOG_ERR("handle_set_mac_addr_cmd(): failed to parse the command: parse_command_mac_addr() -> %d", error);
++    }
++    else {
++        snprintf(mac_str, sizeof(mac_str), ETH_ADDR_FMT, ETH_ADDR_BYTES_ARGS(mac));
++        snprintf(assignment, sizeof(assignment), other_config_hwaddr, mac_str);
++
++        VLOG_DBG("handle_set_mac_addr_cmd(): %s -- set bridge %s %s\n", vsctl_program, br_name, assignment);
++        if (!run_vsctl(vsctl_program, "--no-wait", "--", "set", "bridge", br_name, assignment, (char *) NULL)) {
++            error = EINVAL;
++        }
++    }
++
++    send_simple_reply(seq, error);
++    VLOG_DBG("handle_set_mac_addr_cmd() -> %d\n", error);
++
++    return error;
++}
++
+ static int
+ handle_get_ulong_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+ {
+@@ -1512,6 +1590,10 @@ brc_recv_update(void)
+     case BRC_GENL_C_SET_MCSNOOP_ROUT_PORT:
+         handle_set_mc_router_port_cmd(&buffer);
+         break;
++
++    case BRC_GENL_C_SET_MAC_ADDR:
++        handle_set_mac_addr_cmd(&buffer);
++        break;
+     /* } seamless-ovs */
+ 
+     default:
