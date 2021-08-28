@@ -1,0 +1,28 @@
+From d3ca7762b35810340f1f02a8538eac20284cc788 Mon Sep 17 00:00:00 2001
+From: Oleksandr Hnatiuk <o.hnatiuk@inango-systems.com>
+Date: Fri, 27 Aug 2021 16:25:59 +0300
+Subject: [PATCH] Commit Title          : Cable modem reboots during CDRouter
+ testing
+
+BugID                 : 25469
+Bug Fixed(y/N[blankN]): y
+CodeReviewId          : 0
+Description           : Fixed NULL pointer dereference
+---
+ datapath/am_pp.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index 3fd1fdab4..3597796c8 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -55,6 +55,9 @@ int notify_am_id(u32 ufid[PP_AM_MAX_UFID_LENGTH], u32 am_id, u32 *old_am_id)
+ 	memcpy(&id.ufid, ufid, MAX_UFID_LENGTH);
+ 
+ 	flow = ovs_flow_tbl_lookup_ufid(&notify_datapath->table, &id);
++	if (flow == NULL) {
++		return PP_AM_GENERIC_FAIL;
++	}
+ 	if (old_am_id) {
+ 		*old_am_id = flow->pp_am_id;
+ 	}

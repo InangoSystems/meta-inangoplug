@@ -83,5 +83,6 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0081-Commit-Title-Network-is-unreachable-after-board-boot.patch \
     file://0082-Commit-Title-Fixed-modify-session-request.patch \
     file://0083-Commit-Title-tcp-exact-match-session-without-tcp_flags-return-error.patch \
+    file://0084-Commit-Title-Cable-modem-reboots-during-CDRouter-testing.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"
