@@ -76,5 +76,12 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0074-Commit-Title-OVS-use-new-PP-API.patch \
     file://0075-Commit-Title-OVS-fixed-typos.patch \
     file://0076-Commit-Title-Moved-setting-callback-to-DP-init.patch \
+    file://0077-Commit-Title-Deadlock-during-create-bridge.-Can-t-apply-all-required-commands.patch \
+    file://0078-Commit-Title-Cannot-add-interface-to-bridge-by-dmcli.patch \
+    file://0079-Commit-Title-Init-proactive-flow-used-stats-for-revalidation-passing.patch \
+    file://0080-Commit-Title-Fixed-create-proactive-session-check-revalidation-status.patch \
+    file://0081-Commit-Title-Network-is-unreachable-after-board-boot.patch \
+    file://0082-Commit-Title-Fixed-modify-session-request.patch \
+    file://0083-Commit-Title-tcp-exact-match-session-without-tcp_flags-return-error.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

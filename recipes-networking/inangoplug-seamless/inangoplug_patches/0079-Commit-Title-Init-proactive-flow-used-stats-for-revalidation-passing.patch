@@ -1,0 +1,54 @@
+From 6e29c543da6ee0f02ae5787fa9eccf55f173fb2e Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Wed, 25 Aug 2021 17:03:36 +0500
+Subject: [PATCH] Commit Title: Init proactive flow used stats for revalidation
+ passing
+
+BugID: 25360
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description:
+- Init proactive stats for revalidation process
+---
+ datapath/am_pp.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index 1e65da823..516fad3a6 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -26,9 +26,15 @@
+ #include "translate_dp_am.h"
+ #include "am_pp.h"
+ #include "datapath.h"
++#include "acceleration_module.h"
+ 
+ static struct datapath *notify_datapath = NULL;
+ 
++static void init_flow_am_stats(struct sw_flow *flow)
++{
++	flow->am_stats.last_used = get_jiffies_64();
++}
++
+ static void update_flow_am_stats(struct sw_flow *flow, struct pp_am_stats *stats)
+ {
+ 	flow->am_stats.packets = stats->packets;
+@@ -81,6 +87,9 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 	if (err == PP_AM_OK)
+ 		flow->acl_state = ACCELERATED;
+ 
++	if (proactive_flag)
++		init_flow_am_stats(flow);
++
+ 	return err;
+ }
+ 
+@@ -109,7 +118,7 @@ int am_mod_session(struct datapath *dp, struct sw_flow *flow, struct sw_flow_act
+ 	if (err)
+ 		goto out;
+ 
+-	err = pp_am_modify_session(new_session, old_session,  &flow->pp_am_id);
++	err = pp_am_modify_session(new_session, old_session, &flow->pp_am_id);
+ 
+ 	if (err != PP_AM_OK)
+ 		flow->acl_state = NOT_ACCELERATE;

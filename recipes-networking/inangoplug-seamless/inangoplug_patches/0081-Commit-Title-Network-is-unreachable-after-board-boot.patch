@@ -1,0 +1,44 @@
+From ea105bb655af97d005618fe7dab253eeeab8073c Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Mon, 23 Aug 2021 16:28:25 +0300
+Subject: [PATCH] Commit Title          : Network is unreachable after board
+ boot
+
+BugID                 : 25413
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Fixed: network is unreachable after board boot
+---
+ utilities/ovs-ctl.in | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/utilities/ovs-ctl.in b/utilities/ovs-ctl.in
+index f34f166c8..1e385a839 100644
+--- a/utilities/ovs-ctl.in
++++ b/utilities/ovs-ctl.in
+@@ -191,6 +191,17 @@ add_managers () {
+     fi
+ }
+ 
++normal_rules () {
++    for ovs_bridge in `ovs-vsctl list-br`; do
++        ovs-ofctl -O OpenFlow13 add-flow $ovs_bridge "table=0, priority=0, actions=NORMAL"
++        # We have to handle all mdb flows, but they are not created
++        # without bridge down and up. So we made this fix to guarantee
++        # that all required mdb flows will be created.
++        ip link set $ovs_bridge down
++        ip link set $ovs_bridge up
++    done
++}
++
+ do_start_forwarding () {
+     check_force_cores
+ 
+@@ -229,6 +240,7 @@ do_start_forwarding () {
+ start_forwarding () {
+     if test X"$OVS_VSWITCHD" = Xyes; then
+         do_start_forwarding || return 1
++        normal_rules
+     fi
+     set_hostname &
+     return 0

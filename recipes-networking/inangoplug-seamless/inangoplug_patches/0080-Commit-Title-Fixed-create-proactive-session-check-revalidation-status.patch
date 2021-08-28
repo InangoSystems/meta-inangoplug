@@ -1,0 +1,46 @@
+From 57453a37075064c322656128820112a531393488 Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Thu, 26 Aug 2021 18:17:55 +0500
+Subject: [PATCH] Commit Title: Fixed create proactive session, check
+ revalidation status
+
+BugID: 25482
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description:
+- check revalidation process
+---
+ ofproto/ofproto-dpif-upcall.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/ofproto/ofproto-dpif-upcall.c b/ofproto/ofproto-dpif-upcall.c
+index 02a3a1edf..0c2c365f4 100644
+--- a/ofproto/ofproto-dpif-upcall.c
++++ b/ofproto/ofproto-dpif-upcall.c
+@@ -3681,6 +3681,7 @@ create_ukey_from_of_rule(struct ofproto_dpif *ofproto, struct udpif *udpif, stru
+     struct ofpbuf keybuf, maskbuf;
+     struct udpif_key *ukey;
+     ovs_u128 ufid;
++    enum reval_result result;
+ 
+     minimatch_expand(&rule->cr.match, &m);
+ 
+@@ -3709,8 +3710,16 @@ create_ukey_from_of_rule(struct ofproto_dpif *ofproto, struct udpif *udpif, stru
+     ukey = ukey_create__(keybuf.data, keybuf.size, maskbuf.data, maskbuf.size,
+                          true, &ufid, PMD_ID_NULL, &odp_actions, 0, 0, m.flow.recirc_id, NULL, UNKNOWN_FLOW_TYPE);
+ 
+-    revalidate_ukey(udpif, ukey, &stats, &odp_actions, udpif->reval_seq, &recircs, false);
+-    ukey_set_actions(ukey, &odp_actions);
++    result = revalidate_ukey(udpif, ukey, &stats, &odp_actions, udpif->reval_seq, &recircs, false);
++    if (result == UKEY_DELETE)
++    {
++        ukey_delete__(ukey);
++        ukey = NULL;
++    }
++    else
++    {
++        ukey_set_actions(ukey, &odp_actions);
++    }
+ 
+     return ukey;
+ }

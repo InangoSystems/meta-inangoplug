@@ -1,0 +1,62 @@
+From 16b776cd5d8a5bb865d9913ecfb4f7f0bd094dce Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Fri, 27 Aug 2021 14:15:31 +0500
+Subject: [PATCH] Commit Title: Fixed modify session request
+
+BugID: 25433
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description:
+- correct translate egress properties inside modify session
+---
+ datapath/am_pp.c           |  2 +-
+ datapath/translate_dp_am.c | 12 +++++-------
+ 2 files changed, 6 insertions(+), 8 deletions(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index 516fad3a6..3fd1fdab4 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -118,7 +118,7 @@ int am_mod_session(struct datapath *dp, struct sw_flow *flow, struct sw_flow_act
+ 	if (err)
+ 		goto out;
+ 
+-	err = pp_am_modify_session(new_session, old_session, &flow->pp_am_id);
++	err = pp_am_modify_session(old_session, new_session, &flow->pp_am_id);
+ 
+ 	if (err != PP_AM_OK)
+ 		flow->acl_state = NOT_ACCELERATE;
+diff --git a/datapath/translate_dp_am.c b/datapath/translate_dp_am.c
+index 5e88e6733..6132fdb00 100644
+--- a/datapath/translate_dp_am.c
++++ b/datapath/translate_dp_am.c
+@@ -240,14 +240,14 @@ int translate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *act
+ 	int rem;
+ 	struct sw_flow_key *egr_key = (struct sw_flow_key *)&session->match.egress;
+ 
+-	if (!acts || !dp)
++	if (!dp)
+ 		return -EINVAL;
+ 
+-	if (!acts->actions || acts->actions_len == 0)
+-		return 0;
+-
+ 	memcpy(egr_key, ingr_key, sizeof(struct sw_flow_key));
+ 
++	if (!acts || !acts->actions || acts->actions_len == 0)
++		return 0;
++
+ 	for (a = acts->actions, rem = acts->actions_len; rem > 0;
+ 	     a = nla_next(a, &rem)) {
+ 		int err = 0;
+@@ -373,9 +373,7 @@ int translate_to_am_session_old_acts(struct datapath *dp, struct sw_flow *flow,
+ 
+ 	memset(session, 0, sizeof(struct pm_am_session));
+ 
+-	if (old_acts) {
+-		err = translate_to_egr_prop(dp, old_acts, &flow->key, session);
+-	}
++	err = translate_to_egr_prop(dp, old_acts, &flow->key, session);
+ 
+ 	memcpy(&session->match.ingress, &flow->key, sizeof(struct pp_am_flow_key));
+ 

@@ -1,0 +1,122 @@
+From 78b6e13c005fb8dcc2682e4b170beb310af7cdab Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Tue, 24 Aug 2021 19:53:27 +0500
+Subject: [PATCH] Commit Title          : Deadlock during create bridge. Can't
+ apply all required commands
+
+BugID                 : 25449
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Added more mutexes to handle bridge addition and mac setting
+---
+ datapath/brcompat_main.c | 56 ++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 54 insertions(+), 2 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 121beca80..cc208c7cf 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -23,6 +23,7 @@
+ 
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
++#include <linux/delay.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ #include <linux/kernel.h>
+@@ -111,6 +112,10 @@ static u32 brc_seq;		     /* Sequence number for current op. */
+ static br_pair_t *head = NULL;       /* Bridge-interface pairs sor sysfs*/
+ static bool brc_netlink_flg = false; /* Flag that indicate that exist brcompat netlink processing */
+ 
++static DEFINE_MUTEX(brc_addbr_lock); /* Ensure atomic bridge adding. */
++static DEFINE_MUTEX(brc_name_lock);  /* Ensure atomic access to bridge_name. */
++static char bridge_name[IFNAMSIZ] = {0};
++
+ static bool check_bridge_list(const char *name);
+ static struct sk_buff *brc_send_command(struct net *,
+ 					struct sk_buff *,
+@@ -160,6 +165,7 @@ static int brc_add_del_bridge(struct net *net, char __user *uname, int add)
+ {
+ 	struct sk_buff *request;
+ 	char name[IFNAMSIZ];
++	int result;
+ 
+ 	if (!capable(CAP_NET_ADMIN))
+ 		return -EPERM;
+@@ -175,7 +181,23 @@ static int brc_add_del_bridge(struct net *net, char __user *uname, int add)
+ 	if (!brc_net)
+ 		brc_net = net;
+ #endif
+-	return brc_send_simple_command(net, request);
++
++	/* if (add == BRC_GENL_C_DP_ADD) */
++	mutex_lock(&brc_addbr_lock);
++
++	mutex_lock(&brc_name_lock);
++	strcpy(bridge_name, name);
++	mutex_unlock(&brc_name_lock);
++
++	result = brc_send_simple_command(net, request);
++
++	mutex_lock(&brc_name_lock);
++	*bridge_name = '\0';
++	mutex_unlock(&brc_name_lock);
++
++	mutex_unlock(&brc_addbr_lock);
++
++	return result;
+ }
+ 
+ static int brc_get_indices(struct net *net,
+@@ -857,9 +879,37 @@ static int brc_dev_mac_addr(struct net_device *dev, void *p)
+ 	if (!capable(CAP_NET_ADMIN))
+ 		return -EPERM;
+ 
++	/* Here we suppose that there shouldn't be extensive contention on locking 
++	 * brc_addbr_lock - we'll aquire it soon */
++	for (;;) {
++		if (mutex_trylock(&brc_addbr_lock))
++			break;
++		
++		/* Failed to lock brc_addbr_lock - it must be locked in bridge adding handler */
++		mutex_lock(&brc_name_lock);
++		if (0 == strcmp(bridge_name, dev->name)) {
++			/* This bridge is in process of addition via brctl addbr command - we should skip
++			 * provisioning of mac address for this bridge to db to avoid deadlock, because
++			 * when bridge is added ovs configures its mac address via ioctl at the same time.
++			 * Though we shouldn't keep this mac address in db because it's default address for
++			 * ovs bridge.
++			 */
++			mutex_unlock(&brc_name_lock);
++			return 0;
++		}
++
++		/* mac is for some bridge which is not in process of addition - lets try to lock 
++		 * brc_addbr_lock one more time */
++		mutex_unlock(&brc_name_lock);
++		msleep(100);
++	}
++
++	/* We acquired the brc_addbr_lock - we can send mac to userspace safely */
+ 	request = brc_make_request(BRC_GENL_C_SET_MAC_ADDR, dev->name, NULL);
+-	if (!request)
++	if (!request) {
++		mutex_unlock(&brc_addbr_lock);
+ 		return -ENOMEM;
++	}
+ 
+ 	if (nla_put(request, BRC_GENL_A_MAC_ADDR, ETH_ALEN, addr->sa_data))
+ 		goto brc_dev_mac_addr_put_failure;
+@@ -868,9 +918,11 @@ static int brc_dev_mac_addr(struct net_device *dev, void *p)
+ 	err = brc_send_simple_command(dev_net(dev), request);
+ 	rtnl_lock();
+ 
++	mutex_unlock(&brc_addbr_lock);
+ 	return err;
+ 
+ brc_dev_mac_addr_put_failure:
++	mutex_unlock(&brc_addbr_lock);
+ 	kfree_skb(request);
+ 	return -ENOMEM;
+ }

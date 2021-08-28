@@ -1,0 +1,118 @@
+From c5dcc5a9dbf11b60fbde5190e0ede6abc2c59db3 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Thu, 17 Jun 2021 12:46:13 +0500
+Subject: [PATCH] Commit Title          : tcp exact match session without
+ tcp_flags return error
+
+BugID                 : 24437
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Added handling of tcp_flags and ARPs to the exact match check
+---
+ ofproto/ofproto.c | 52 +++++++++++++++++++++++++++++++---------------------
+ 1 file changed, 31 insertions(+), 21 deletions(-)
+
+diff --git a/ofproto/ofproto.c b/ofproto/ofproto.c
+index 535fc6a30..efc3e1629 100644
+--- a/ofproto/ofproto.c
++++ b/ofproto/ofproto.c
+@@ -9100,7 +9100,8 @@ oftable_configure_eviction(struct oftable *table, unsigned int eviction,
+     }
+ }
+ 
+-#define IS_ALL_ONES(ARG__)     is_all_ones(&(ARG__), sizeof(ARG__))
++
++#define RETURN_FALSE_IF_NOT_MASKED(ARG__)  do {if (!is_all_ones(&(ARG__), sizeof(ARG__))) {return false;}} while (0)
+ 
+ /* Check if rule and actions from rule represent exact match
+  */
+@@ -9119,15 +9120,18 @@ is_exact_match(struct rule *rule, const struct rule_actions *actions)
+     minimatch_expand(&rule->cr.match, &m);
+     masks = &m.wc.masks;
+ 
+-    if (m.flow.in_port.ofp_port == 0 || m.flow.in_port.ofp_port >= OFPP_MAX)
++    if (m.flow.in_port.ofp_port == 0 || m.flow.in_port.ofp_port >= OFPP_MAX) {
+         return false;
++    }
+ 
+-    result = any_port_mask == (any_port_mask & masks->in_port.ofp_port);
++    if (any_port_mask != (any_port_mask & masks->in_port.ofp_port)) {
++        return false;
++    }
+ 
+     if (m.flow.packet_type == htonl(PT_ETH)) {
+-        result = result && IS_ALL_ONES(masks->dl_dst);
+-        result = result && IS_ALL_ONES(masks->dl_src);
+-        result = result && IS_ALL_ONES(masks->dl_type);
++        RETURN_FALSE_IF_NOT_MASKED(masks->dl_dst.ea);
++        RETURN_FALSE_IF_NOT_MASKED(masks->dl_src.ea);
++        RETURN_FALSE_IF_NOT_MASKED(masks->dl_type);
+ 
+         for (int i = 0; i < FLOW_MAX_VLAN_HEADERS; ++i) {
+             /* TODO: test m.flow.vlans[i] */
+@@ -9142,22 +9146,26 @@ is_exact_match(struct rule *rule, const struct rule_actions *actions)
+     }
+ 
+     if (dl_type == htons(ETH_TYPE_IP)) {
+-        result = result && IS_ALL_ONES(masks->nw_src);
+-        result = result && IS_ALL_ONES(masks->nw_dst);
++        RETURN_FALSE_IF_NOT_MASKED(masks->nw_src);
++        RETURN_FALSE_IF_NOT_MASKED(masks->nw_dst);
+     } else if (dl_type == htons(ETH_TYPE_IPV6)) {
+-        result = result && IS_ALL_ONES(masks->ipv6_src);
+-        result = result && IS_ALL_ONES(masks->ipv6_dst);
++        RETURN_FALSE_IF_NOT_MASKED(masks->ipv6_src.__in6_u.__u6_addr8);
++        RETURN_FALSE_IF_NOT_MASKED(masks->ipv6_dst.__in6_u.__u6_addr8);
++    } else if (dl_type == htons(ETH_TYPE_ARP) ||
++               dl_type == htons(ETH_TYPE_RARP)) {
++        RETURN_FALSE_IF_NOT_MASKED(masks->nw_src);
++        RETURN_FALSE_IF_NOT_MASKED(masks->nw_dst);
++        RETURN_FALSE_IF_NOT_MASKED(masks->arp_sha.ea);
++        RETURN_FALSE_IF_NOT_MASKED(masks->arp_tha.ea);
+     }
+     
+-    result = result && IS_ALL_ONES(masks->nw_proto);
++    RETURN_FALSE_IF_NOT_MASKED(masks->nw_proto);
+ 
+     /* TODO: implement proper nw_tos handling - the following code doesn't work as expected:
+-     * result = result && IS_ALL_ONES(masks->nw_tos);
++     * RETURN_FALSE_IF_NOT_MASKED(masks->nw_tos);
+      */
+ 
+-    result = result && (bool) masks->nw_frag;
+-
+-    if (!result) {
++    if (!(bool)masks->nw_frag) {
+         return false;
+     }
+ 
+@@ -9170,10 +9178,12 @@ is_exact_match(struct rule *rule, const struct rule_actions *actions)
+         case IPPROTO_UDP:
+         case IPPROTO_SCTP:
+         case IPPROTO_IGMP:
+-            result = result && IS_ALL_ONES(masks->tp_src);
+-            result = result && IS_ALL_ONES(masks->tp_dst);
+-            if (m.flow.nw_proto == IPPROTO_IGMP) {
+-                result = result && IS_ALL_ONES(masks->igmp_group_ip4);
++            RETURN_FALSE_IF_NOT_MASKED(masks->tp_src);
++            RETURN_FALSE_IF_NOT_MASKED(masks->tp_dst);
++            if (m.flow.nw_proto == IPPROTO_TCP) {
++                RETURN_FALSE_IF_NOT_MASKED(masks->tcp_flags);
++            } else if (m.flow.nw_proto == IPPROTO_IGMP) {
++                RETURN_FALSE_IF_NOT_MASKED(masks->igmp_group_ip4);
+             }
+             break;
+         default:
+@@ -9183,9 +9193,9 @@ is_exact_match(struct rule *rule, const struct rule_actions *actions)
+ 
+     /* Verify actions */
+ 
+-    if (!result || !actions->ofpacts_len) {
++    if (!actions->ofpacts_len) {
+         /* it's a drop */
+-        return result;
++        return true;
+     }
+ 
+     result = false; /* no valid output found */
