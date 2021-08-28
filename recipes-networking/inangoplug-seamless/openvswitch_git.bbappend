@@ -5,8 +5,9 @@ DEPENDS_remove = "bridge-utils python perl"
 DEPENDS_remove = "virtual/kernel"
 DEPENDS_append_class-target = " inangoplug-pp-acceleration-mod"
 
-RDEPENDS_${PN}_remove = "python3-twisted"
+RDEPENDS_${PN}_remove = "python python3 python-twisted python3-twisted python3-six coreutils sed gawk grep"
 RDEPENDS_${PN} += " ${PN}-brcompat ${PN}-testcontroller "
+RDEPENDS_${PN}-switch_remove = "procps"
 
 FILESEXTRAPATHS_prepend := "${THISDIR}/inangoplug_files:${THISDIR}/inangoplug_patches:"
 
@@ -16,6 +17,7 @@ SRC_URI_append = " \
     file://openvswitch.conf \
     "
 
+PACKAGECONFIG_remove = "libcap-ng"
 PACKAGECONFIG += "pp-offload ssl"
 PACKAGECONFIG[pp-offload] = "--enable-pp-offload, --disable-pp-offload,,"
 EXTRA_OECONF_class-target += "--with-linux=${STAGING_KERNEL_BUILDDIR} \
