@@ -1,0 +1,55 @@
+From 6286ca3c1341364da5924e63d45d963a634fdf7e Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Fri, 3 Sep 2021 20:22:16 +0300
+Subject: [PATCH] Commit Title          : OVS. Handle unsupported param from AM
+ during create/modify flow.
+
+BugID                 : 25543
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Handled unsupported param from AM during create/modify flow.
+---
+ datapath/am_pp.c | 9 ++++++++-
+ datapath/am_pp.h | 1 +
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index 3597796c8..1166f4565 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -89,6 +89,8 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 
+ 	if (err == PP_AM_OK)
+ 		flow->acl_state = ACCELERATED;
++	else if (err == PP_AM_UNSUPPORTED_PARAM)
++		flow->acl_state = UNSUPPORTED;
+ 
+ 	if (proactive_flag)
+ 		init_flow_am_stats(flow);
+@@ -123,8 +125,13 @@ int am_mod_session(struct datapath *dp, struct sw_flow *flow, struct sw_flow_act
+ 
+ 	err = pp_am_modify_session(old_session, new_session, &flow->pp_am_id);
+ 
+-	if (err != PP_AM_OK)
++	if (err == PP_AM_UNSUPPORTED_PARAM) {
++		am_remove_session(flow);
++		flow->acl_state = UNSUPPORTED;
++	} else if (err != PP_AM_OK)
+ 		flow->acl_state = NOT_ACCELERATE;
++	else
++		flow->acl_state = ACCELERATED;
+ 
+ out:
+ 	if (new_session)
+diff --git a/datapath/am_pp.h b/datapath/am_pp.h
+index 42e0d392f..218c1bdc8 100644
+--- a/datapath/am_pp.h
++++ b/datapath/am_pp.h
+@@ -33,6 +33,7 @@ enum acl_state {
+     NOT_ACCELERATE,
+     ACCELERATED,
+     REMOVED,
++    UNSUPPORTED,
+     UNDEFINED
+ };
+ 

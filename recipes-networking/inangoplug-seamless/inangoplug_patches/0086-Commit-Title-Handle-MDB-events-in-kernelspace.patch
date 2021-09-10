@@ -1,0 +1,117 @@
+From ba518ee31bfd48ea9c43ba090aeb7ea5184e6ec0 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Wed, 1 Sep 2021 16:08:49 +0300
+Subject: [PATCH] Commit Title          : Handle MDB events in kernelspace
+
+BugID                 : 25518
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Handled MDB events in kernelspace (executes AM API's)
+---
+ datapath/datapath.c | 70 +++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 68 insertions(+), 2 deletions(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 199e18e87..b31dfa097 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -2085,6 +2085,54 @@ error:
+     return -EMSGSIZE;
+ }
+ 
++static int ovs_vport_cmd_mcast_fill_msg(struct pp_am_multicast_event_msg *msg, struct genl_info *info)
++{
++    struct nlattr **a = info->attrs;
++    struct nlattr *ip_attr;
++    struct ovs_header *ovs_header = info->userhdr;
++
++    memset(msg, 0, sizeof(struct pp_am_multicast_event_msg));
++
++    msg->ifindex = ovs_header->dp_ifindex;
++
++    if (a[OVS_VPORT_ATTR_IPV4]) {
++        ip_attr = a[OVS_VPORT_ATTR_IPV4];
++        memcpy(&msg->ip.ipv4, nla_data(ip_attr), nla_len(ip_attr));
++        msg->ip.eth_proto = htons(ETH_P_IP);
++    } else if (a[OVS_VPORT_ATTR_IPV6]) {
++        ip_attr = a[OVS_VPORT_ATTR_IPV6];
++        memcpy(&msg->ip.ipv6, nla_data(ip_attr), nla_len(ip_attr));
++        msg->ip.eth_proto = htons(ETH_P_IPV6);
++    } else {
++        return -EINVAL;
++    }
++    return 0;
++}
++
++static int ovs_vport_cmd_addmcastgrp(struct sk_buff *skb, struct genl_info *info)
++{
++    struct pp_am_multicast_event_msg msg;
++    int err;
++
++    err = ovs_vport_cmd_mcast_fill_msg(&msg, info);
++    if (err) {
++        return err;
++    }
++    return pp_am_port_event(PP_AM_MULTICAST_JOIN, &msg);
++}
++
++static int ovs_vport_cmd_delmcastgrp(struct sk_buff *skb, struct genl_info *info)
++{
++    struct pp_am_multicast_event_msg msg;
++    int err;
++
++    err = ovs_vport_cmd_mcast_fill_msg(&msg, info);
++    if (err) {
++        return err;
++    }
++    return pp_am_port_event(PP_AM_MULTICAST_LEAVE, &msg);
++}
++
+ static const struct nla_policy datapath_policy[OVS_DP_ATTR_MAX + 1] = {
+ 	[OVS_DP_ATTR_NAME] = { .type = NLA_NUL_STRING, .len = IFNAMSIZ - 1 },
+ 	[OVS_DP_ATTR_UPCALL_PID] = { .type = NLA_U32 },
+@@ -2596,6 +2644,8 @@ static const struct nla_policy vport_policy[OVS_VPORT_ATTR_MAX + 1] = {
+ 	[OVS_VPORT_ATTR_IFINDEX] = { .type = NLA_U32 },
+ 	[OVS_VPORT_ATTR_NETNSID] = { .type = NLA_S32 },
+ 	[OVS_VPORT_ATTR_MAC] = { .type = NLA_UNSPEC },
++	[OVS_VPORT_ATTR_IPV4] = { .type = NLA_UNSPEC },
++	[OVS_VPORT_ATTR_IPV6] = { .type = NLA_UNSPEC },
+ };
+ 
+ static const struct genl_ops dp_vport_genl_ops[] = {
+@@ -2637,7 +2687,7 @@ static const struct genl_ops dp_vport_genl_ops[] = {
+ 	  .validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
+ #endif
+ 	  .flags = GENL_UNS_ADMIN_PERM, /* Requires CAP_NET_ADMIN privilege. */
+-	  .policy = datapath_policy,
++	  .policy = vport_policy,
+ 	  .doit = ovs_vport_cmd_newneigh,
+ 	},
+ 	{ .cmd = OVS_VPORT_CMD_DELNEIGH,
+@@ -2645,9 +2695,25 @@ static const struct genl_ops dp_vport_genl_ops[] = {
+ 	  .validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
+ #endif
+ 	  .flags = GENL_UNS_ADMIN_PERM, /* Requires CAP_NET_ADMIN privilege. */
+-	  .policy = datapath_policy,
++	  .policy = vport_policy,
+ 	  .doit = ovs_vport_cmd_delneigh,
+ 	},
++	{ .cmd = OVS_VPORT_CMD_ADDMCASTGRP,
++#ifdef HAVE_GENL_VALIDATE_FLAGS
++	  .validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
++#endif
++	  .flags = 0,		    /* OK for unprivileged users. */
++	  .policy = vport_policy,
++	  .doit = ovs_vport_cmd_addmcastgrp,
++	},
++	{ .cmd = OVS_VPORT_CMD_DELMCASTGRP,
++#ifdef HAVE_GENL_VALIDATE_FLAGS
++	  .validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
++#endif
++	  .flags = 0,		    /* OK for unprivileged users. */
++	  .policy = vport_policy,
++	  .doit = ovs_vport_cmd_delmcastgrp,
++	},
+ };
+ 
+ struct genl_family dp_vport_genl_family __ro_after_init = {

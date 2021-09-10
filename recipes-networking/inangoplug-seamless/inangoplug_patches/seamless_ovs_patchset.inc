@@ -84,5 +84,10 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0082-Commit-Title-Fixed-modify-session-request.patch \
     file://0083-Commit-Title-tcp-exact-match-session-without-tcp_flags-return-error.patch \
     file://0084-Commit-Title-Cable-modem-reboots-during-CDRouter-testing.patch \
+    file://0085-Commit-Title-Multicast-design-issue.patch \
+    file://0086-Commit-Title-Handle-MDB-events-in-kernelspace.patch \
+    file://0087-Commit-Title-OVS.-Handle-unsupported-param-from-AM-during-create-modify-flow.patch \
+    file://0088-Commit-Title-Send-MDB-events-to-KERNEL-from-OVS.patch \
+    file://0089-Commit-Title-Fix-destroy-bridge-operation.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

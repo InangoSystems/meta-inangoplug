@@ -1,0 +1,38 @@
+From 83630d1cfc719d0cda56f045e03f2124f2b2807a Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Tue, 31 Aug 2021 18:41:10 +0500
+Subject: [PATCH] Commit Title          : Multicast design issue
+
+BugID                 : 25514
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Added common definitions
+---
+ datapath/linux/compat/include/linux/openvswitch.h | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/datapath/linux/compat/include/linux/openvswitch.h b/datapath/linux/compat/include/linux/openvswitch.h
+index aab03612d..a387f7a12 100644
+--- a/datapath/linux/compat/include/linux/openvswitch.h
++++ b/datapath/linux/compat/include/linux/openvswitch.h
+@@ -237,7 +237,9 @@ enum ovs_vport_cmd {
+ 	OVS_VPORT_CMD_GET,
+ 	OVS_VPORT_CMD_SET,
+ 	OVS_VPORT_CMD_NEWNEIGH,
+-	OVS_VPORT_CMD_DELNEIGH
++	OVS_VPORT_CMD_DELNEIGH,
++	OVS_VPORT_CMD_ADDMCASTGRP,
++	OVS_VPORT_CMD_DELMCASTGRP
+ };
+ 
+ enum ovs_vport_type {
+@@ -295,6 +297,8 @@ enum ovs_vport_attr {
+ 	OVS_VPORT_ATTR_OPTIONS, /* nested attributes, varies by vport type */
+ 	OVS_VPORT_ATTR_UPCALL_PID, /* array of u32 Netlink socket PIDs for */
+ 	OVS_VPORT_ATTR_MAC,     /* mac address */
++	OVS_VPORT_ATTR_IPV4,    /* IPv4 address */
++	OVS_VPORT_ATTR_IPV6,    /* IPv6 address */
+ 				/* receiving upcalls */
+ 	OVS_VPORT_ATTR_STATS,	/* struct ovs_vport_stats */
+ 	OVS_VPORT_ATTR_PAD,

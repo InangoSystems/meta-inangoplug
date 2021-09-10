@@ -1,0 +1,160 @@
+From 9fdfcd0da474a0939d0b09ecb7197fa8d7f976b9 Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Tue, 7 Sep 2021 22:34:56 +0500
+Subject: [PATCH] Commit Title: Fix destroy bridge operation.
+
+BugID: 25451
+Bug Fixed(y/N[blankN]):
+CodeReviewId: 0
+Description:
+- correct check port type in userspace
+- handle state when we try to delete port with slave interfaces
+---
+ datapath/datapath.c     | 43 +++++++++++++++++++++++++++++++++++++++++++
+ datapath/datapath.h     |  6 ++++++
+ datapath/vport-netdev.c |  2 ++
+ vswitchd/bridge.c       | 10 +++-------
+ 4 files changed, 54 insertions(+), 7 deletions(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index b31dfa097..03dc2151d 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -339,6 +339,7 @@ void ovs_dp_detach_port(struct vport *p)
+ {
+ 	ASSERT_OVSL();
+ 
++	OVS_LOG_DBG("detach vport %s from datapath\n", p->dev->name);
+ 	if (p->port_no != OVSP_LOCAL) {
+ 		ovs_dp_sysfs_del_if(p);
+ 		if (ovs_add_del_entry_to_brlist)
+@@ -1833,6 +1834,41 @@ err:
+ 	return err;
+ }
+ 
++static void detach_internal_ifaces(struct vport *vport_master) {
++	struct datapath *dp;
++	int i;
++	struct vport *vport_next, *vport;
++	LIST_HEAD(head);
++
++	if (!vport_master){
++		pr_err("try to detach slave intrfaces from null master interface\n");
++		return;
++	}
++
++	if (vport_master->type != OVS_VPORT_TYPE_INTERNAL)
++		return;
++
++	rtnl_lock();
++	dp = vport_master->dp;
++	for (i = 0; i < DP_VPORT_HASH_BUCKETS; i++) {
++		struct hlist_node *n;
++
++		hlist_for_each_entry_safe(vport_next, n, &dp->ports[i], dp_hash_node)
++			if (vport_next->port_no != OVSP_LOCAL){
++				if (netdev_master_upper_dev_get(vport_next->dev) == vport_master->dev){
++					OVS_LOG_DBG("detach slave interface %s (master: %s)\n", vport_next->dev->name, vport_master->dev->name);
++					list_add(&vport_next->detach_list, &head);
++				}
++			}
++	}
++	rtnl_unlock();
++
++	list_for_each_entry_safe(vport, vport_next, &head, detach_list) {
++		list_del(&vport->detach_list);
++		ovs_dp_detach_port(vport);
++	}
++}
++
+ /* Called with ovs_mutex. */
+ static void __dp_destroy(struct datapath *dp)
+ {
+@@ -2532,6 +2568,8 @@ static int ovs_vport_cmd_del(struct sk_buff *skb, struct genl_info *info)
+ 	if (IS_ERR(vport))
+ 		goto exit_unlock_free;
+ 
++	OVS_LOG_DBG("Request to detach port %s (type: %d)\n", vport->dev->name, vport->type);
++
+ 	if (vport->port_no == OVSP_LOCAL) {
+ 		err = -EINVAL;
+ 		goto exit_unlock_free;
+@@ -2542,11 +2580,16 @@ static int ovs_vport_cmd_del(struct sk_buff *skb, struct genl_info *info)
+ 				      OVS_VPORT_CMD_DEL);
+ 	BUG_ON(err < 0);
+ 
++
+ 	/* the vport deletion may trigger dp headroom update */
+ 	dp = vport->dp;
+ 	if (netdev_get_fwd_headroom(vport->dev) == dp->max_headroom)
+ 		must_update_headroom = true;
+ 	netdev_reset_rx_headroom(vport->dev);
++
++	if (vport->type == OVS_VPORT_TYPE_INTERNAL) {
++		detach_internal_ifaces(vport);
++	}
+ 	ovs_dp_detach_port(vport);
+ 
+ 	if (must_update_headroom)
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index 7e8be4ccd..118158316 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -43,6 +43,12 @@
+ #define DP_MAX_PORTS           USHRT_MAX
+ #define DP_VPORT_HASH_BUCKETS  1024
+ 
++#ifdef OVS_DEBUG_LOG_ENABLE
++ #define OVS_LOG_DBG(format, ...) printk(KERN_INFO "OVS:%s:%d " format, __func__, __LINE__,##__VA_ARGS__ )
++#else
++ #define OVS_LOG_DBG(format, ...)
++#endif
++
+ /**
+  * struct dp_stats_percpu - per-cpu packet processing statistics for a given
+  * datapath.
+diff --git a/datapath/vport-netdev.c b/datapath/vport-netdev.c
+index 227df2604..37d4f814a 100644
+--- a/datapath/vport-netdev.c
++++ b/datapath/vport-netdev.c
+@@ -194,10 +194,12 @@ void ovs_netdev_detach_dev(struct vport *vport)
+ static void netdev_destroy(struct vport *vport)
+ {
+ 	rtnl_lock();
++	
+ 	if (vport->dev->priv_flags & IFF_OVS_DATAPATH)
+ 		ovs_netdev_detach_dev(vport);
+ 	rtnl_unlock();
+ 
++	OVS_LOG_DBG("vport %s successfully destroyed \n", vport->dev->name);
+ 	call_rcu(&vport->rcu, vport_netdev_free);
+ }
+ 
+diff --git a/vswitchd/bridge.c b/vswitchd/bridge.c
+index f368317af..0ca478862 100644
+--- a/vswitchd/bridge.c
++++ b/vswitchd/bridge.c
+@@ -3626,20 +3626,16 @@ bridge_destroy(struct bridge *br, bool del)
+         struct mirror *mirror, *next_mirror;
+         struct port *port, *next_port;
+         struct iface *iface, *next;
+-        int internal;
+ 
+         /* Remove non internal ports first to prevent deadlocks */
+         HMAP_FOR_EACH_SAFE (port, next_port, hmap_node, &br->ports) {
+-            internal = 0;
+             LIST_FOR_EACH_SAFE (iface, next, port_elem, &port->ifaces) {
+-                if (iface_is_internal(iface->cfg, br->cfg)) {
+-                    internal = 1;
++                if (!strcmp(iface->type, "internal")) {
+                     break;
++                } else {
++                    iface_destroy(iface);
+                 }
+             }
+-            if (!internal) {
+-                port_destroy(port);
+-            }
+         }
+         HMAP_FOR_EACH_SAFE (port, next_port, hmap_node, &br->ports) {
+             port_destroy(port);
