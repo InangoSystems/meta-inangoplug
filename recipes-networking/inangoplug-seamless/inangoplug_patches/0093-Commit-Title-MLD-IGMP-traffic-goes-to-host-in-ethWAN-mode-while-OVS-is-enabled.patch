@@ -1,0 +1,29 @@
+From 3cb10a078ac42e75b52a6a2a76598692c72d0ac2 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Thu, 16 Sep 2021 21:20:39 +0300
+Subject: [PATCH] Commit Title          : MLD/IGMP traffic goes to host in
+ ethWAN mode while OVS is enabled
+
+BugID                 : 25712
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Fixed MLD/IGMP traffic goes to host in ethWAN mode while OVS is enabled
+---
+ ofproto/ofproto-dpif-xlate.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 858d57077..09ea9660e 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -3356,7 +3356,9 @@ xlate_normal(struct xlate_ctx *ctx)
+         } else {
+             xlate_report(ctx, OFT_DETAIL,
+                          "no learned MAC for destination, flooding");
+-            if (!eth_addr_is_broadcast(flow->dl_dst) && !eth_addr_is_multicast(flow->dl_dst)) {
++            if (eth_addr_is_multicast(flow->dl_dst)) {
++                xin->flow_type = MULTICAST_FLOW_TYPE;
++            } else if (!eth_addr_is_broadcast(flow->dl_dst)) {
+                 xin->flow_type = UNKNOWN_UNICAST_FLOW_TYPE;
+             }
+             xlate_normal_flood(ctx, in_xbundle, &xvlan);

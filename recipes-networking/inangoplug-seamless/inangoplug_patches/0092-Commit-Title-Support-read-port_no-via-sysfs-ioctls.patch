@@ -1,0 +1,104 @@
+From 1d8f9ddb5ead86cd3e00ac35206244296db3e11c Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Wed, 15 Sep 2021 15:53:41 +0500
+Subject: [PATCH] Commit Title: Support read port_no via sysfs/ioctls
+
+BugID: 25716
+Bug Fixed(y/N[blankN]):
+CodeReviewId: 0
+Description:
+- Return correct value during port_no request from sysfs
+---
+ datapath/brcompat_main.c |  1 -
+ datapath/dp_sysfs_if.c   |  2 +-
+ vswitchd/ovs-brcompatd.c | 45 ++++++++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 45 insertions(+), 3 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 17d0345ff..67d9bccf9 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -881,7 +881,6 @@ static int brc_dev_sysfs(struct net_device *dev, unsigned long *ul_value, int cm
+ 			case BRC_GENL_C_GET_BRIDGE_ROOT_ID: 
+ 			case BRC_GENL_C_GET_BRIDGE_STP_STATE:
+ 			case BRC_GENL_C_GET_PORT_STATE:
+-			case BRC_GENL_C_GET_PORT_PORT_NO:
+ 				*ul_value = 0;
+ 				break;
+ 			case BRC_GENL_C_GET_AGEING_TIME:
+diff --git a/datapath/dp_sysfs_if.c b/datapath/dp_sysfs_if.c
+index d26d1f107..246234050 100644
+--- a/datapath/dp_sysfs_if.c
++++ b/datapath/dp_sysfs_if.c
+@@ -122,7 +122,7 @@ static ssize_t show_port_no(struct vport *p, char *buf)
+ 	unsigned long value;
+ 
+ 	ovs_dp_sysfs_hook(p->dev, &value, BRC_GENL_C_GET_PORT_PORT_NO, GET_PARAMETER);
+-	return sprintf(buf, "%lu\n", value);
++	return sprintf(buf, "0x%lx\n", value);
+ }
+ 
+ static BRPORT_ATTR(port_no, S_IRUGO, show_port_no, NULL);
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 9d110ba62..7f323f445 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -1337,6 +1337,49 @@ send_reply:
+     return 0;
+ }
+ 
++static int
++handle_get_ulong_val_iface_cmd(struct ofpbuf *buffer, const char *sub_cmd)
++{
++    const char *br_name;
++    uint32_t seq;
++    char *output, *end_p = NULL;
++    int error;
++    unsigned long result;
++    struct ofpbuf *reply;
++
++    /* Parse Netlink command. */
++    error = parse_command(buffer, &seq, &br_name, NULL, NULL, NULL, NULL);
++    if (error) {
++        return error;
++    }
++
++    output = capture_vsctl(vsctl_program, VSCTL_OPTIONS, "get", "Interface", br_name, sub_cmd, (char *) NULL);
++
++    if (!output) {
++        VLOG_ERR("handle_get_ulong_val_port_cmd %s\n", output);
++        result = 0;
++        goto send_reply;
++    }
++
++    errno = 0;
++    result = strtoul(output, &end_p, 10);
++
++    if ((result == ULONG_MAX && (errno == ERANGE))) {
++        VLOG_ERR("Error occurred during converting string to int cmd\n");
++        result = 0;
++        goto send_reply;
++    }
++
++send_reply:
++    /* Compose and send reply. */
++    reply = compose_reply(0);
++    nl_msg_put_u32(reply, BRC_GENL_A_GET_ULONG, result);
++    send_reply(reply, seq);
++
++    free(output);
++    return 0;
++}
++
+ static int
+ handle_set_mc_snooping_flag_cmd(struct ofpbuf *buffer)
+ {
+@@ -1558,7 +1601,7 @@ brc_recv_update(void)
+         break;
+ 
+     case BRC_GENL_C_GET_PORT_PORT_NO:
+-        handle_get_ulong_val_port_cmd(&buffer, "other_config:stp-port-num");
++        handle_get_ulong_val_iface_cmd(&buffer, "ofport");
+         break;
+ 
+     case BRC_GENL_C_GET_PORT_PATH_COST:

@@ -1,0 +1,110 @@
+From a77c2d06c2166d2a2f1d43c8ceea075b4ad3268d Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Tue, 14 Sep 2021 19:32:51 +0500
+Subject: [PATCH] Commit Title: Hardcoded stp fields
+
+BugID: 25707
+Bug Fixed(y/N[blankN]):
+CodeReviewId: 0
+Description:
+- hardcoded stp values, it's doesn't support in current version
+brcompatd.
+---
+ datapath/brcompat_main.c | 55 ++++++++++++++++++++++++++++++++++++++++++++++--
+ datapath/dp_sysfs_dp.c   |  9 ++++----
+ 2 files changed, 58 insertions(+), 6 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 354cc1548..17d0345ff 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -40,6 +40,16 @@
+ 
+ #define BRIDGE_LIST_MAX 16
+ 
++/* Dafaults */
++#define BRC_STP_DEFAULT_BRIDGE_PRIORITY 32768
++/* Default time values. */
++#define BRC_STP_DEFAULT_MAX_AGE    20
++#define BRC_STP_DEFAULT_HELLO_TIME 2
++#define BRC_STP_DEFAULT_FWD_DELAY  15
++/* Default mac-aging-time is y 300 seconds (5 minutes)*/
++#define BRC_DEFAULT_MAC_AGING_TIME 300
++#define BRC_STP_PATH_COST   100
++
+ /* Bridge ioctls */
+ #define SIOCBRMGADD           0x89ab
+ #define SIOCBRMGDEL           0x89ac
+@@ -851,9 +861,50 @@ static int brc_dev_sysfs(struct net_device *dev, unsigned long *ul_value, int cm
+ 	int err = 0;
+ 
+ 	if (oper == GET_PARAMETER)
+-		return brc_get_ulong_val_cmd(dev, cmd, ul_value);
++		switch(cmd){
++			case BRC_GENL_C_GET_BRIDGE_FORWARD_DELAY:
++				*ul_value = BRC_STP_DEFAULT_FWD_DELAY;
++				break;
++			case BRC_GENL_C_GET_BRIDGE_HELLO_TIME:
++				*ul_value = BRC_STP_DEFAULT_HELLO_TIME;
++				break;
++			case BRC_GENL_C_GET_BRIDGE_MAX_AGE: 
++				*ul_value = BRC_STP_DEFAULT_MAX_AGE;
++				break;
++			/*start*/
++			case BRC_GENL_C_GET_BRIDGE_PRIORITY:
++				*ul_value = BRC_STP_DEFAULT_BRIDGE_PRIORITY;
++				break;
++			case BRC_GENL_C_GET_PORT_PATH_COST:
++				*ul_value = BRC_STP_PATH_COST;
++				break;
++			case BRC_GENL_C_GET_BRIDGE_ROOT_ID: 
++			case BRC_GENL_C_GET_BRIDGE_STP_STATE:
++			case BRC_GENL_C_GET_PORT_STATE:
++			case BRC_GENL_C_GET_PORT_PORT_NO:
++				*ul_value = 0;
++				break;
++			case BRC_GENL_C_GET_AGEING_TIME:
++				*ul_value = BRC_DEFAULT_MAC_AGING_TIME;
++				break;
++			default:
++				return brc_get_ulong_val_cmd(dev, cmd, ul_value);
++		}
+ 	else if (oper == SET_PARAMETER)
+-		return brc_set_ulong_val_cmd(dev, cmd, *ul_value);
++		switch (cmd)
++		{
++			case BRC_GENL_C_SET_BRIDGE_FORWARD_DELAY:
++			case BRC_GENL_C_SET_BRIDGE_HELLO_TIME:
++			case BRC_GENL_C_SET_BRIDGE_MAX_AGE:
++			case BRC_GENL_C_SET_BRIDGE_PRIORITY:
++			case BRC_GENL_C_SET_BRIDGE_STP_STATE:
++			case BRC_GENL_C_SET_PORT_PATH_COST:
++			 err = EOPNOTSUPP;
++			 break;
++			default:
++				return brc_set_ulong_val_cmd(dev, cmd, *ul_value);
++				break;
++		}
+ 	else
+ 		err = -1;
+ 
+diff --git a/datapath/dp_sysfs_dp.c b/datapath/dp_sysfs_dp.c
+index e73be3057..b7c012223 100644
+--- a/datapath/dp_sysfs_dp.c
++++ b/datapath/dp_sysfs_dp.c
+@@ -254,10 +254,11 @@ static INTERNAL_DEVICE_ATTR(stp_state, S_IRUGO | S_IWUSR, show_stp_state, store_
+ 
+ static ssize_t show_root_id(DEVICE_PARAMS, char *buf)
+ {
+-	char value[32];
+-	memset(value, 0, 32);
+-	ovs_dp_sysfs_string_hook(to_net_dev(d), value, BRC_GENL_C_GET_BRIDGE_ROOT_ID);
+-	return sprintf(buf, "%s\n", value);
++	unsigned char		*dev_addr;
++	dev_addr = to_net_dev(d)->dev_addr;
++	return sprintf(buf, "8000.%.2x%.2x%.2x%.2x%.2x%.2x\n",
++	       dev_addr[0], dev_addr[1], dev_addr[2],
++	       dev_addr[3], dev_addr[4], dev_addr[5]);
+ }
+ static INTERNAL_DEVICE_ATTR(root_id, S_IRUGO, show_root_id, NULL);
+ 

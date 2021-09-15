@@ -89,5 +89,9 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0087-Commit-Title-OVS.-Handle-unsupported-param-from-AM-during-create-modify-flow.patch \
     file://0088-Commit-Title-Send-MDB-events-to-KERNEL-from-OVS.patch \
     file://0089-Commit-Title-Fix-destroy-bridge-operation.patch \
+    file://0090-Commit-Title-brcompat-timed-out-after-apply-setting-in-WiFi.patch \
+    file://0091-Commit-Title-Hardcoded-stp-fields.patch \
+    file://0092-Commit-Title-Support-read-port_no-via-sysfs-ioctls.patch \
+    file://0093-Commit-Title-MLD-IGMP-traffic-goes-to-host-in-ethWAN-mode-while-OVS-is-enabled.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

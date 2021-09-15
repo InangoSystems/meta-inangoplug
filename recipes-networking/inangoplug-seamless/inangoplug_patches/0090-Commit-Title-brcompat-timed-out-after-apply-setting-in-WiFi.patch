@@ -1,0 +1,691 @@
+From 0fe032983b56574abadce828b8c9deb4044871b7 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Wed, 15 Sep 2021 14:05:38 +0300
+Subject: [PATCH] Commit Title          : brcompat timed out after apply
+ setting in WiFi
+
+BugID                 : 25565
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Fixed brcompat timed out after apply setting in WiFi
+---
+ datapath/brcompat_main.c                          | 100 ----------------------
+ datapath/datapath.c                               |  27 ++----
+ datapath/datapath.h                               |   5 +-
+ datapath/linux/compat/include/linux/openvswitch.h |   1 +
+ datapath/linux/compat/ip6_gre.c                   |   4 +-
+ datapath/linux/compat/ip_gre.c                    |   4 +-
+ datapath/vport-geneve.c                           |   2 +-
+ datapath/vport-gre.c                              |   2 +-
+ datapath/vport-lisp.c                             |   2 +-
+ datapath/vport-netdev.c                           |  23 ++---
+ datapath/vport-netdev.h                           |   2 +-
+ datapath/vport-stt.c                              |   2 +-
+ datapath/vport-vxlan.c                            |   2 +-
+ datapath/vport.h                                  |   1 +
+ lib/dpctl.c                                       |   2 +-
+ lib/dpif-netdev.c                                 |   2 +-
+ lib/dpif-netlink.c                                |  23 +++--
+ lib/dpif-netlink.h                                |   1 +
+ lib/dpif-provider.h                               |   2 +-
+ lib/dpif.c                                        |   4 +-
+ lib/dpif.h                                        |   2 +-
+ ofproto/ofproto-dpif.c                            |   4 +-
+ 22 files changed, 52 insertions(+), 165 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index d110c7580..354cc1548 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -109,7 +109,6 @@ static DEFINE_SPINLOCK(brc_lock);    /* Ensure atomic access to these vars. */
+ static DECLARE_COMPLETION(brc_done); /* Userspace signaled operation done? */
+ static struct sk_buff *brc_reply;    /* Reply from userspace. */
+ static u32 brc_seq;		     /* Sequence number for current op. */
+-static br_pair_t *head = NULL;       /* Bridge-interface pairs sor sysfs*/
+ static bool brc_netlink_flg = false; /* Flag that indicate that exist brcompat netlink processing */
+ 
+ static DEFINE_MUTEX(brc_addbr_lock); /* Ensure atomic bridge adding. */
+@@ -371,78 +370,6 @@ brc_ioctl_deviceless_stub(struct net *net, unsigned int cmd, void __user *uarg)
+ 	return -EOPNOTSUPP;
+ }
+ 
+-static br_pair_t* getLast(void)
+-{
+-	br_pair_t* curr = head;
+-
+-	while (curr->next)
+-		curr = curr->next;
+-
+-	return curr;
+-}
+-
+-static void pushBack(char *bridge, char *port)
+-{
+-	br_pair_t *tmp;
+-	br_pair_t* curr;
+-
+-	for (curr = head; curr != NULL; curr = curr->next)
+-		if (!strcmp(curr->prname, port) && !strcmp(curr->brname, bridge))
+-			return;
+-
+-	tmp = (br_pair_t*)kmalloc(sizeof(br_pair_t),GFP_KERNEL);
+-	tmp->brname = bridge;
+-	tmp->prname = port;
+-	tmp->next = NULL;
+-
+-	if (head == NULL) {
+-		head = tmp;
+-	} else {
+-		br_pair_t *last = getLast();
+-		last->next = tmp;
+-	}
+-}
+-
+-static void delete_node(char * name)
+-{
+-	br_pair_t* curr = head;
+-	br_pair_t* prev = NULL;
+-
+-	if(curr == NULL)
+-		return;
+-
+-	while((strcmp(curr->prname, name))) {
+-		if(curr->next == NULL) {
+-			return;
+-		} else {
+-			prev = curr;
+-			curr = curr->next;
+-		}
+-	}
+-
+-	if(curr == head)
+-		head = head->next;
+-	else
+-		prev->next = curr->next;
+-
+-	kfree(curr);
+-}
+-
+-void brc_add_del_entry_to_brlist(struct net_device *br_dev, struct net_device *p_dev, bool add)
+-{
+-	/* If true list will be modified by brcompat module */
+-	if (brc_netlink_flg)
+-		return;
+-
+-	mutex_lock(&brc_serial);
+-	if(add)
+-		pushBack(br_dev->name, p_dev->name);
+-	else
+-		delete_node(p_dev->name);
+-
+-	mutex_unlock(&brc_serial);
+-}
+-
+ static int brc_add_del_port_dev(struct net_device *dev, struct net_device *port, int add)
+ {
+ 	struct sk_buff *request;
+@@ -458,25 +385,10 @@ static int brc_add_del_port_dev(struct net_device *dev, struct net_device *port,
+ 	if (!request)
+ 		return -ENOMEM;
+ 
+-	mutex_lock(&brc_serial);
+-	if(add == 1)
+-		pushBack(dev->name, port->name);
+-	mutex_unlock(&brc_serial);
+-
+ 	rtnl_unlock();
+ 	err = brc_send_simple_command(dev_net(dev), request);
+ 	rtnl_lock();
+ 
+-	mutex_lock(&brc_serial);
+-
+-	if (err && add == 1)
+-		delete_node(port->name);
+-
+-	if (!err && !add)
+-		delete_node(port->name);
+-
+-	mutex_unlock(&brc_serial);
+-
+ 	return err;
+ }
+ 
+@@ -957,14 +869,6 @@ static int brc_dev_sysfs_string(struct net_device *dev, char *ustring, int cmd)
+ 	case BRC_GENL_C_GET_BRIDGE_ROOT_ID:
+ 		return brc_get_string(dev, BRC_GENL_C_GET_BRIDGE_ROOT_ID, ustring);
+ 	case BRC_GENL_C_GET_BRIDGE_BY_PORT: {
+-		br_pair_t *iter = head;
+-		while(iter) {
+-			if(strcmp(iter->prname, dev->name) == 0) {
+-				memcpy(ustring, iter->brname, IFNAMSIZ);
+-				return 0;
+-			}
+-			iter = iter->next;
+-		}
+ 		return brc_get_string(dev, BRC_GENL_C_GET_BRIDGE_BY_PORT, ustring);
+ 	}
+ 
+@@ -1204,8 +1108,6 @@ static int __init brc_init(void)
+ 	ovs_dp_sysfs_string_hook = brc_dev_sysfs_string;
+ 
+ 	ovs_get_fdb_entries = brc_get_fdb_entries;
+-	/* Set the openvswitch device handler to add/del ports in list */
+-	ovs_add_del_entry_to_brlist = brc_add_del_entry_to_brlist;
+ 
+ #ifdef CONFIG_LTQ_MCAST_SNOOPING
+ 	/* Set multicast snooping hooks */
+@@ -1243,8 +1145,6 @@ static void brc_cleanup(void)
+ 
+ 	/* Unregister brc_get_fdb_entries */
+ 	ovs_get_fdb_entries = NULL;
+-	/* Unregister the openvswitch device handler to add/del ports in list */
+-	ovs_add_del_entry_to_brlist = NULL;
+ 
+ 	/* Back the hook of the linux bridge to socket module */
+ 	brioctl_set(bridge_ioctl_hook);
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 03dc2151d..c4f2e81cf 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -91,9 +91,6 @@ int (*ovs_get_fdb_entries)(struct net_device *dev, void *user,
+ 			       unsigned long maxnum, unsigned long offset, bool is_user_buf);
+ EXPORT_SYMBOL(ovs_get_fdb_entries);
+ 
+-void (*ovs_add_del_entry_to_brlist)(struct net_device *br_dev, struct net_device *p_dev, bool add) = NULL;
+-EXPORT_SYMBOL(ovs_add_del_entry_to_brlist);
+-
+ static struct genl_family dp_packet_genl_family;
+ static struct genl_family dp_flow_genl_family;
+ static struct genl_family dp_datapath_genl_family;
+@@ -342,8 +339,6 @@ void ovs_dp_detach_port(struct vport *p)
+ 	OVS_LOG_DBG("detach vport %s from datapath\n", p->dev->name);
+ 	if (p->port_no != OVSP_LOCAL) {
+ 		ovs_dp_sysfs_del_if(p);
+-		if (ovs_add_del_entry_to_brlist)
+-			ovs_add_del_entry_to_brlist(NULL, p->dev, false);
+ 	}
+ 
+ 	dp_ifinfo_notify(RTM_DELLINK, p);
+@@ -2362,16 +2357,8 @@ static void update_headroom(struct datapath *dp)
+ 			netdev_set_rx_headroom(vport->dev, max_headroom);
+ }
+ 
+-/* Function to get the name of the bridge through its associated interface*/
+-char* get_bridge_by_port(struct net_device *dev, const char* portName, char *buf)
+-{
+-	ovs_dp_sysfs_string_hook(dev, buf, BRC_GENL_C_GET_BRIDGE_BY_PORT);
+-	return buf;
+-}
+-
+-
+ /* Function to get the vport structure through its bridge name*/
+-struct vport* get_vport_by_bridge(struct datapath *dp, char *bridge)
++struct vport* get_vport_by_bridge(struct datapath *dp, const char *bridge)
+ {
+ 	int i;
+ 
+@@ -2396,7 +2383,7 @@ static int ovs_vport_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 	struct sk_buff *reply;
+ 	struct vport *vport;
+ 	struct datapath *dp;
+-	char bridgeName[IFNAMSIZ] = {0};
++	char *bridgeName = NULL;
+ 	struct vport *br;
+ 	u32 port_no;
+ 	int err;
+@@ -2407,6 +2394,9 @@ static int ovs_vport_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ 	if (a[OVS_VPORT_ATTR_IFINDEX])
+ 		return -EOPNOTSUPP;
+ 
++	if (!!a[OVS_VPORT_ATTR_BRNAME])
++		bridgeName = nla_data(a[OVS_VPORT_ATTR_BRNAME]);
++
+ 	port_no = a[OVS_VPORT_ATTR_PORT_NO]
+ 		? nla_get_u32(a[OVS_VPORT_ATTR_PORT_NO]) : 0;
+ 	if (port_no >= DP_MAX_PORTS)
+@@ -2446,6 +2436,7 @@ restart:
+ 	parms.dp = dp;
+ 	parms.port_no = port_no;
+ 	parms.upcall_portids = a[OVS_VPORT_ATTR_UPCALL_PID];
++	parms.bridge_name = bridgeName;
+ 
+ 	vport = new_vport(&parms);
+ 	err = PTR_ERR(vport);
+@@ -2460,9 +2451,7 @@ restart:
+ 		ovs_dp_sysfs_add_dp(vport->dp, vport);
+ 	}
+ 	else{
+-		get_bridge_by_port(vport->dev, parms.name, bridgeName);
+-
+-		if (!bridgeName[0])
++		if (!bridgeName || !*bridgeName)
+ 			goto cont_wo_sysfs;
+ 
+ 		br = get_vport_by_bridge(vport->dp, bridgeName);
+@@ -2471,8 +2460,6 @@ restart:
+ 			goto cont_wo_sysfs;
+ 
+ 		ovs_dp_sysfs_add_if(vport, br);
+-		if (ovs_add_del_entry_to_brlist)
+-			ovs_add_del_entry_to_brlist(br->dev, vport->dev, true);
+ 	}
+ 
+ cont_wo_sysfs:
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index 118158316..a2544416b 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -201,10 +201,8 @@ int lockdep_ovsl_is_held(void);
+ #define rcu_dereference_ovsl(p)					\
+ 	rcu_dereference_check(p, lockdep_ovsl_is_held())
+ 
+-/* Function to get the name of the bridge through its associated interface*/
+-char* get_bridge_by_port(struct net_device *dev, const char* portName, char *buf);
+ /* Function to get the vport structure through its bridge name*/
+-struct vport* get_vport_by_bridge(struct datapath *dp, char *bridge);
++struct vport* get_vport_by_bridge(struct datapath *dp, const char *bridge);
+ 
+ static inline struct net *ovs_dp_get_net(const struct datapath *dp)
+ {
+@@ -275,7 +273,6 @@ extern int (*ovs_dp_add_del_port_hook)(struct net_device *br_dev, struct net_dev
+ extern int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
+ extern int (*ovs_dp_sysfs_string_hook)(struct net_device *dev, char *ustring, int cmd);
+ extern int (*ovs_get_fdb_entries)(struct net_device *dev, void *userbuf, unsigned long maxnum, unsigned long offset, bool is_user_buf);
+-extern void (*ovs_add_del_entry_to_brlist)(struct net_device *br_dev, struct net_device *p_dev, bool add);
+ 
+ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key);
+ void ovs_dp_detach_port(struct vport *);
+diff --git a/datapath/linux/compat/include/linux/openvswitch.h b/datapath/linux/compat/include/linux/openvswitch.h
+index a387f7a12..3399519ce 100644
+--- a/datapath/linux/compat/include/linux/openvswitch.h
++++ b/datapath/linux/compat/include/linux/openvswitch.h
+@@ -294,6 +294,7 @@ enum ovs_vport_attr {
+ 	OVS_VPORT_ATTR_PORT_NO,	/* u32 port number within datapath */
+ 	OVS_VPORT_ATTR_TYPE,	/* u32 OVS_VPORT_TYPE_* constant. */
+ 	OVS_VPORT_ATTR_NAME,	/* string name, up to IFNAMSIZ bytes long */
++	OVS_VPORT_ATTR_BRNAME,	/* string bridge name, up to IFNAMSIZ bytes long */
+ 	OVS_VPORT_ATTR_OPTIONS, /* nested attributes, varies by vport type */
+ 	OVS_VPORT_ATTR_UPCALL_PID, /* array of u32 Netlink socket PIDs for */
+ 	OVS_VPORT_ATTR_MAC,     /* mac address */
+diff --git a/datapath/linux/compat/ip6_gre.c b/datapath/linux/compat/ip6_gre.c
+index 7fd345309..635c2d939 100644
+--- a/datapath/linux/compat/ip6_gre.c
++++ b/datapath/linux/compat/ip6_gre.c
+@@ -2564,7 +2564,7 @@ static struct vport *erspan6_create(const struct vport_parms *parms)
+ 	if (IS_ERR(vport))
+ 		return vport;
+ 
+-	return ovs_netdev_link(vport, parms->name);
++	return ovs_netdev_link(vport, parms->name,  parms->bridge_name);
+ }
+ 
+ #ifndef OVS_VPORT_TYPE_IP6ERSPAN
+@@ -2665,7 +2665,7 @@ static struct vport *ip6gre_create(const struct vport_parms *parms)
+ 	if (IS_ERR(vport))
+ 		return vport;
+ 
+-	return ovs_netdev_link(vport, parms->name);
++	return ovs_netdev_link(vport, parms->name,  parms->bridge_name);
+ }
+ 
+ static struct vport_ops ovs_ip6gre_vport_ops = {
+diff --git a/datapath/linux/compat/ip_gre.c b/datapath/linux/compat/ip_gre.c
+index 04f994f97..5e55ff50c 100644
+--- a/datapath/linux/compat/ip_gre.c
++++ b/datapath/linux/compat/ip_gre.c
+@@ -1307,7 +1307,7 @@ static struct vport *erspan_create(const struct vport_parms *parms)
+ 	if (IS_ERR(vport))
+ 		return vport;
+ 
+-	return ovs_netdev_link(vport, parms->name);
++	return ovs_netdev_link(vport, parms->name,  parms->bridge_name);
+ }
+ 
+ static struct vport_ops ovs_erspan_vport_ops = {
+@@ -1361,7 +1361,7 @@ static struct vport *ipgre_create(const struct vport_parms *parms)
+ 	if (IS_ERR(vport))
+ 		return vport;
+ 
+-	return ovs_netdev_link(vport, parms->name);
++	return ovs_netdev_link(vport, parms->name,  parms->bridge_name);
+ }
+ 
+ static struct vport_ops ovs_ipgre_vport_ops = {
+diff --git a/datapath/vport-geneve.c b/datapath/vport-geneve.c
+index a5b91246f..3386aec86 100644
+--- a/datapath/vport-geneve.c
++++ b/datapath/vport-geneve.c
+@@ -115,7 +115,7 @@ static struct vport *geneve_create(const struct vport_parms *parms)
+ 	if (IS_ERR(vport))
+ 		return vport;
+ 
+-	return ovs_netdev_link(vport, parms->name);
++	return ovs_netdev_link(vport, parms->name,  parms->bridge_name);
+ }
+ 
+ static struct vport_ops ovs_geneve_vport_ops = {
+diff --git a/datapath/vport-gre.c b/datapath/vport-gre.c
+index 07a8c19df..7e8933a77 100644
+--- a/datapath/vport-gre.c
++++ b/datapath/vport-gre.c
+@@ -88,7 +88,7 @@ static struct vport *gre_create(const struct vport_parms *parms)
+ 	if (IS_ERR(vport))
+ 		return vport;
+ 
+-	return ovs_netdev_link(vport, parms->name);
++	return ovs_netdev_link(vport, parms->name,  parms->bridge_name);
+ }
+ 
+ static struct vport_ops ovs_gre_vport_ops = {
+diff --git a/datapath/vport-lisp.c b/datapath/vport-lisp.c
+index 5e2bcda88..6bea446dc 100644
+--- a/datapath/vport-lisp.c
++++ b/datapath/vport-lisp.c
+@@ -114,7 +114,7 @@ static struct vport *lisp_create(const struct vport_parms *parms)
+ 	if (IS_ERR(vport))
+ 		return vport;
+ 
+-	return ovs_netdev_link(vport, parms->name);
++	return ovs_netdev_link(vport, parms->name,  parms->bridge_name);
+ }
+ 
+ static struct vport_ops ovs_lisp_vport_ops = {
+diff --git a/datapath/vport-netdev.c b/datapath/vport-netdev.c
+index 37d4f814a..2351da7b3 100644
+--- a/datapath/vport-netdev.c
++++ b/datapath/vport-netdev.c
+@@ -93,7 +93,7 @@ static struct net_device *get_dpdev(const struct datapath *dp)
+ 	return local->dev;
+ }
+ 
+-struct vport *ovs_netdev_link(struct vport *vport, const char *name)
++struct vport *ovs_netdev_link(struct vport *vport, const char *name, const char *bridgeName)
+ {
+ 	int err;
+ 	struct vport *bridge = NULL;
+@@ -115,18 +115,13 @@ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
+ 	/* Create symlink from /sys/class/net/<devname>/master to
+ 	 * /sys/class/net/<bridgename>. */
+ 	if (!ovs_is_internal_dev(vport->dev)) {
+-		char bridgeName[IFNAMSIZ] = {0};
+-
+-		get_bridge_by_port(vport->dev, name, bridgeName);
+-		if (!bridgeName[0]) {
+-			err = -EINVAL;
+-			goto error_put;
+-		}
+-
+-		bridge = get_vport_by_bridge(vport->dp, bridgeName);
+-		if (bridge == NULL) {
+-			err = -EINVAL;
+-			goto error_put;
++		if (bridgeName != NULL && *bridgeName)
++		{
++			bridge = get_vport_by_bridge(vport->dp, bridgeName);
++			if (bridge == NULL) {
++				err = -EINVAL;
++				goto error_put;
++			}
+ 		}
+ 	}
+ 
+@@ -169,7 +164,7 @@ static struct vport *netdev_create(const struct vport_parms *parms)
+ 	if (IS_ERR(vport))
+ 		return vport;
+ 
+-	return ovs_netdev_link(vport, parms->name);
++	return ovs_netdev_link(vport, parms->name, parms->bridge_name);
+ }
+ 
+ static void vport_netdev_free(struct rcu_head *rcu)
+diff --git a/datapath/vport-netdev.h b/datapath/vport-netdev.h
+index 6fb679d6b..1702eab79 100644
+--- a/datapath/vport-netdev.h
++++ b/datapath/vport-netdev.h
+@@ -26,7 +26,7 @@
+ 
+ struct vport *ovs_netdev_get_vport(struct net_device *dev);
+ 
+-struct vport *ovs_netdev_link(struct vport *vport, const char *name);
++struct vport *ovs_netdev_link(struct vport *vport, const char *name, const char *bridgeName);
+ void ovs_netdev_detach_dev(struct vport *);
+ 
+ int __init ovs_netdev_init(void);
+diff --git a/datapath/vport-stt.c b/datapath/vport-stt.c
+index 35c4942c5..14278f2ba 100644
+--- a/datapath/vport-stt.c
++++ b/datapath/vport-stt.c
+@@ -117,7 +117,7 @@ static struct vport *stt_create(const struct vport_parms *parms)
+ 	if (IS_ERR(vport))
+ 		return vport;
+ 
+-	return ovs_netdev_link(vport, parms->name);
++	return ovs_netdev_link(vport, parms->name,  parms->bridge_name);
+ }
+ 
+ static struct vport_ops ovs_stt_vport_ops = {
+diff --git a/datapath/vport-vxlan.c b/datapath/vport-vxlan.c
+index 70ed376e3..cf34df123 100644
+--- a/datapath/vport-vxlan.c
++++ b/datapath/vport-vxlan.c
+@@ -184,7 +184,7 @@ static struct vport *vxlan_create(const struct vport_parms *parms)
+ 	if (IS_ERR(vport))
+ 		return vport;
+ 
+-	return ovs_netdev_link(vport, parms->name);
++	return ovs_netdev_link(vport, parms->name,  parms->bridge_name);
+ }
+ 
+ static struct vport_ops ovs_vxlan_netdev_vport_ops = {
+diff --git a/datapath/vport.h b/datapath/vport.h
+index 110b877d2..d53e6fbac 100644
+--- a/datapath/vport.h
++++ b/datapath/vport.h
+@@ -120,6 +120,7 @@ struct vport_parms {
+ 	const char *name;
+ 	enum ovs_vport_type type;
+ 	struct nlattr *options;
++	const char *bridge_name;
+ 
+ 	/* For ovs_vport_alloc(). */
+ 	struct datapath *dp;
+diff --git a/lib/dpctl.c b/lib/dpctl.c
+index db2b1f896..8c9fa8a26 100644
+--- a/lib/dpctl.c
++++ b/lib/dpctl.c
+@@ -350,7 +350,7 @@ dpctl_add_if(int argc OVS_UNUSED, const char *argv[],
+             goto next_destroy_args;
+         }
+ 
+-        error = dpif_port_add(dpif, netdev, &port_no);
++        error = dpif_port_add(dpif, netdev, &port_no, NULL);
+         if (error) {
+             dpctl_error(dpctl_p, error, "adding %s to %s failed", name,
+                         argv[1]);
+diff --git a/lib/dpif-netdev.c b/lib/dpif-netdev.c
+index d393aab5e..979350473 100644
+--- a/lib/dpif-netdev.c
++++ b/lib/dpif-netdev.c
+@@ -1898,7 +1898,7 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
+ 
+ static int
+ dpif_netdev_port_add(struct dpif *dpif, struct netdev *netdev,
+-                     odp_port_t *port_nop)
++                     odp_port_t *port_nop, char *brname)
+ {
+     struct dp_netdev *dp = get_dp_netdev(dpif);
+     char namebuf[NETDEV_VPORT_NAME_BUFSIZE];
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index 6b84ab580..f08e4190a 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -794,7 +794,7 @@ static int
+ dpif_netlink_port_add__(struct dpif_netlink *dpif, const char *name,
+                         enum ovs_vport_type type,
+                         struct ofpbuf *options,
+-                        odp_port_t *port_nop)
++                        odp_port_t *port_nop, char *brname)
+     OVS_REQ_WRLOCK(dpif->upcall_lock)
+ {
+     struct dpif_netlink_vport request, reply;
+@@ -815,6 +815,7 @@ dpif_netlink_port_add__(struct dpif_netlink *dpif, const char *name,
+     request.dp_ifindex = dpif->dp_ifindex;
+     request.type = type;
+     request.name = name;
++    request.brname = brname;
+ 
+     request.port_no = *port_nop;
+     if (sock) {
+@@ -864,7 +865,7 @@ exit:
+ 
+ static int
+ dpif_netlink_port_add_compat(struct dpif_netlink *dpif, struct netdev *netdev,
+-                             odp_port_t *port_nop)
++                             odp_port_t *port_nop, char *brname)
+     OVS_REQ_WRLOCK(dpif->upcall_lock)
+ {
+     const struct netdev_tunnel_config *tnl_cfg;
+@@ -922,9 +923,9 @@ dpif_netlink_port_add_compat(struct dpif_netlink *dpif, struct netdev *netdev,
+             nl_msg_end_nested(&options, ext_ofs);
+         }
+         return dpif_netlink_port_add__(dpif, name, ovs_type, &options,
+-                                       port_nop);
++                                       port_nop, brname);
+     } else {
+-        return dpif_netlink_port_add__(dpif, name, ovs_type, NULL, port_nop);
++        return dpif_netlink_port_add__(dpif, name, ovs_type, NULL, port_nop, brname);
+     }
+ 
+ }
+@@ -932,7 +933,7 @@ dpif_netlink_port_add_compat(struct dpif_netlink *dpif, struct netdev *netdev,
+ static int
+ dpif_netlink_rtnl_port_create_and_add(struct dpif_netlink *dpif,
+                                       struct netdev *netdev,
+-                                      odp_port_t *port_nop)
++                                      odp_port_t *port_nop, char *brname)
+     OVS_REQ_WRLOCK(dpif->upcall_lock)
+ {
+     static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
+@@ -951,7 +952,7 @@ dpif_netlink_rtnl_port_create_and_add(struct dpif_netlink *dpif,
+ 
+     name = netdev_vport_get_dpif_port(netdev, namebuf, sizeof namebuf);
+     error = dpif_netlink_port_add__(dpif, name, OVS_VPORT_TYPE_NETDEV, NULL,
+-                                    port_nop);
++                                    port_nop, brname);
+     if (error) {
+         dpif_netlink_rtnl_port_destroy(name, netdev_get_type(netdev));
+     }
+@@ -960,17 +961,17 @@ dpif_netlink_rtnl_port_create_and_add(struct dpif_netlink *dpif,
+ 
+ static int
+ dpif_netlink_port_add(struct dpif *dpif_, struct netdev *netdev,
+-                      odp_port_t *port_nop)
++                      odp_port_t *port_nop, char *brname)
+ {
+     struct dpif_netlink *dpif = dpif_netlink_cast(dpif_);
+     int error = EOPNOTSUPP;
+ 
+     fat_rwlock_wrlock(&dpif->upcall_lock);
+     if (!ovs_tunnels_out_of_tree) {
+-        error = dpif_netlink_rtnl_port_create_and_add(dpif, netdev, port_nop);
++        error = dpif_netlink_rtnl_port_create_and_add(dpif, netdev, port_nop, brname);
+     }
+     if (error) {
+-        error = dpif_netlink_port_add_compat(dpif, netdev, port_nop);
++        error = dpif_netlink_port_add_compat(dpif, netdev, port_nop, brname);
+     }
+     fat_rwlock_unlock(&dpif->upcall_lock);
+ 
+@@ -4159,6 +4160,10 @@ dpif_netlink_vport_to_ofpbuf(const struct dpif_netlink_vport *vport,
+         nl_msg_put_string(buf, OVS_VPORT_ATTR_NAME, vport->name);
+     }
+ 
++    if (vport->brname) {
++        nl_msg_put_string(buf, OVS_VPORT_ATTR_BRNAME, vport->brname);
++    }
++
+     if (vport->upcall_pids) {
+         nl_msg_put_unspec(buf, OVS_VPORT_ATTR_UPCALL_PID,
+                           vport->upcall_pids,
+diff --git a/lib/dpif-netlink.h b/lib/dpif-netlink.h
+index e452b7f39..787ff8939 100644
+--- a/lib/dpif-netlink.h
++++ b/lib/dpif-netlink.h
+@@ -41,6 +41,7 @@ struct dpif_netlink_vport {
+      * 32-bit boundaries, so use get_unaligned_u64() to access its values.
+      */
+     const char *name;                      /* OVS_VPORT_ATTR_NAME. */
++    const char *brname;                    /* OVS_VPORT_ATTR_BRNAME. */
+     uint32_t n_upcall_pids;
+     const uint32_t *upcall_pids;           /* OVS_VPORT_ATTR_UPCALL_PID. */
+     const struct ovs_vport_stats *stats;   /* OVS_VPORT_ATTR_STATS. */
+diff --git a/lib/dpif-provider.h b/lib/dpif-provider.h
+index b77317bca..ca6ba4f67 100644
+--- a/lib/dpif-provider.h
++++ b/lib/dpif-provider.h
+@@ -197,7 +197,7 @@ struct dpif_class {
+      * port number.  Returns EBUSY if caller attempted to choose a port
+      * number, and it was in use. */
+     int (*port_add)(struct dpif *dpif, struct netdev *netdev,
+-                    odp_port_t *port_no);
++                    odp_port_t *port_no, char *brname);
+ 
+     /* Removes port numbered 'port_no' from 'dpif'. */
+     int (*port_del)(struct dpif *dpif, odp_port_t port_no);
+diff --git a/lib/dpif.c b/lib/dpif.c
+index 758128d51..ea9aa293c 100644
+--- a/lib/dpif.c
++++ b/lib/dpif.c
+@@ -578,7 +578,7 @@ dpif_port_open_type(const char *datapath_type, const char *port_type)
+  * errno value and sets '*port_nop' to ODPP_NONE (if 'port_nop' is
+  * non-null). */
+ int
+-dpif_port_add(struct dpif *dpif, struct netdev *netdev, odp_port_t *port_nop)
++dpif_port_add(struct dpif *dpif, struct netdev *netdev, odp_port_t *port_nop, char *brname)
+ {
+     const char *netdev_name = netdev_get_name(netdev);
+     odp_port_t port_no = ODPP_NONE;
+@@ -590,7 +590,7 @@ dpif_port_add(struct dpif *dpif, struct netdev *netdev, odp_port_t *port_nop)
+         port_no = *port_nop;
+     }
+ 
+-    error = dpif->dpif_class->port_add(dpif, netdev, &port_no);
++    error = dpif->dpif_class->port_add(dpif, netdev, &port_no, brname);
+     if (!error) {
+         VLOG_DBG_RL(&dpmsg_rl, "%s: added %s as port %"PRIu32,
+                     dpif_name(dpif), netdev_name, port_no);
+diff --git a/lib/dpif.h b/lib/dpif.h
+index 5ffcedce9..8c4e1d116 100644
+--- a/lib/dpif.h
++++ b/lib/dpif.h
+@@ -447,7 +447,7 @@ int dpif_set_features(struct dpif *, uint32_t new_features);
+ 
+ const char *dpif_port_open_type(const char *datapath_type,
+                                 const char *port_type);
+-int dpif_port_add(struct dpif *, struct netdev *, odp_port_t *port_nop);
++int dpif_port_add(struct dpif *, struct netdev *, odp_port_t *port_nop, char *brname);
+ int dpif_port_del(struct dpif *, odp_port_t port_no, bool local_delete);
+ 
+ /* A port within a datapath.
+diff --git a/ofproto/ofproto-dpif.c b/ofproto/ofproto-dpif.c
+index b759bde8b..57da02686 100644
+--- a/ofproto/ofproto-dpif.c
++++ b/ofproto/ofproto-dpif.c
+@@ -439,7 +439,7 @@ type_run(const char *type)
+                         odp_port_t odp_port = ODPP_NONE;
+ 
+                         if (!dpif_port_add(backer->dpif, iter->up.netdev,
+-                                           &odp_port)) {
++                                           &odp_port, ofproto->up.name)) {
+                             simap_put(&backer->tnl_backers, dp_port,
+                                       odp_to_u32(odp_port));
+                             node = simap_find(&backer->tnl_backers, dp_port);
+@@ -3866,7 +3866,7 @@ port_add(struct ofproto *ofproto_, struct netdev *netdev)
+         odp_port_t port_no = ODPP_NONE;
+         int error;
+ 
+-        error = dpif_port_add(ofproto->backer->dpif, netdev, &port_no);
++        error = dpif_port_add(ofproto->backer->dpif, netdev, &port_no, ofproto->up.name);
+         if (error) {
+             return error;
+         }
