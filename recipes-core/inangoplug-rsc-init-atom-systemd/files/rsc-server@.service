@@ -1,6 +1,6 @@
 [Unit]
 Description=Remote system call server
-Requires=rsc-init@%i.service check_inangoplug_enabled.service
+BindsTo=rsc-init@%i.service check_inangoplug_enabled.service
 
 [Service]
 EnvironmentFile=/tmp/rsc-server_%i.conf

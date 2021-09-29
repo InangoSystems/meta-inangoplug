@@ -1,0 +1,28 @@
+From 8f9946ef8a890f8520f2de5329725c520a482632 Mon Sep 17 00:00:00 2001
+From: Oleksandr Shaporov <o.shaporov@inango-systems.com>
+Date: Wed, 29 Sep 2021 16:14:13 +0300
+Subject: [PATCH] Commit Title          : [RDK-B CC] Soft reboot by SNMPv6
+ takes a minute and a half longer.
+
+BugID                 : 25809
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Changed dependency from Requires to BindsTo to create stronger dependency
+on check_inangoplug_enabled service
+---
+ rhel/usr_lib_systemd_system_ovsdb-server.service | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/rhel/usr_lib_systemd_system_ovsdb-server.service b/rhel/usr_lib_systemd_system_ovsdb-server.service
+index 5ee803ec0..12c75078e 100644
+--- a/rhel/usr_lib_systemd_system_ovsdb-server.service
++++ b/rhel/usr_lib_systemd_system_ovsdb-server.service
+@@ -2,7 +2,7 @@
+ Description=Open vSwitch Database Unit
+ After=systemd-rpcbind-puma7.service check_inangoplug_enabled.service
+ Before=network.target network.service
+-Requires=check_inangoplug_enabled.service
++BindsTo=check_inangoplug_enabled.service
+ Wants=ovs-delete-transient-ports.service
+ PartOf=openvswitch.service
+ 

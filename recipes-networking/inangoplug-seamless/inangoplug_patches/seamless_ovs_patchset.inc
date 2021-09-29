@@ -93,5 +93,7 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0091-Commit-Title-Hardcoded-stp-fields.patch \
     file://0092-Commit-Title-Support-read-port_no-via-sysfs-ioctls.patch \
     file://0093-Commit-Title-MLD-IGMP-traffic-goes-to-host-in-ethWAN-mode-while-OVS-is-enabled.patch \
+    file://0094-Commit-Title-Implement-new-new-logic-for-datapath-flow-expire-in-OVS.patch \
+    file://0095-Commit-Title-RDK-B-CC-Soft-reboot-by-SNMPv6-takes-a-minute-and-a-half-longer.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

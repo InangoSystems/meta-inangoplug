@@ -1,0 +1,184 @@
+From 50b67198e9098590b38772dafb948806d1f58fc1 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Wed, 22 Sep 2021 01:06:33 +0500
+Subject: [PATCH] Commit Title          : Implement new new logic for datapath
+ flow expire in OVS
+
+BugID                 : 25798
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Added provisioning of session timeout to user space
+- Implemented flow timeout calculation as max from idle_timeout and session timeout
+---
+ datapath/am_pp.c                                  |  3 ++-
+ datapath/am_pp.h                                  |  2 +-
+ datapath/datapath.c                               | 14 ++++++++++++++
+ datapath/flow.h                                   |  1 +
+ datapath/linux/compat/include/linux/openvswitch.h |  1 +
+ lib/dpif-netlink.c                                |  6 ++++++
+ lib/dpif.h                                        |  1 +
+ ofproto/ofproto-dpif-upcall.c                     |  3 ++-
+ 8 files changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index 1166f4565..300c1f1d7 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -42,7 +42,7 @@ static void update_flow_am_stats(struct sw_flow *flow, struct pp_am_stats *stats
+ 	flow->am_stats.last_used = stats->last_used;
+ }
+ 
+-int notify_am_id(u32 ufid[PP_AM_MAX_UFID_LENGTH], u32 am_id, u32 *old_am_id)
++int notify_am_id(u32 ufid[PP_AM_MAX_UFID_LENGTH], u32 am_id, u32 *old_am_id, u32 session_timeout)
+ {
+ 	struct sw_flow *flow = NULL;
+ 	struct sw_flow_id id;
+@@ -62,6 +62,7 @@ int notify_am_id(u32 ufid[PP_AM_MAX_UFID_LENGTH], u32 am_id, u32 *old_am_id)
+ 		*old_am_id = flow->pp_am_id;
+ 	}
+ 	flow->pp_am_id = am_id;
++	flow->session_timeout = session_timeout * 1000;
+ 
+ 	return PP_AM_OK;
+ }
+diff --git a/datapath/am_pp.h b/datapath/am_pp.h
+index 218c1bdc8..f2827aa9e 100644
+--- a/datapath/am_pp.h
++++ b/datapath/am_pp.h
+@@ -37,7 +37,7 @@ enum acl_state {
+     UNDEFINED
+ };
+ 
+-int notify_am_id(u32 ufid[PP_AM_MAX_UFID_LENGTH], u32 am_id, u32 *old_am_id);
++int notify_am_id(u32 ufid[PP_AM_MAX_UFID_LENGTH], u32 am_id, u32 *old_am_id, u32 session_timeout);
+ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_flag);
+ int am_mod_session(struct datapath *dp, struct sw_flow *flow, struct sw_flow_actions *old_acts);
+ int am_remove_session(struct sw_flow *flow);
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index c4f2e81cf..b50c8b3aa 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -898,6 +898,16 @@ static int ovs_flow_cmd_fill_stats(const struct sw_flow *flow,
+ 	return 0;
+ }
+ 
++/* Called with ovs_mutex or RCU read lock. */
++static int ovs_flow_cmd_fill_props(const struct sw_flow *flow,
++				struct sk_buff *skb)
++{
++	if (nla_put_u32(skb, OVS_FLOW_ATTR_TIMEOUT, flow->session_timeout))
++		return -EMSGSIZE;
++
++	return 0;
++}
++
+ /* Called with ovs_mutex or RCU read lock. */
+ static int ovs_flow_cmd_fill_actions(const struct sw_flow *flow,
+ 				     struct sk_buff *skb, int skb_orig_len)
+@@ -974,6 +984,10 @@ static int ovs_flow_cmd_fill_info(const struct sw_flow *flow, int dp_ifindex,
+ 	if (err)
+ 		goto error;
+ 
++	err = ovs_flow_cmd_fill_props(flow, skb);
++	if (err)
++		goto error;
++
+ 	if (should_fill_actions(ufid_flags)) {
+ 		err = ovs_flow_cmd_fill_actions(flow, skb, skb_orig_len);
+ 		if (err)
+diff --git a/datapath/flow.h b/datapath/flow.h
+index 581307372..aaf2f3326 100644
+--- a/datapath/flow.h
++++ b/datapath/flow.h
+@@ -239,6 +239,7 @@ struct sw_flow {
+ 	} am_stats; /* For saving statistics from acceleration module
+ 				 * and retrieving them in the moment of flow deletion
+ 				 */
++	u32 session_timeout; /* session timeout in ms */
+ 	struct sw_flow_key key;
+ 	struct sw_flow_id id;
+ 	struct cpumask cpu_used_mask;
+diff --git a/datapath/linux/compat/include/linux/openvswitch.h b/datapath/linux/compat/include/linux/openvswitch.h
+index 3399519ce..5bb3accbb 100644
+--- a/datapath/linux/compat/include/linux/openvswitch.h
++++ b/datapath/linux/compat/include/linux/openvswitch.h
+@@ -647,6 +647,7 @@ enum ovs_flow_attr {
+ 	OVS_FLOW_ATTR_KEY,       /* Sequence of OVS_KEY_ATTR_* attributes. */
+ 	OVS_FLOW_ATTR_ACTIONS,   /* Nested OVS_ACTION_ATTR_* attributes. */
+ 	OVS_FLOW_ATTR_STATS,     /* struct ovs_flow_stats. */
++	OVS_FLOW_ATTR_TIMEOUT,   /* session timeout */
+ 	OVS_FLOW_ATTR_TCP_FLAGS, /* 8-bit OR'd TCP flags. */
+ 	OVS_FLOW_ATTR_USED,      /* u64 msecs last used in monotonic time. */
+ 	OVS_FLOW_ATTR_CLEAR,     /* Flag to clear stats, tcp_flags, used. */
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index f08e4190a..36ec1283e 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -144,6 +144,7 @@ struct dpif_netlink_flow {
+     bool ufid_present;                  /* Is there a UFID? */
+     bool ufid_terse;                    /* Skip serializing key/mask/acts? */
+     const struct ovs_flow_stats *stats; /* OVS_FLOW_ATTR_STATS. */
++    const uint32_t *timeout;            /* OVS_FLOW_ATTR_TIMEOUT. */
+     const uint8_t *tcp_flags;           /* OVS_FLOW_ATTR_TCP_FLAGS. */
+     const ovs_32aligned_u64 *used;      /* OVS_FLOW_ATTR_USED. */
+     bool clear;                         /* OVS_FLOW_ATTR_CLEAR. */
+@@ -1598,6 +1599,7 @@ dpif_netlink_flow_to_dpif_flow(struct dpif_flow *dpif_flow,
+                           &dpif_flow->ufid);
+     }
+     dpif_netlink_flow_get_stats(datapath_flow, &dpif_flow->stats);
++    dpif_flow->timeout = datapath_flow->timeout ? *datapath_flow->timeout : 0;
+     dpif_flow->attrs.offloaded = false;
+     dpif_flow->attrs.dp_layer = "ovs";
+     dpif_flow->attrs.dp_extra_info = NULL;
+@@ -4540,6 +4542,7 @@ dpif_netlink_flow_from_ofpbuf(struct dpif_netlink_flow *flow,
+                                   .optional = true },
+         [OVS_FLOW_ATTR_TCP_FLAGS] = { .type = NL_A_U8, .optional = true },
+         [OVS_FLOW_ATTR_USED] = { .type = NL_A_U64, .optional = true },
++        [OVS_FLOW_ATTR_TIMEOUT] = { .type = NL_A_U32, .optional = true },
+         [OVS_FLOW_ATTR_UFID] = { .type = NL_A_U128, .optional = true },
+         /* The kernel never uses OVS_FLOW_ATTR_CLEAR. */
+         /* The kernel never uses OVS_FLOW_ATTR_PROBE. */
+@@ -4586,6 +4589,9 @@ dpif_netlink_flow_from_ofpbuf(struct dpif_netlink_flow *flow,
+     if (a[OVS_FLOW_ATTR_STATS]) {
+         flow->stats = nl_attr_get(a[OVS_FLOW_ATTR_STATS]);
+     }
++    if (a[OVS_FLOW_ATTR_TIMEOUT]) {
++        flow->timeout = nl_attr_get(a[OVS_FLOW_ATTR_TIMEOUT]);
++    }
+     if (a[OVS_FLOW_ATTR_TCP_FLAGS]) {
+         flow->tcp_flags = nl_attr_get(a[OVS_FLOW_ATTR_TCP_FLAGS]);
+     }
+diff --git a/lib/dpif.h b/lib/dpif.h
+index 8c4e1d116..0cbfea1d5 100644
+--- a/lib/dpif.h
++++ b/lib/dpif.h
+@@ -606,6 +606,7 @@ struct dpif_flow {
+     bool ufid_present;            /* True if 'ufid' was provided by datapath.*/
+     unsigned pmd_id;              /* Datapath poll mode driver id. */
+     struct dpif_flow_stats stats; /* Flow statistics. */
++    size_t timeout;               /* session timeout in milliseconds */
+     struct dpif_flow_attrs attrs; /* Flow attributes. */
+ };
+ int dpif_flow_dump_next(struct dpif_flow_dump_thread *,
+diff --git a/ofproto/ofproto-dpif-upcall.c b/ofproto/ofproto-dpif-upcall.c
+index 0c2c365f4..29347c330 100644
+--- a/ofproto/ofproto-dpif-upcall.c
++++ b/ofproto/ofproto-dpif-upcall.c
+@@ -2797,6 +2797,7 @@ revalidate(struct revalidator *revalidator)
+         udpif->dpif->current_ms = time_msec();
+         for (f = flows; f < &flows[n_dumped]; f++) {
+             long long int used = f->stats.used;
++            long long int timeout = f->timeout > max_idle ? f->timeout : max_idle;
+             struct recirc_refs recircs = RECIRC_REFS_EMPTY_INITIALIZER;
+             enum reval_result result;
+             struct udpif_key *ukey;
+@@ -2844,7 +2845,7 @@ revalidate(struct revalidator *revalidator)
+             if (!used) {
+                 used = ukey->created;
+             }
+-            if (kill_them_all || (used && used < now - max_idle)) {
++            if (kill_them_all || (used && used < now - timeout)) {
+                 result = UKEY_DELETE;
+             } else {
+                 result = revalidate_ukey(udpif, ukey, &f->stats, &odp_actions,
