@@ -15,6 +15,7 @@ SRCREV = "71d553b995d0bd527d3ab1e9fbaf5a2ae34de2f3"
 SRC_URI_append = " \
     file://ovs-brcompatd.service \
     file://openvswitch.conf \
+    file://generate_hw_id.sh \
     "
 
 PACKAGECONFIG_remove = "libcap-ng"
@@ -91,6 +92,10 @@ do_install_append() {
     # Install logrotate config
     install -d ${D}${sysconfdir}/logrotate.d/
     install -m 644 ${WORKDIR}/openvswitch.conf ${D}${sysconfdir}/logrotate.d/
+
+    # Install hardware id generator script
+    install -d ${D}${sysconfdir}/scripts/
+    install -m 755 ${WORKDIR}/generate_hw_id.sh ${D}${sysconfdir}/scripts/
 }
 
 # added for compatibility with rdk-mesh

@@ -95,5 +95,7 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0093-Commit-Title-MLD-IGMP-traffic-goes-to-host-in-ethWAN-mode-while-OVS-is-enabled.patch \
     file://0094-Commit-Title-Implement-new-new-logic-for-datapath-flow-expire-in-OVS.patch \
     file://0095-Commit-Title-RDK-B-CC-Soft-reboot-by-SNMPv6-takes-a-minute-and-a-half-longer.patch \
+    file://0096-Commit-Title-Implement-way-to-drop-mulcticast-PP-sessions-which-include-non-acc.patch \
+    file://0097-Commit-Title-HW-id-generation-hardcoded-in-ctl-script.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

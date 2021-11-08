@@ -1,14 +1,16 @@
-diff --git a/source/scripts/init/system/utopia_init_xb6.sh b/source/scripts/init/system/utopia_init_xb6.sh
-index f6f97be..e9c9c35 100755
---- a/source/scripts/init/system/utopia_init_xb6.sh
-+++ b/source/scripts/init/system/utopia_init_xb6.sh
-@@ -738,3 +738,25 @@ fi
-       
- echo "[utopia][init] completed creating utopia_inited flag"
- touch /tmp/utopia_inited
+Index: git/source/scripts/init/system/utopia_init_xb6.sh
+===================================================================
+--- git.orig/source/scripts/init/system/utopia_init_xb6.sh
++++ git/source/scripts/init/system/utopia_init_xb6.sh
+@@ -551,6 +551,31 @@ changeFilePermissions $SYSCFG_NEW_FILE 4
+ echo "[utopia][init] SEC: Syscfg stored in $SYSCFG_NEW_FILE"
+ syscfg unset UpdateNvram
+ syscfg commit
 +
 +OVS_ENABLE=`syscfg get CONFIG_INANGO_INANGOPLUG_ENABLE`
 +loopBreakCounter=0
++
++touch /tmp/syscfg_inited
 +
 +if [ "$OVS_ENABLE" == "true" ]
 +then
@@ -28,3 +30,7 @@ index f6f97be..e9c9c35 100755
 +        echo "[utopia][init] inangoplug is enabled but not started properly" > /dev/console
 +    fi
 +fi
++
+ if [ -s /nvram/.secure_mount_failure ]; then
+      if [ `cat /nvram/.secure_mount_failure` -gt 3 ]; then
+            echo "[utopia][init] Device needs to be replaced as it is unable to recover /opt/secure mount issue"

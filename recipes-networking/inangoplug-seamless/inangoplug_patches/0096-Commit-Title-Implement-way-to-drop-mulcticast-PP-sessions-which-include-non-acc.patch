@@ -1,0 +1,110 @@
+From b222949a06865a7f77d7ef535d478adeb7dd0586 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Fri, 1 Oct 2021 19:08:52 +0300
+Subject: [PATCH] Commit Title          : Implement way to drop mulcticast PP
+ sessions which include non-accelerated ports
+
+BugID                 : 25893
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Implemented way to drop mulcticast PP sessions which include non-accelerated ports
+---
+ datapath/am_pp.c | 46 +++++++++++++++++++++++++++++++++++++++-------
+ datapath/am_pp.h |  2 ++
+ 2 files changed, 41 insertions(+), 7 deletions(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index 300c1f1d7..3bcdf44aa 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -42,6 +42,32 @@ static void update_flow_am_stats(struct sw_flow *flow, struct pp_am_stats *stats
+ 	flow->am_stats.last_used = stats->last_used;
+ }
+ 
++static bool check_acceleration_possibility(struct datapath *dp, struct sw_flow *flow)
++{
++	const struct nlattr *a;
++	int rem;
++	unsigned int ports[PP_AM_ALL_PORTS_MAX] = {0};
++	size_t ports_len = 0;
++	struct vport *port;
++
++	for (a = flow->sf_acts->actions, rem = flow->sf_acts->actions_len; rem > 0; a = nla_next(a, &rem)) {
++		if (nla_type(a) == OVS_ACTION_ATTR_OUTPUT) {
++			port = ovs_vport_rcu(dp, nla_get_u32(a));
++			if (port && port->type != OVS_VPORT_TYPE_INTERNAL) {
++				if (ports_len >= PP_AM_EGRESS_PORTS_MAX)
++					return false;
++				ports[ports_len++] = port->dev->ifindex;
++			}
++		}
++	}
++
++	port = ovs_vport_rcu(dp, flow->key.phy.in_port);
++	if (port && port->type != OVS_VPORT_TYPE_INTERNAL)
++		ports[ports_len++] = port->dev->ifindex;
++
++	return can_accelerate_ports(ports, ports_len);
++}
++
+ int notify_am_id(u32 ufid[PP_AM_MAX_UFID_LENGTH], u32 am_id, u32 *old_am_id, u32 session_timeout)
+ {
+ 	struct sw_flow *flow = NULL;
+@@ -86,7 +112,10 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 
+ 	new_session.proactive_session = proactive_flag;
+ 
+-	err = pp_am_create_session(&new_session, &flow->pp_am_id);
++	if (check_acceleration_possibility(dp, flow))
++		err = pp_am_create_session(&new_session, &flow->pp_am_id);
++	else
++		err = PP_AM_UNSUPPORTED_PARAM;
+ 
+ 	if (err == PP_AM_OK)
+ 		flow->acl_state = ACCELERATED;
+@@ -108,7 +137,7 @@ int am_mod_session(struct datapath *dp, struct sw_flow *flow, struct sw_flow_act
+ 	if (!dp || !flow)
+ 		return -EINVAL;
+ 
+-	if (flow->acl_state == NOT_ACCELERATE)
++	if (flow->acl_state == NOT_ACCELERATE || flow->acl_state == UNSUPPORTED)
+ 		// TODO neer to understand proactive flag
+ 		return am_create_session(dp, flow, false);
+ 
+@@ -124,15 +153,18 @@ int am_mod_session(struct datapath *dp, struct sw_flow *flow, struct sw_flow_act
+ 	if (err)
+ 		goto out;
+ 
+-	err = pp_am_modify_session(old_session, new_session, &flow->pp_am_id);
++	if (check_acceleration_possibility(dp, flow))
++		err = pp_am_modify_session(old_session, new_session, &flow->pp_am_id);
++	else
++		err = PP_AM_UNSUPPORTED_PARAM;
+ 
+-	if (err == PP_AM_UNSUPPORTED_PARAM) {
++	if (err == PP_AM_OK)
++		flow->acl_state = ACCELERATED;
++	else if (err == PP_AM_UNSUPPORTED_PARAM) {
+ 		am_remove_session(flow);
+ 		flow->acl_state = UNSUPPORTED;
+-	} else if (err != PP_AM_OK)
++	} else
+ 		flow->acl_state = NOT_ACCELERATE;
+-	else
+-		flow->acl_state = ACCELERATED;
+ 
+ out:
+ 	if (new_session)
+diff --git a/datapath/am_pp.h b/datapath/am_pp.h
+index f2827aa9e..6f608e210 100644
+--- a/datapath/am_pp.h
++++ b/datapath/am_pp.h
+@@ -27,6 +27,8 @@
+ #include "acceleration_module.h"
+ #include "flow.h"
+ 
++#define PP_AM_ALL_PORTS_MAX ((PP_AM_EGRESS_PORTS_MAX)+1)
++
+ struct datapath;
+ 
+ enum acl_state {

@@ -1,0 +1,40 @@
+Index: git/source/debug_api/ansc_debug.c
+===================================================================
+--- git.orig/source/debug_api/ansc_debug.c
++++ git/source/debug_api/ansc_debug.c
+@@ -121,6 +121,8 @@ volatile BOOL WANAGENT_RDKLogEnable = TR
+ volatile unsigned int WANAGENT_RDKLogLevel = 4;
+ volatile BOOL TELCOVOIPAGENT_RDKLogEnable = TRUE;
+ volatile unsigned int TELCOVOIPAGENT_RDKLogLevel = 4;
++volatile BOOL INANGOPLUG_RDKLogEnable = TRUE;
++volatile unsigned int INANGOPLUG_RDKLogLevel = 4;
+ 
+ volatile BOOL ADVSEC_RDKLogEnable = TRUE;
+ volatile unsigned int ADVSEC_RDKLogLevel = 4;
+@@ -401,6 +403,12 @@ void CcspTraceLogAPI(char *fileName, cha
+             LogLevel = TELCOVOIPAGENT_RDKLogLevel;
+             LogEnable = TELCOVOIPAGENT_RDKLogEnable;
+         }
++        else if(!strcmp(pComponentName,"com.cisco.spvtg.ccsp.inangoplugcomponent"))
++        {
++            ComponentName= "LOG.RDK.INANGOPLUG";
++            LogLevel = INANGOPLUG_RDKLogLevel;
++            LogEnable = INANGOPLUG_RDKLogEnable;
++        }
+         else if(!strcmp(pComponentName,"com.cisco.spvtg.ccsp.advsec"))
+         {
+             ComponentName="LOG.RDK.ADVSEC";
+Index: git/source/debug_api/include/ccsp_trace.h
+===================================================================
+--- git.orig/source/debug_api/include/ccsp_trace.h
++++ git/source/debug_api/include/ccsp_trace.h
+@@ -173,6 +173,9 @@ extern volatile BOOL PPPMANAGER_RDKLogEn
+ 
+ extern volatile unsigned int BLE_RDKLogLevel;
+ extern volatile BOOL BLE_RDKLogEnable;
++
++extern volatile unsigned int INANGOPLUG_RDKLogLevel;
++extern volatile BOOL INANGOPLUG_RDKLogEnable;
+ /*
+  *  Whether a debug trace is output depends on the following factors:
+  *      1) the trace level passed in the trace statement is higher (smaller value)

@@ -1,6 +1,7 @@
 [Unit]
 Description=RSC-proxy
-BindsTo=rsc-init@%i.service check_inangoplug_enabled.service
+Requires=rsc-init@%i.service
+BindsTo=check_inangoplug_enabled.service
 
 [Service]
 EnvironmentFile=/etc/systemd/rsc-proxy_default.conf

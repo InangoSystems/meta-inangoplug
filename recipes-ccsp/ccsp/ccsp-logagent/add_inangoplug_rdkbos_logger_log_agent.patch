@@ -1,11 +1,11 @@
-diff --git a/scripts/LogAgent.xml b/scripts/LogAgent.xml
-index 5831277..1aff474 100644
---- a/scripts/LogAgent.xml
-+++ b/scripts/LogAgent.xml
-@@ -254,6 +254,18 @@
+Index: git/scripts/LogAgent.xml
+===================================================================
+--- git.orig/scripts/LogAgent.xml
++++ git/scripts/LogAgent.xml
+@@ -350,6 +350,18 @@
              <syntax>bool</syntax>
              <writable>true</writable>
-         </parameter>
+         </parameter>	    
 +        <parameter>
 +            <name>X_INANGO_Inangoplug_LogLevel</name>
 +            <type>unsignedInt</type>
@@ -21,42 +21,42 @@ index 5831277..1aff474 100644
        </parameters>
      </object>
   </objects>
-diff --git a/source/LogComponent/cosa_apis_logagentplugin.c b/source/LogComponent/cosa_apis_logagentplugin.c
-index 6557723..be2961f 100755
---- a/source/LogComponent/cosa_apis_logagentplugin.c
-+++ b/source/LogComponent/cosa_apis_logagentplugin.c
-@@ -40,6 +40,7 @@
+Index: git/source/LogComponent/cosa_apis_logagentplugin.c
+===================================================================
+--- git.orig/source/LogComponent/cosa_apis_logagentplugin.c
++++ git/source/LogComponent/cosa_apis_logagentplugin.c
+@@ -38,6 +38,7 @@
  #define MESH_PROC_NAME "meshAgent"
  #define ETHAGENT_PROC_NAME "CcspEthAgent"
  #define TELCOVOIPAGENT_PROC_NAME "telcovoip_agent"
 +#define INANGOPLUG_PROC_NAME "inangoplug_component"
- /*RDKB-7469, CID-33124, defines*/
- #define LOGAGENT_MAX_MSG_LENGTH    256
- #define LOGAGENT_MAX_BUF_SIZE      241
-@@ -343,6 +344,20 @@ LogAgent_GetParamUlongValue
-             *puLong  = TELCOVOIPAGENT_RDKLogLevel;
+ #define DSLAGENT_PROC_NAME "dslagent"
+ #define XTMAGENT_PROC_NAME "xtmagent"
+ #define VLANAGENT_PROC_NAME "vlanagent"
+@@ -607,6 +608,20 @@ LogAgent_GetParamUlongValue
+             *puLong  = VLANAGENT_RDKLogLevel;
              return TRUE;
          }
-+    if (AnscEqualString(ParamName, "X_INANGO_Inangoplug_LogLevel", TRUE))
-+    {
-+       syscfg_get( NULL, "X_INANGO_Inangoplug_LogLevel", buf, sizeof(buf));
-+       if( buf[0] != '\0' )
-+       {
-+            *puLong  = (ULONG )atoi(buf);
-+            INANGOPLUG_RDKLogLevel = *puLong;
-+        }
-+        else
++        if (AnscEqualString(ParamName, "X_INANGO_Inangoplug_LogLevel", TRUE))
 +        {
-+            AnscTraceWarning(("Error in syscfg_get for INANGOPLUG_LogLevel\n"));
++            syscfg_get( NULL, "X_INANGO_Inangoplug_LogLevel", buf, sizeof(buf));
++            if( buf[0] != '\0' )
++            {
++                *puLong  = (ULONG )atoi(buf);
++                INANGOPLUG_RDKLogLevel = *puLong;
++            }
++            else
++            {
++                AnscTraceWarning(("Error in syscfg_get for INANGOPLUG_LogLevel\n"));
++            }
++            return TRUE;
 +        }
-+        return TRUE;
-+    }
          return FALSE;
  }
   /**********************************************************************  
-@@ -803,6 +818,25 @@ LogAgent_SetParamUlongValue
+@@ -1352,6 +1367,25 @@ LogAgent_SetParamUlongValue
+         return TRUE;
      }
- #endif /* _HUB4_PRODUCT_REQ_ */
  
 +    if (AnscEqualString(ParamName, "X_INANGO_Inangoplug_LogLevel", TRUE))
 +    {
@@ -80,10 +80,13 @@ index 6557723..be2961f 100755
  	return FALSE;
  }
       
-@@ -1259,6 +1293,20 @@ LogAgent_GetParamBoolValue
+@@ -1928,7 +1962,22 @@ LogAgent_GetParamBoolValue
+     {
+         *pBool  = VLANAGENT_RDKLogEnable;
          return TRUE;
-     }
- 
+-    }    
++    }
++
 +    if (AnscEqualString(ParamName, "X_INANGO_Inangoplug_LoggerEnable", TRUE))
 +    {
 +        syscfg_get( NULL, "X_INANGO_Inangoplug_LoggerEnable", buf, sizeof(buf));
@@ -101,10 +104,11 @@ index 6557723..be2961f 100755
      /* AnscTraceWarning(("Unsupported parameter '%s'\n", ParamName)); */
      return FALSE;
  }
-@@ -1603,6 +1651,25 @@ LogAgent_SetParamBoolValue
+@@ -2560,6 +2609,26 @@ LogAgent_SetParamBoolValue
+         SendSignal(VLANAGENT_PROC_NAME);
+         return TRUE;
      }
- #endif /* _HUB4_PRODUCT_REQ_ */
- 
++    
 +    if (AnscEqualString(ParamName, "X_INANGO_Inangoplug_LoggerEnable", TRUE))
 +    {
 +        char buf[8];
@@ -127,24 +131,24 @@ index 6557723..be2961f 100755
      /* AnscTraceWarning(("Unsupported parameter '%s'\n", ParamName)); */
      return FALSE;
  }
-diff --git a/source/LogComponent/ssp_main.c b/source/LogComponent/ssp_main.c
-index 65a99a0..96e6acb 100644
---- a/source/LogComponent/ssp_main.c
-+++ b/source/LogComponent/ssp_main.c
-@@ -419,6 +419,16 @@ void ReadLogInfo()
-             TELCOVOIPAGENT_RDKLogEnable = (BOOL)atoi(buf);
+Index: git/source/LogComponent/ssp_main.c
+===================================================================
+--- git.orig/source/LogComponent/ssp_main.c
++++ git/source/LogComponent/ssp_main.c
+@@ -508,6 +508,16 @@ void ReadLogInfo()
+         {
+             XTMAGENT_RDKLogEnable = (BOOL)atoi(buf);
          }
- #endif /* _HUB4_PRODUCT_REQ_ */
-+    syscfg_get( NULL, "X_INANGO_Inangoplug_LogLevel", buf, sizeof(buf));
-+    if( buf != NULL )
-+    {
-+        INANGOPLUG_RDKLogLevel = atoi(buf);
-+    }
-+    syscfg_get( NULL, "X_INANGO_Inangoplug_LoggerEnable", buf, sizeof(buf));
-+    if( buf != NULL )
-+    {
-+        INANGOPLUG_RDKLogEnable = (BOOL)atoi(buf);
-+    }
++        syscfg_get( NULL, "X_INANGO_Inangoplug_LogLevel", buf, sizeof(buf));
++        if( buf != NULL )
++        {
++            INANGOPLUG_RDKLogLevel = atoi(buf);
++        }
++        syscfg_get( NULL, "X_INANGO_Inangoplug_LoggerEnable", buf, sizeof(buf));
++        if( buf != NULL )
++        {
++            INANGOPLUG_RDKLogEnable = (BOOL)atoi(buf);
++        }
  }
+ 
  int main(int argc, char* argv[])
- {

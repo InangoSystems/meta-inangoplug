@@ -1,0 +1,100 @@
+From 59740d3af01e348a97b2f52276dfd35c0ae53cd5 Mon Sep 17 00:00:00 2001
+From: Oleksandr Shaporov <o.shaporov@inango-systems.com>
+Date: Mon, 25 Oct 2021 16:51:36 +0300
+Subject: [PATCH] Commit Title          : HW id generation hardcoded in ctl
+ script
+
+BugID                 : 26090
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Moved hw generation to separated script generate_hw_id.sh
+---
+ utilities/ovs-ctl.in | 61 ++++++----------------------------------------------
+ 1 file changed, 7 insertions(+), 54 deletions(-)
+
+diff --git a/utilities/ovs-ctl.in b/utilities/ovs-ctl.in
+index 1e385a839..0b61912cf 100644
+--- a/utilities/ovs-ctl.in
++++ b/utilities/ovs-ctl.in
+@@ -203,6 +203,13 @@ normal_rules () {
+ }
+ 
+ do_start_forwarding () {
++    local gen_hwid_file=/etc/scripts/generate_hw_id.sh
++    if [ -f "${gen_hwid_file}" ]; then
++        source ${gen_hwid_file}
++    else
++        log_warning_msg "${gen_hwid_file} does not exist!"
++    fi
++
+     check_force_cores
+ 
+     insert_mod_if_required || return 1
+@@ -372,59 +379,6 @@ enable_protocol () {
+ ## main ##
+ ## ---- ##
+ 
+-set_hardware_id () {
+-    PLATFORM=""
+-    ARCHITECTURE=`lscpu | grep "Architecture" | cut -d ':' -f 2 | sed -e 's/^[[:space:]]*//'`
+-    ENDIANNESS=`lscpu | grep "Byte Order" | cut -d ':' -f 2 | sed -e 's/^[[:space:]]*//'`
+-    CHIP=`lscpu | grep "Model name" | cut -d ':' -f 2 | sed -e 's/^[[:space:]]*//' | cut -d ' ' -f 4`
+-    RAM=`free | grep "Mem:" | cut -d ':' -f 2 | sed -e 's/^[[:space:]]*//' | cut -d ' ' -f 1`
+-    WIFI="w+"
+-    SDK=`grep "SDK_VERSION" /version.txt | sed -e 's/SDK_VERSION=//'`
+-    MODE="DOCSIS/Ethernet"
+-
+-    local BOX_TYPE=`grep "BOX_TYPE" /etc/device.properties | sed -e 's/BOX_TYPE=//'`
+-    local MODEL_NUM=`grep "MODEL_NUM" /etc/device.properties | sed -e 's/MODEL_NUM=//'`
+-
+-    case "${BOX_TYPE}" in
+-
+-     "PUMA7_CGP")
+-        PLATFORM="Puma7_CGP"
+-        ;;
+-
+-     "XB6")
+-        if [ "${MODEL_NUM}" = "INTEL_PUMA" ]; then
+-            PLATFORM="Puma7_CGR"
+-        elif [ "${MODEL_NUM}" = "TG4482A" ]; then
+-            PLATFORM="Puma7_XB7"
+-        elif [ "${MODEL_NUM}" = "TG3482G" ]; then
+-            PLATFORM="Puma7_XB6"
+-        else
+-            PLATFORM="Puma7_${MODEL_NUM}"
+-        fi
+-        ;;
+-
+-      *)
+-        PLATFORM="${BOX_TYPE}_${MODEL_NUM}"
+-        ;;
+-    esac
+-
+-    if [ "${RAM}" -le 256000 ]; then
+-        RAM="256M"
+-    elif [ "${RAM}" -le 512000 ]; then
+-        RAM="512M"
+-    else
+-        RAM="1G"
+-    fi
+-
+-    if [ "${ENDIANNESS}" = "Little Endian" ]; then
+-        ENDIANNESS="le"
+-    else
+-        ENDIANNESS="be"
+-    fi
+-
+-    OVS_HARDWARE_ID="${PLATFORM}_${ARCHITECTURE}_${ENDIANNESS}_${CHIP}_${RAM}_${WIFI}_${SDK}_${MODE}"
+-}
+-
+ set_defaults () {
+     SYSTEM_ID=
+ 
+@@ -486,7 +440,6 @@ set_defaults () {
+         echo 'OPTIONS="--ovs-bridges=*,!a-mux"' > /nvram/openvswitch.conf
+     fi
+     
+-    set_hardware_id
+ }
+ 
+ usage () {

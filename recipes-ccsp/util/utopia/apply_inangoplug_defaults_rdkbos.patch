@@ -1,0 +1,20 @@
+diff --git a/source/scripts/init/system/utopia_init.sh b/source/scripts/init/system/utopia_init.sh
+index c1be164a7..28904621f 100755
+--- a/source/scripts/init/system/utopia_init.sh
++++ b/source/scripts/init/system/utopia_init.sh
+@@ -238,6 +238,7 @@ PSM_BAK_XML_CONFIG_FILE_NAME="$SYSCFG_MOUNT/bbhm_bak_cfg.xml"
+ PSM_TMP_XML_CONFIG_FILE_NAME="$SYSCFG_MOUNT/bbhm_tmp_cfg.xml"
+ XDNS_DNSMASQ_SERVERS_CONFIG_FILE_NAME="$SYSCFG_MOUNT/dnsmasq_servers.conf"
+ FACTORY_RESET_REASON=false
++INANGOPLUG_DEFAULT_FILE=/etc/inangoplug/inangoplug_defaults
+ 
+ HOTSPOT_BLOB="/nvram/hotspot_blob"
+ if [ -d $SYSCFG_ENCRYPTED_PATH ]; then
+@@ -532,6 +533,7 @@ syseventd
+ sleep 1 
+ echo_t "[utopia][init] Setting any unset system values to default"
+ apply_system_defaults
++apply_system_defaults -f $INANGOPLUG_DEFAULT_FILE
+ changeFilePermissions $SYSCFG_BKUP_FILE 400
+ 
+ echo "[utopia][init] SEC: Syscfg stored in $SYSCFG_BKUP_FILE"

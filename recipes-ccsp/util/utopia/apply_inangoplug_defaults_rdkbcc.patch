@@ -1,0 +1,20 @@
+diff --git a/source/scripts/init/system/utopia_init_xb6.sh b/source/scripts/init/system/utopia_init_xb6.sh
+index 692f90c..2e5a61f 100755
+--- a/source/scripts/init/system/utopia_init_xb6.sh
++++ b/source/scripts/init/system/utopia_init_xb6.sh
+@@ -249,6 +249,7 @@ PSM_BAK_XML_CONFIG_FILE_NAME="$SYSCFG_MOUNT/bbhm_bak_cfg.xml"
+ PSM_TMP_XML_CONFIG_FILE_NAME="$SYSCFG_MOUNT/bbhm_tmp_cfg.xml"
+ XDNS_DNSMASQ_SERVERS_CONFIG_FILE_NAME="$SYSCFG_MOUNT/dnsmasq_servers.conf"
+ FACTORY_RESET_REASON=false
++INANGOPLUG_DEFAULT_FILE=/etc/inangoplug/inangoplug_defaults
+ 
+ if [ -d $SYSCFG_ENCRYPTED_PATH ]; then
+        if [ ! -d $SYSCFG_PERSISTENT_PATH ]; then
+@@ -545,6 +546,7 @@ done
+ 
+ echo "[utopia][init] Setting any unset system values to default"
+ apply_system_defaults
++apply_system_defaults -f $INANGOPLUG_DEFAULT_FILE
+ #ARRISXB6-2998
+ changeFilePermissions $SYSCFG_BKUP_FILE 400
+ changeFilePermissions $SYSCFG_NEW_FILE 400

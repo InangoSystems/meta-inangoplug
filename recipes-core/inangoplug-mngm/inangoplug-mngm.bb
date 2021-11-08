@@ -28,8 +28,6 @@ LIC_FILES_CHKSUM = "file://LICENSE;md5=34f8c1142fd6208a8be89399cb521df9"
 DEPENDS = "ccsp-common-library dbus openssl hal-cm hal-dhcpv4c hal-ethsw hal-moca hal-mso_mgmt hal-mta hal-platform hal-vlan util-linux utopia cjson"
 DEPENDS_append = " ${@bb.utils.contains('DISTRO_FEATURES', 'safec', ' safec', " ", d)}"
 
-RDEPENDS_${PN}_append = " util-linux-lscpu"
-
 SRC_URI = "${INANGOPLUG_SRC_URI}"
 SRCREV="${INANGOPLUG_SRCREV}"
 S = "${WORKDIR}/git"
@@ -62,9 +60,18 @@ do_install_append () {
     install -m 644 ${S}/config/TR-181-InangoplugComponent.xml ${D}${exec_prefix}/ccsp/inangoplugcomponent/TR-181-InangoplugComponent.xml
     install -d ${D}${sysconfdir}/inangoplug
     install -m 644 ${S}/config/inangoplug.cfg ${D}${sysconfdir}/inangoplug/inangoplug.cfg
+    install -m 644 ${S}/config/inangoplug_defaults ${D}${sysconfdir}/inangoplug/inangoplug_defaults
 
     # Set paths for Private Key, Certificate and CA Certificate
-    sed -i -e 's#CONFIG_INANGO_INANGOPLUG_SSL_DIR=#CONFIG_INANGO_INANGOPLUG_SSL_DIR=${CONFIG_INANGO_INANGOPLUG_SSL_DIR}#' ${D}${sysconfdir}/inangoplug/inangoplug.cfg
+    sed -i -e 's#CONFIG_INANGO_INANGOPLUG_SSL_DEFAULT_DIR=#CONFIG_INANGO_INANGOPLUG_SSL_DEFAULT_DIR=${CONFIG_INANGO_INANGOPLUG_SSL_DEFAULT_DIR}#' ${D}${sysconfdir}/inangoplug/inangoplug.cfg
+    sed -i -e 's#CONFIG_INANGO_INANGOPLUG_SSL_RUNTIME_DIR=#CONFIG_INANGO_INANGOPLUG_SSL_RUNTIME_DIR=${CONFIG_INANGO_INANGOPLUG_SSL_RUNTIME_DIR}#' ${D}${sysconfdir}/inangoplug/inangoplug.cfg
+
+    # Set default parameters for Inangoplug
+    sed -i -e 's#CONFIG_INANGO_INANGOPLUG_ENABLE=#CONFIG_INANGO_INANGOPLUG_ENABLE=${CONFIG_INANGO_INANGOPLUG_ENABLE}#' ${D}${sysconfdir}/inangoplug/inangoplug_defaults
+    sed -i -e 's#CONFIG_INANGO_INANGOPLUG_SO_SERVER=#CONFIG_INANGO_INANGOPLUG_SO_SERVER=${CONFIG_INANGO_INANGOPLUG_SO_SERVER}#' ${D}${sysconfdir}/inangoplug/inangoplug_defaults
+    echo -n "${CONFIG_INANGO_INANGOPLUG_SC_PRIVKEY}" > ${D}${CONFIG_INANGO_INANGOPLUG_SSL_DEFAULT_DIR}/sc-privkey.pem
+    echo -n "${CONFIG_INANGO_INANGOPLUG_SC_CERT}" > ${D}${CONFIG_INANGO_INANGOPLUG_SSL_DEFAULT_DIR}/sc-cert.pem
+    echo -n "${CONFIG_INANGO_INANGOPLUG_CA_CERT}" > ${D}${CONFIG_INANGO_INANGOPLUG_SSL_DEFAULT_DIR}/cacert.pem
 
     install -d ${D}${systemd_unitdir}/system
     install -D -m 0644 ${S}/scripts/CcspInangoplugComponent.service ${D}${systemd_unitdir}/system/CcspInangoplugComponent.service
