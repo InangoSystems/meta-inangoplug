@@ -1,0 +1,35 @@
+From 7565994bd4e6a33cbbbcddb52a82806ddc59c6ff Mon Sep 17 00:00:00 2001
+From: Oleksandr Shaporov <o.shaporov@inango-systems.com>
+Date: Fri, 15 Oct 2021 18:10:54 +0300
+Subject: [PATCH] Commit Title          : brcompatd calls to missing
+ on_ovs_bridge_event.sh
+
+BugID                 : 26091
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Added checking on_ovs_bridge_event.sh exist before calling
+---
+ vswitchd/ovs-brcompatd.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 7f323f445..b149ef79c 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -534,9 +534,14 @@ on_bridge_add_del(bool add, const char *br_name)
+ {
+     int error;
+     const char *add_br = add ? "true" : "false";
++    const char *path_on_ovs_bridge_event_script = "/etc/scripts/on_ovs_bridge_event.sh"
+ 
+-    if (!run_vsctl("/etc/scripts/on_ovs_bridge_event.sh", add_br, br_name, (char *) NULL)) {
+-        error = EINVAL;
++    if (access(path_on_ovs_bridge_event_script, F_OK) == 0 ) {
++        if (!run_vsctl(path_on_ovs_bridge_event_script, add_br, br_name, (char *) NULL)) {
++            error = EINVAL;
++        }
++    } else {
++        error = ENOENT;
+     }
+     return error;
+ }

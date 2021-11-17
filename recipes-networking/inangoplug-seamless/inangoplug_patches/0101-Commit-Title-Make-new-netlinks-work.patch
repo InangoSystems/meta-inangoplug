@@ -1,0 +1,245 @@
+From 11a660e3ad1824a2410a17b37c73d469434ed866 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Thu, 11 Nov 2021 14:52:06 +0200
+Subject: [PATCH] Commit Title          : Make new netlinks work
+
+BugID                 : 26412
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Made new netlinks work as expected
+---
+ datapath/brcompat_main.c      | 138 +++++++++++++++++++++++++++++++++++++-----
+ datapath/datapath.c           |   3 +
+ datapath/datapath.h           |   1 +
+ datapath/vport-internal_dev.c |   5 +-
+ 4 files changed, 130 insertions(+), 17 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 7977c35e8..01fc824aa 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -103,6 +103,10 @@ static struct genl_multicast_group brc_mc_group = {
+ 	.name = "brcompat"
+ };
+ 
++const struct rtnl_link_ops *br_ovs_link_ops;
++struct rtnl_link_ops *br_link_ops;
++struct rtnl_link_ops br_compat_link_ops;
++
+ #ifdef CONFIG_LTQ_MCAST_SNOOPING
+ static struct net *brc_net = NULL;
+ #endif
+@@ -1088,16 +1092,7 @@ static int brc_br_bridge_setup(struct vport *vport, int add)
+ 		return -EINVAL;
+ 
+ 	if (add)
+-	{
+-		int err;
+-		err = br_compat_bridge_create(vport->dev, &vport->brcompat_data);
+-		if (!err) {
+-			br_compat_multicast_set_querier(vport->brcompat_data, 1);
+-			br_compat_multicast_toggle(vport->brcompat_data, 1);
+-			br_compat_multicast_set_igmp_version(vport->brcompat_data, 3);
+-		}
+-		return err;
+-	}
++		return br_compat_bridge_create(vport->dev, &vport->brcompat_data);
+ 	else
+ 	{
+ 		br_compat_multicast_dev_del(vport->brcompat_data);
+@@ -1114,15 +1109,10 @@ static int brc_br_port_setup(struct vport *br_vport, struct vport *vport, int ad
+ 
+ 	if (add)
+ 	{
+-		int err;
+ 		if (!br_vport)
+ 			return -EINVAL;
+ 
+-		err = br_compat_bridge_port_create(br_vport->brcompat_data, vport->dev, &vport->brcompat_data);
+-		if (!err) {
+-			br_compat_set_port_flag(vport->brcompat_data, 1, BR_MULTICAST_FAST_LEAVE);
+-		}
+-		return err;
++		return br_compat_bridge_port_create(br_vport->brcompat_data, vport->dev, &vport->brcompat_data);
+ 	}
+ 	else
+ 	{
+@@ -1320,6 +1310,95 @@ nla_put_failure:
+ }
+ #endif
+ 
++void br_dev_setup(struct net_device *dev)
++{
++	if (dev->priv_flags & IFF_OVS_DATAPATH || dev->priv_flags & IFF_OPENVSWITCH) {
++		if (br_ovs_link_ops->setup)
++			br_ovs_link_ops->setup(dev);
++	} else
++		br_compat_link_ops.setup(dev);
++}
++
++static int br_validate(struct nlattr *tb[], struct nlattr *data[])
++{
++	return br_compat_link_ops.validate(tb, data);
++}
++
++static int br_dev_newlink(struct net *src_net, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[])
++{
++	if (dev->priv_flags & IFF_OVS_DATAPATH || dev->priv_flags & IFF_OPENVSWITCH)
++		return br_ovs_link_ops->newlink ? br_ovs_link_ops->newlink(src_net, dev, tb, data) : -EOPNOTSUPP;
++	return br_compat_link_ops.newlink(src_net, dev, tb, data);
++}
++
++static int br_changelink(struct net_device *brdev, struct nlattr *tb[], struct nlattr *data[])
++{
++	if (brdev->priv_flags & IFF_OVS_DATAPATH || brdev->priv_flags & IFF_OPENVSWITCH)
++		return br_ovs_link_ops->changelink ? br_ovs_link_ops->changelink(brdev, tb, data) : -EOPNOTSUPP;
++	return br_compat_link_ops.changelink(brdev, tb, data);
++}
++
++void br_dev_delete(struct net_device *dev, struct list_head *head)
++{
++	if (dev->priv_flags & IFF_OVS_DATAPATH || dev->priv_flags & IFF_OPENVSWITCH) {
++		if (br_ovs_link_ops->dellink)
++			br_ovs_link_ops->dellink(dev, head);
++	} else
++		br_compat_link_ops.dellink(dev, head);
++}
++
++static size_t br_get_size(const struct net_device *brdev)
++{
++	return br_compat_link_ops.get_size(brdev);
++}
++
++static int br_fill_info(struct sk_buff *skb, const struct net_device *brdev)
++{
++	if (brdev->priv_flags & IFF_OVS_DATAPATH || brdev->priv_flags & IFF_OPENVSWITCH)
++		return br_ovs_link_ops->fill_info ? br_ovs_link_ops->fill_info(skb, brdev) : 0;
++	return br_compat_link_ops.fill_info(skb, brdev);
++}
++
++static int br_fill_linkxstats(struct sk_buff *skb, const struct net_device *dev, int *prividx, int attr)
++{
++	if (dev->priv_flags & IFF_OVS_DATAPATH || dev->priv_flags & IFF_OPENVSWITCH)
++		return br_ovs_link_ops->fill_linkxstats ? br_ovs_link_ops->fill_linkxstats(skb, dev, prividx, attr) : -EOPNOTSUPP;
++	return br_compat_link_ops.fill_linkxstats(skb, dev, prividx, attr);
++}
++
++static size_t br_get_linkxstats_size(const struct net_device *dev, int attr)
++{
++	if (dev->priv_flags & IFF_OVS_DATAPATH || dev->priv_flags & IFF_OPENVSWITCH)
++		return br_ovs_link_ops->get_linkxstats_size ? br_ovs_link_ops->get_linkxstats_size(dev, attr) : 0;
++	return br_compat_link_ops.get_linkxstats_size(dev, attr);
++}
++
++static int br_port_slave_changelink(struct net_device *brdev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[])
++{
++	if (brdev->priv_flags & IFF_OVS_DATAPATH || brdev->priv_flags & IFF_OPENVSWITCH)
++		return br_ovs_link_ops->slave_changelink ? br_ovs_link_ops->slave_changelink(brdev, dev, tb, data) : -EOPNOTSUPP;
++	return br_compat_link_ops.slave_changelink(brdev, dev, tb, data);
++}
++
++static size_t br_port_get_slave_size(const struct net_device *brdev, const struct net_device *dev)
++{
++	if (brdev->priv_flags & IFF_OVS_DATAPATH || brdev->priv_flags & IFF_OPENVSWITCH)
++		return br_ovs_link_ops->get_slave_size ? br_ovs_link_ops->get_slave_size(brdev, dev) : br_compat_link_ops.get_slave_size(brdev, dev);
++	return br_compat_link_ops.get_slave_size(brdev, dev);
++}
++
++static int br_port_fill_slave_info(struct sk_buff *skb, const struct net_device *brdev, const struct net_device *dev)
++{
++	if (brdev->priv_flags & IFF_OVS_DATAPATH || brdev->priv_flags & IFF_OPENVSWITCH)
++		return br_ovs_link_ops->fill_slave_info ? br_ovs_link_ops->fill_slave_info(skb, brdev, dev) : 0;
++	return br_compat_link_ops.fill_slave_info(skb, brdev, dev);
++}
++
++static struct rtnl_link_ops * brc_get_rtnl_link_ops(void)
++{
++	return br_link_ops;
++}
++
+ static int __init brc_init(void)
+ {
+ 	int err;
+@@ -1364,6 +1443,30 @@ static int __init brc_init(void)
+ 
+ 	ovs_get_fdb_entries = brc_get_fdb_entries;
+ 
++	rtnl_lock();
++
++	br_link_ops = (struct rtnl_link_ops *)rtnl_link_ops_get("bridge");
++	memcpy(&br_compat_link_ops, br_link_ops, sizeof(*br_link_ops));
++	br_ovs_link_ops = rtnl_link_ops_get("openvswitch");
++
++	br_link_ops->setup = br_dev_setup;
++	br_link_ops->validate = br_validate;
++	br_link_ops->newlink = br_dev_newlink;
++	br_link_ops->changelink = br_changelink;
++	br_link_ops->dellink = br_dev_delete;
++	br_link_ops->get_size = br_get_size;
++	br_link_ops->fill_info = br_fill_info;
++	br_link_ops->fill_linkxstats = br_fill_linkxstats;
++	br_link_ops->get_linkxstats_size = br_get_linkxstats_size;
++	br_link_ops->slave_changelink = br_port_slave_changelink;
++	br_link_ops->get_slave_size = br_port_get_slave_size;
++	br_link_ops->fill_slave_info = br_port_fill_slave_info;
++
++	/* Set the openvswitch get_rtnl_link_ops handler */
++	ovs_dp_get_rtnl_link_ops_hook = brc_get_rtnl_link_ops;
++
++	rtnl_unlock();
++
+ #ifdef CONFIG_LTQ_MCAST_SNOOPING
+ 	/* Set multicast snooping hooks */
+ 	ovs_brc_mcsnoop_hook = brc_mcsnoop_hook;
+@@ -1413,6 +1516,9 @@ static void brc_cleanup(void)
+ 	/* set the openvswitch linux bridge port handler */
+ 	ovs_dp_br_bridge_port_setup = NULL;
+ 
++	/* Unregister get_rtnl_link_ops hooks */
++	ovs_dp_get_rtnl_link_ops_hook = NULL;
++
+ 	/* Unregister brc_get_fdb_entries */
+ 	ovs_get_fdb_entries = NULL;
+ 
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 3054af687..f43ee4299 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -97,6 +97,9 @@ EXPORT_SYMBOL(ovs_dp_br_bridge_setup);
+ int (*ovs_dp_br_bridge_port_setup)(struct vport *br_vport, struct vport *vport, int add);
+ EXPORT_SYMBOL(ovs_dp_br_bridge_port_setup);
+ 
++struct rtnl_link_ops * (*ovs_dp_get_rtnl_link_ops_hook)(void);
++EXPORT_SYMBOL(ovs_dp_get_rtnl_link_ops_hook);
++
+ int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
+ EXPORT_SYMBOL(ovs_dp_sysfs_hook);
+ 
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index 37b9eac78..11a35c154 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -275,6 +275,7 @@ extern int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct n
+ extern int (*ovs_dp_br_setlink_hook)(struct vport *vport, struct net_device *dev, struct nlmsghdr *nlh, u16 flags);
+ extern int (*ovs_dp_br_bridge_setup)(struct vport *vport, int add);
+ extern int (*ovs_dp_br_bridge_port_setup)(struct vport *br_vport, struct vport *vport, int add);
++extern struct rtnl_link_ops * (*ovs_dp_get_rtnl_link_ops_hook)(void);
+ extern int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
+ extern int (*ovs_dp_sysfs_string_hook)(struct net_device *dev, char *ustring, int cmd);
+ extern int (*ovs_get_fdb_entries)(struct net_device *dev, void *userbuf, unsigned long maxnum, unsigned long offset, bool is_user_buf);
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index d24ba13f8..62f740326 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -304,7 +304,10 @@ static void do_setup(struct net_device *netdev)
+ 	netdev->priv_destructor = internal_dev_destructor;
+ #endif /* HAVE_NEEDS_FREE_NETDEV */
+ 	netdev->ethtool_ops = &internal_dev_ethtool_ops;
+-	netdev->rtnl_link_ops = &internal_dev_link_ops;
++	if (ovs_dp_get_rtnl_link_ops_hook)
++		netdev->rtnl_link_ops = ovs_dp_get_rtnl_link_ops_hook();
++	else
++		netdev->rtnl_link_ops = &internal_dev_link_ops;
+ 
+ #ifndef HAVE_IFF_NO_QUEUE
+ 	netdev->tx_queue_len = 0;

@@ -1,0 +1,1075 @@
+From 603aab8a952b1aabdbee6055465898f7e96fd8ff Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Wed, 10 Nov 2021 22:29:24 +0500
+Subject: [PATCH] Commit Title          : Merge branch
+ 'inango_n26261_configuration_per_port' into branch-2.13-inangoplug
+
+BugID                 : 26090
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+* inango_n26261_configuration_per_port:
+  Commit Title          : Multicast configuration
+  Commit Title          : Add configuration per port
+  Commit Title          : Add configuration via netlinks
+  Commit Title          : handle multicast join/leave requests via kernel mdb
+  Commit Title          : Init kernel multicast snooping feature (querier & mdb)
+---
+ datapath/brcompat_main.c               | 222 ++++++++++++++++++++++++++++++++-
+ datapath/datapath.c                    | 150 ++++++++++++++++++++--
+ datapath/datapath.h                    |   5 +
+ datapath/vport-internal_dev.c          |  54 ++++++++
+ datapath/vport.h                       |   1 +
+ include/openvswitch/brcompat-netlink.h |   1 +
+ lib/dpif-netlink.c                     |  24 ++--
+ lib/dpif-netlink.h                     |   4 +-
+ lib/mcast-snooping.c                   |  43 +++----
+ lib/mcast-snooping.h                   |  19 +--
+ ofproto/ofproto-dpif-xlate.c           |  13 +-
+ ofproto/ofproto-dpif.c                 |   5 +-
+ vswitchd/ovs-brcompatd.c               |   4 +
+ 13 files changed, 486 insertions(+), 59 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 67d9bccf9..7977c35e8 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -33,10 +33,13 @@
+ #include <linux/if_bridge.h>
+ #include <linux/netdevice.h>
+ #include <linux/rtnetlink.h>
++#include <net/br_compat.h>
+ #include <net/genetlink.h>
++#include <net/rtnetlink.h>
+ 
+-#include "openvswitch/brcompat-netlink.h"
+ #include "datapath.h"
++#include "openvswitch/brcompat-netlink.h"
++#include "vport-internal_dev.h"
+ 
+ #define BRIDGE_LIST_MAX 16
+ 
+@@ -1079,6 +1082,193 @@ error:
+ 	return ERR_PTR(error);
+ }
+ 
++static int brc_br_bridge_setup(struct vport *vport, int add)
++{
++	if (!vport)
++		return -EINVAL;
++
++	if (add)
++	{
++		int err;
++		err = br_compat_bridge_create(vport->dev, &vport->brcompat_data);
++		if (!err) {
++			br_compat_multicast_set_querier(vport->brcompat_data, 1);
++			br_compat_multicast_toggle(vport->brcompat_data, 1);
++			br_compat_multicast_set_igmp_version(vport->brcompat_data, 3);
++		}
++		return err;
++	}
++	else
++	{
++		br_compat_multicast_dev_del(vport->brcompat_data);
++		return 0;
++	}
++
++	return -EOPNOTSUPP;
++}
++
++static int brc_br_port_setup(struct vport *br_vport, struct vport *vport, int add)
++{
++	if (!vport)
++		return -EINVAL;
++
++	if (add)
++	{
++		int err;
++		if (!br_vport)
++			return -EINVAL;
++
++		err = br_compat_bridge_port_create(br_vport->brcompat_data, vport->dev, &vport->brcompat_data);
++		if (!err) {
++			br_compat_set_port_flag(vport->brcompat_data, 1, BR_MULTICAST_FAST_LEAVE);
++		}
++		return err;
++	}
++	else
++	{
++		br_compat_multicast_disable_port(vport->brcompat_data);
++		br_compat_multicast_del_port(vport->brcompat_data);
++		return 0;
++	}
++
++	return -EOPNOTSUPP;
++}
++
++static int brc_br_changelink(struct vport *vport, struct nlattr *tb[], struct nlattr *data[])
++{
++	void *brcompat_data;
++
++	if (!vport || !data)
++		return 0;
++
++	brcompat_data = vport->brcompat_data;
++
++	if (data[IFLA_BR_MCAST_QUERIER]) {
++		u8 val = nla_get_u8(data[IFLA_BR_MCAST_QUERIER]);
++
++		br_compat_multicast_set_querier(brcompat_data, val);
++	}
++
++	if (data[IFLA_BR_MCAST_SNOOPING]) {
++		u8 val = nla_get_u8(data[IFLA_BR_MCAST_SNOOPING]);
++
++		brc_set_ulong_val_cmd(vport->dev, BRC_GENL_C_SET_BRIDGE_MULTICAST_SNOOPING, val);
++
++		br_compat_multicast_toggle(brcompat_data, val);
++	}
++
++	if (data[IFLA_BR_MCAST_IGMP_VERSION]) {
++		u8 val = nla_get_u8(data[IFLA_BR_MCAST_IGMP_VERSION]);
++
++		br_compat_multicast_set_igmp_version(brcompat_data, val);
++	}
++
++#if 0
++	if (data[IFLA_BR_MCAST_QUERY_USE_IFADDR]) {
++		u8 val = nla_get_u8(data[IFLA_BR_MCAST_QUERY_USE_IFADDR]);
++
++		// TODO: Add call later
++	}
++
++	if (data[IFLA_BR_MCAST_MLD_VERSION]) {
++		u8 val = nla_get_u8(data[IFLA_BR_MCAST_MLD_VERSION]);
++
++		// TODO: Add call later
++	}
++
++	if (data[IFLA_BR_MCAST_LAST_MEMBER_CNT]) {
++		u32 val = nla_get_u32(data[IFLA_BR_MCAST_LAST_MEMBER_CNT]);
++
++		// TODO: Add call later
++	}
++
++	if (data[IFLA_BR_MCAST_LAST_MEMBER_INTVL]) {
++		u64 val = nla_get_u64(data[IFLA_BR_MCAST_LAST_MEMBER_INTVL]);
++
++		// TODO: Add call later
++	}
++
++	if (data[IFLA_BR_MCAST_MEMBERSHIP_INTVL]) {
++		u64 val = nla_get_u64(data[IFLA_BR_MCAST_MEMBERSHIP_INTVL]);
++
++		// TODO: Add call later
++	}
++
++	if (data[IFLA_BR_MCAST_QUERY_INTVL]) {
++		u64 val = nla_get_u64(data[IFLA_BR_MCAST_QUERY_INTVL]);
++
++		// TODO: Add call later
++	}
++
++	if (data[IFLA_BR_MCAST_QUERY_RESPONSE_INTVL]) {
++		u64 val = nla_get_u64(data[IFLA_BR_MCAST_QUERY_RESPONSE_INTVL]);
++
++		// TODO: Add call later
++	}
++#endif
++
++	return 0;
++}
++
++static int brc_br_port_set_param(struct vport *vport, struct net_device *dev, struct nlattr *data[])
++{
++	int err = 0;
++	u8 val;
++
++	if (!data)
++		return -EINVAL;
++
++	if (data[IFLA_BRPORT_FAST_LEAVE]) {
++		val = nla_get_u8(data[IFLA_BRPORT_FAST_LEAVE]);
++
++		err = brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_PORT_MC_SNOOPING_FLOOD_REPORTS, val);
++		if (err)
++			return err;
++
++		err = br_compat_set_port_flag(vport->brcompat_data, val, BR_MULTICAST_FAST_LEAVE);
++		if (err)
++			return err;
++	}
++
++	return err;
++}
++
++static int brc_br_port_slave_changelink(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[])
++{
++	return brc_br_port_set_param(vport, dev, data);
++}
++
++static int brc_br_setlink(struct vport *vport, struct net_device *dev, struct nlmsghdr *nlh, u16 flags)
++{
++	int err = 0;
++	static const struct nla_policy br_port_policy[IFLA_BRPORT_MAX + 1] = {
++		[IFLA_BRPORT_STATE]	= { .type = NLA_U8 },
++		[IFLA_BRPORT_COST]	= { .type = NLA_U32 },
++		[IFLA_BRPORT_PRIORITY]	= { .type = NLA_U16 },
++		[IFLA_BRPORT_MODE]	= { .type = NLA_U8 },
++		[IFLA_BRPORT_GUARD]	= { .type = NLA_U8 },
++		[IFLA_BRPORT_PROTECT]	= { .type = NLA_U8 },
++		[IFLA_BRPORT_FAST_LEAVE]= { .type = NLA_U8 },
++		[IFLA_BRPORT_LEARNING]	= { .type = NLA_U8 },
++		[IFLA_BRPORT_UNICAST_FLOOD] = { .type = NLA_U8 },
++		[IFLA_BRPORT_PROXYARP]	= { .type = NLA_U8 },
++		[IFLA_BRPORT_PROXYARP_WIFI] = { .type = NLA_U8 },
++		[IFLA_BRPORT_MULTICAST_ROUTER] = { .type = NLA_U8 },
++	};
++	struct nlattr *protinfo;
++	struct nlattr *tb[IFLA_BRPORT_MAX + 1];
++
++	protinfo = nlmsg_find_attr(nlh, sizeof(struct ifinfomsg), IFLA_PROTINFO);
++	if (!protinfo)
++		return 0;
++
++	err = nla_parse_nested(tb, IFLA_BRPORT_MAX, protinfo, br_port_policy, NULL);
++	if (err)
++		return err;
++
++	return brc_br_port_set_param(vport, dev, tb);
++}
++
+ static bool check_bridge_list(const char *name)
+ {
+ 	int i;
+@@ -1153,6 +1343,21 @@ static int __init brc_init(void)
+ 	/* Set the openvswitch device add/del port handler */
+ 	ovs_dp_add_del_port_hook = brc_add_del_port_dev;
+ 
++	/* Set the openvswitch br_changelink handler */
++	ovs_dp_br_changelink_hook = brc_br_changelink;
++
++	/* Set the openvswitch br_port_slave_changelink handler */
++	ovs_dp_br_port_slave_changelink_hook = brc_br_port_slave_changelink;
++
++	/* set the openvswitch linux bridge struct handler */
++	ovs_dp_br_bridge_setup = brc_br_bridge_setup;
++
++	/* set the openvswitch linux bridge port handler */
++	ovs_dp_br_bridge_port_setup = brc_br_port_setup;
++
++	/* Set the openvswitch br_setlink handler */
++	ovs_dp_br_setlink_hook = brc_br_setlink;
++
+ 	/* Set the openvswitch device sysfs handler */
+ 	ovs_dp_sysfs_hook = brc_dev_sysfs;
+ 	ovs_dp_sysfs_string_hook = brc_dev_sysfs_string;
+@@ -1193,6 +1398,21 @@ static void brc_cleanup(void)
+ 	/* Unregister add/del port hooks */
+ 	ovs_dp_add_del_port_hook = NULL;
+ 
++	/* Unregister br_changelink hooks */
++	ovs_dp_br_changelink_hook = NULL;
++
++	/* Unregister br_port_slave_changelink hooks */
++	ovs_dp_br_port_slave_changelink_hook = NULL;
++
++	/* Unregister br_setlink hooks */
++	ovs_dp_br_setlink_hook = NULL;
++
++	/* set the openvswitch linux bridge struct handler */
++	ovs_dp_br_bridge_setup = NULL;
++
++	/* set the openvswitch linux bridge port handler */
++	ovs_dp_br_bridge_port_setup = NULL;
++
+ 	/* Unregister brc_get_fdb_entries */
+ 	ovs_get_fdb_entries = NULL;
+ 
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index b50c8b3aa..3054af687 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -69,6 +69,7 @@
+ #include "vport-internal_dev.h"
+ #include "vport-netdev.h"
+ #include "openvswitch/brcompat-netlink.h"
++#include <net/br_compat.h>
+ 
+ unsigned int ovs_net_id __read_mostly;
+ 
+@@ -81,6 +82,21 @@ EXPORT_SYMBOL(ovs_dp_mac_addr_hook);
+ int (*ovs_dp_add_del_port_hook)(struct net_device *br_dev, struct net_device *p_dev, int add);
+ EXPORT_SYMBOL(ovs_dp_add_del_port_hook);
+ 
++int (*ovs_dp_br_changelink_hook)(struct vport *vport, struct nlattr *tb[], struct nlattr *data[]);
++EXPORT_SYMBOL(ovs_dp_br_changelink_hook);
++
++int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[]);
++EXPORT_SYMBOL(ovs_dp_br_port_slave_changelink_hook);
++
++int (*ovs_dp_br_setlink_hook)(struct vport *vport, struct net_device *dev, struct nlmsghdr *nlh, u16 flags);
++EXPORT_SYMBOL(ovs_dp_br_setlink_hook);
++
++int (*ovs_dp_br_bridge_setup)(struct vport *vport, int add);
++EXPORT_SYMBOL(ovs_dp_br_bridge_setup);
++
++int (*ovs_dp_br_bridge_port_setup)(struct vport *br_vport, struct vport *vport, int add);
++EXPORT_SYMBOL(ovs_dp_br_bridge_port_setup);
++
+ int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
+ EXPORT_SYMBOL(ovs_dp_sysfs_hook);
+ 
+@@ -91,6 +107,10 @@ int (*ovs_get_fdb_entries)(struct net_device *dev, void *user,
+ 			       unsigned long maxnum, unsigned long offset, bool is_user_buf);
+ EXPORT_SYMBOL(ovs_get_fdb_entries);
+ 
++static struct vport *lookup_vport(struct net *net,
++				  const struct ovs_header *ovs_header,
++				  struct nlattr *a[OVS_VPORT_ATTR_MAX + 1]);
++
+ static struct genl_family dp_packet_genl_family;
+ static struct genl_family dp_flow_genl_family;
+ static struct genl_family dp_datapath_genl_family;
+@@ -2130,24 +2150,30 @@ error:
+     return -EMSGSIZE;
+ }
+ 
+-static int ovs_vport_cmd_mcast_fill_msg(struct pp_am_multicast_event_msg *msg, struct genl_info *info)
++static int ovs_vport_cmd_mcast_fill_msg(struct vport* vport, struct genl_info *info, struct pp_am_multicast_event_msg *msg, struct br_ip *group)
+ {
+     struct nlattr **a = info->attrs;
+     struct nlattr *ip_attr;
+-    struct ovs_header *ovs_header = info->userhdr;
+ 
+     memset(msg, 0, sizeof(struct pp_am_multicast_event_msg));
++    memset(group, 0, sizeof(struct br_ip));
+ 
+-    msg->ifindex = ovs_header->dp_ifindex;
++    msg->ifindex = vport->dev->ifindex;
+ 
+     if (a[OVS_VPORT_ATTR_IPV4]) {
+         ip_attr = a[OVS_VPORT_ATTR_IPV4];
+         memcpy(&msg->ip.ipv4, nla_data(ip_attr), nla_len(ip_attr));
+         msg->ip.eth_proto = htons(ETH_P_IP);
++		group->u.ip4 = msg->ip.ipv4.s_addr;
++		group->proto = msg->ip.eth_proto;
++		group->vid = 0;
+     } else if (a[OVS_VPORT_ATTR_IPV6]) {
+         ip_attr = a[OVS_VPORT_ATTR_IPV6];
+         memcpy(&msg->ip.ipv6, nla_data(ip_attr), nla_len(ip_attr));
+         msg->ip.eth_proto = htons(ETH_P_IPV6);
++		group->u.ip6 = msg->ip.ipv6;
++		group->proto = msg->ip.eth_proto;
++		group->vid = 0;
+     } else {
+         return -EINVAL;
+     }
+@@ -2158,24 +2184,61 @@ static int ovs_vport_cmd_addmcastgrp(struct sk_buff *skb, struct genl_info *info
+ {
+     struct pp_am_multicast_event_msg msg;
+     int err;
++	struct vport *vport;
++	void *br_mport = NULL;
++	void *mport = NULL;
++	struct nlattr **a = info->attrs;
++	struct br_ip group;
+ 
+-    err = ovs_vport_cmd_mcast_fill_msg(&msg, info);
++	vport = lookup_vport(sock_net(skb->sk), info->userhdr, a);
++	if (vport == NULL){
++		return -1;
++	}
++
++    err = ovs_vport_cmd_mcast_fill_msg(vport, info, &msg, &group);
+     if (err) {
+         return err;
+     }
+-    return pp_am_port_event(PP_AM_MULTICAST_JOIN, &msg);
++
++	if (vport->type == OVS_VPORT_TYPE_INTERNAL) {
++		br_mport = vport->brcompat_data;
++	} else {
++		mport = vport->brcompat_data;
++	}
++
++	pp_am_port_event(PP_AM_MULTICAST_JOIN, &msg);
++	return br_compat_multicast_add_group(br_mport, mport, &group);
+ }
+ 
+ static int ovs_vport_cmd_delmcastgrp(struct sk_buff *skb, struct genl_info *info)
+ {
+     struct pp_am_multicast_event_msg msg;
+     int err;
++	struct vport *vport;
++	void *br_mport;
++	void *mport;
++	struct nlattr **a = info->attrs;
++	struct br_ip group;
++
++	vport = lookup_vport(sock_net(skb->sk), info->userhdr, a);
++	if (vport == NULL){
++		return -1;
++	}
+ 
+-    err = ovs_vport_cmd_mcast_fill_msg(&msg, info);
++    err = ovs_vport_cmd_mcast_fill_msg(vport, info, &msg, &group);
+     if (err) {
+         return err;
+     }
+-    return pp_am_port_event(PP_AM_MULTICAST_LEAVE, &msg);
++
++	if (vport->type == OVS_VPORT_TYPE_INTERNAL) {
++		br_mport = vport->brcompat_data;
++	} else {
++		mport = vport->brcompat_data;
++	}
++
++	pp_am_port_event(PP_AM_MULTICAST_LEAVE, &msg);
++	br_compat_multicast_leave_group(br_mport, mport, &group);
++	return err;
+ }
+ 
+ static const struct nla_policy datapath_policy[OVS_DP_ATTR_MAX + 1] = {
+@@ -2389,6 +2452,76 @@ struct vport* get_vport_by_bridge(struct datapath *dp, const char *bridge)
+ 	return NULL;
+ }
+ 
++static int ovs_brcompat_bridge_setup(struct vport *vport, struct vport_parms *parms){
++	if (ovs_dp_br_bridge_setup) {
++		return ovs_dp_br_bridge_setup(vport, 1);
++	}
++	return -EOPNOTSUPP;
++}
++
++static int ovs_brcompat_port_setup(struct vport *vport, struct vport_parms *parms){
++	struct vport *br_vport;
++
++	if (!parms->bridge_name || !*parms->bridge_name)
++			return -EINVAL;
++
++	br_vport = get_vport_by_bridge(vport->dp, parms->bridge_name);
++
++	if (br_vport == NULL)
++		return -EINVAL;
++
++	if (ovs_dp_br_bridge_port_setup) {
++		return ovs_dp_br_bridge_port_setup(br_vport, vport, 1);
++	}
++
++	return -EOPNOTSUPP;
++}
++
++static int ovs_dp_brcompat_init(struct vport *vport, struct vport_parms *parms)
++{
++	int err = 0;
++
++	if (vport->port_no == OVSP_LOCAL) {
++		return err;
++	}
++
++	if (parms->type == OVS_VPORT_TYPE_INTERNAL) {
++		err = ovs_brcompat_bridge_setup(vport, parms);
++	} else {
++		err = ovs_brcompat_port_setup(vport, parms);
++	}
++
++	return err;
++}
++
++static int ovs_brcompat_bridge_destroy(struct vport *vport)
++{
++	if (ovs_dp_br_bridge_setup) {
++		return ovs_dp_br_bridge_setup( vport, 0);
++	}
++	return EOPNOTSUPP;
++}
++static int ovs_brcompat_port_destroy(struct vport *vport)
++{
++	if (ovs_dp_br_bridge_port_setup) {
++		return ovs_dp_br_bridge_port_setup(NULL, vport, 0);
++	}
++
++	return EOPNOTSUPP;
++}
++static int ovs_dp_brcompat_destroy(struct vport *vport)
++{
++	int err = 0;
++
++	if (vport->type == OVS_VPORT_TYPE_INTERNAL) {
++		err = ovs_brcompat_bridge_destroy(vport);
++	} else {
++		err = ovs_brcompat_port_destroy(vport);
++	}
++
++	return err;
++}
++
+ static int ovs_vport_cmd_new(struct sk_buff *skb, struct genl_info *info)
+ {
+ 	struct nlattr **a = info->attrs;
+@@ -2460,6 +2593,7 @@ restart:
+ 		goto exit_unlock_free;
+ 	}
+ 
++	ovs_dp_brcompat_init(vport, &parms);
+ 	vport->type = parms.type;
+ 	if (parms.type == OVS_VPORT_TYPE_INTERNAL) {
+ 		ovs_dp_sysfs_add_dp(vport->dp, vport);
+@@ -2472,7 +2606,6 @@ restart:
+ 
+ 		if (br == NULL)
+ 			goto cont_wo_sysfs;
+-
+ 		ovs_dp_sysfs_add_if(vport, br);
+ 	}
+ 
+@@ -2591,6 +2724,7 @@ static int ovs_vport_cmd_del(struct sk_buff *skb, struct genl_info *info)
+ 	if (vport->type == OVS_VPORT_TYPE_INTERNAL) {
+ 		detach_internal_ifaces(vport);
+ 	}
++	ovs_dp_brcompat_destroy(vport);
+ 	ovs_dp_detach_port(vport);
+ 
+ 	if (must_update_headroom)
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index a2544416b..37b9eac78 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -270,6 +270,11 @@ extern const struct genl_multicast_group ovs_dp_vport_multicast_group;
+ extern int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
+ extern int (*ovs_dp_mac_addr_hook)(struct net_device *dev, void *p);
+ extern int (*ovs_dp_add_del_port_hook)(struct net_device *br_dev, struct net_device *p_dev, int add);
++extern int (*ovs_dp_br_changelink_hook)(struct vport *vport, struct nlattr *tb[], struct nlattr *data[]);
++extern int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[]);
++extern int (*ovs_dp_br_setlink_hook)(struct vport *vport, struct net_device *dev, struct nlmsghdr *nlh, u16 flags);
++extern int (*ovs_dp_br_bridge_setup)(struct vport *vport, int add);
++extern int (*ovs_dp_br_bridge_port_setup)(struct vport *br_vport, struct vport *vport, int add);
+ extern int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
+ extern int (*ovs_dp_sysfs_string_hook)(struct net_device *dev, char *ustring, int cmd);
+ extern int (*ovs_get_fdb_entries)(struct net_device *dev, void *userbuf, unsigned long maxnum, unsigned long offset, bool is_user_buf);
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index bf5fa26d6..d24ba13f8 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -30,6 +30,7 @@
+ #include "datapath.h"
+ #include "vport-internal_dev.h"
+ #include "vport-netdev.h"
++#include <net/br_compat.h>
+ 
+ struct internal_dev {
+ 	struct vport *vport;
+@@ -66,9 +67,17 @@ internal_dev_xmit(struct sk_buff *skb, struct net_device *netdev)
+ 	return NETDEV_TX_OK;
+ }
+ 
++
+ static int internal_dev_open(struct net_device *netdev)
+ {
++	struct vport *vport;
++	struct internal_dev *internal_dev;
++	internal_dev = internal_dev_priv(netdev);
++	vport = internal_dev->vport;
++
+ 	netif_start_queue(netdev);
++	br_compat_multicast_open(vport->brcompat_data);
++	
+ 	return 0;
+ }
+ 
+@@ -211,6 +220,20 @@ static int internal_del_slave(struct net_device *br_dev, struct net_device *p_de
+ 	return -EOPNOTSUPP;
+ }
+ 
++static int br_setlink(struct net_device *dev, struct nlmsghdr *nlh, u16 flags)
++{
++	struct vport *vport;
++
++	vport = ovs_netdev_get_vport(dev);
++	if (!vport)
++		return -EINVAL;
++
++	if (ovs_dp_br_setlink_hook) {
++		return ovs_dp_br_setlink_hook(vport, dev, nlh, flags);
++	}
++	return -EOPNOTSUPP;
++}
++
+ static const struct net_device_ops internal_dev_netdev_ops = {
+ 	.ndo_open = internal_dev_open,
+ 	.ndo_stop = internal_dev_stop,
+@@ -223,10 +246,41 @@ static const struct net_device_ops internal_dev_netdev_ops = {
+ 	.ndo_get_stats64 = (void *)internal_get_stats,
+ 	.ndo_add_slave = internal_add_slave,
+ 	.ndo_del_slave = internal_del_slave,
++	.ndo_bridge_setlink	 = br_setlink,
+ };
+ 
++static int br_changelink(struct net_device *br_dev, struct nlattr *tb[], struct nlattr *data[])
++{
++	struct vport *vport;
++
++	vport = ovs_internal_dev_get_vport(br_dev);
++	if (!vport)
++		return -EINVAL;
++
++	if (ovs_dp_br_changelink_hook) {
++		return ovs_dp_br_changelink_hook(vport, tb, data);
++	}
++	return -EOPNOTSUPP;
++}
++
++static int br_port_slave_changelink(struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[])
++{
++	struct vport *vport;
++
++	vport = ovs_netdev_get_vport(dev);
++	if (!vport)
++		return -EINVAL;
++
++	if (ovs_dp_br_port_slave_changelink_hook) {
++		return ovs_dp_br_port_slave_changelink_hook(vport, br_dev, dev, tb, data);
++	}
++	return -EOPNOTSUPP;
++}
++
+ static struct rtnl_link_ops internal_dev_link_ops __read_mostly = {
+ 	.kind = "openvswitch",
++	.changelink = br_changelink,
++	.slave_changelink = br_port_slave_changelink,
+ };
+ 
+ static void do_setup(struct net_device *netdev)
+diff --git a/datapath/vport.h b/datapath/vport.h
+index d53e6fbac..ce0e8a216 100644
+--- a/datapath/vport.h
++++ b/datapath/vport.h
+@@ -101,6 +101,7 @@ struct vport {
+ 	struct hlist_node hash_node;
+ 	struct hlist_node dp_hash_node;
+ 	const struct vport_ops *ops;
++	void *brcompat_data;
+ 
+ 	struct list_head detach_list;
+ 	struct rcu_head rcu;
+diff --git a/include/openvswitch/brcompat-netlink.h b/include/openvswitch/brcompat-netlink.h
+index adcd5372f..54a4213fe 100644
+--- a/include/openvswitch/brcompat-netlink.h
++++ b/include/openvswitch/brcompat-netlink.h
+@@ -141,6 +141,7 @@ enum brc_genl_command {
+     BRC_GENL_C_GET_BRIDGE_BY_PORT, /* K: Get bridge name by port. */
+     BRC_GENL_C_GET_BRIDGE_EXISTS, /* K: Check that bridge exists. */
+     BRC_GENL_C_SET_MAC_ADDR, /* K: Set MAC address. */
++    BRC_GENL_C_SET_PORT_MC_SNOOPING_FLOOD_REPORTS, /* K: Set the port multicast snooping flood reports */
+ 
+     __BRC_GENL_C_MAX,
+     BRC_GENL_C_MAX = __BRC_GENL_C_MAX - 1
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index 36ec1283e..452a47a43 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -4309,13 +4309,14 @@ dpif_netlink_rtm_delneigh(int ifindex, const struct eth_addr src_mac)
+ }
+ 
+ static int
+-dpif_netlink_ipv4_send(int ifindex, __be32 ipv4, uint8_t cmd)
++dpif_netlink_ipv4_send(int dp_ifindex, int ifindex, __be32 ipv4, uint8_t cmd)
+ {
+     struct dpif_netlink_vport request;
+ 
+     dpif_netlink_vport_init(&request);
+     request.cmd = cmd;
+-    request.dp_ifindex = ifindex;
++    request.dp_ifindex = dp_ifindex;
++    request.port_no = ifindex;
+     request.is_ipv4 = true;
+     memcpy(&request.ipv4, &ipv4, sizeof(request.ipv4));
+ 
+@@ -4323,13 +4324,14 @@ dpif_netlink_ipv4_send(int ifindex, __be32 ipv4, uint8_t cmd)
+ }
+ 
+ static int
+-dpif_netlink_ipv6_send(int ifindex, __be32 *ipv6, uint8_t cmd)
++dpif_netlink_ipv6_send(int dp_ifindex, int ifindex, __be32 *ipv6, uint8_t cmd)
+ {
+     struct dpif_netlink_vport request;
+ 
+     dpif_netlink_vport_init(&request);
+     request.cmd = cmd;
+-    request.dp_ifindex = ifindex;
++    request.dp_ifindex = dp_ifindex;
++    request.port_no = ifindex;
+     request.is_ipv4 = false;
+     memcpy(request.ipv6, ipv6, sizeof(request.ipv6));
+ 
+@@ -4337,14 +4339,15 @@ dpif_netlink_ipv6_send(int ifindex, __be32 *ipv6, uint8_t cmd)
+ }
+ 
+ int
+-dpif_netlink_rtm_add_mcast_grp(int ifindex, const struct in6_addr *addr)
++dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr)
+ {
+     int error;
++    struct dpif_netlink *dpif = dpif_netlink_cast(dpif_);
+ 
+     if (IN6_IS_ADDR_V4MAPPED(addr))
+-        error = dpif_netlink_ipv4_send(ifindex, in6_addr_get_mapped_ipv4(addr), OVS_VPORT_CMD_ADDMCASTGRP);
++        error = dpif_netlink_ipv4_send(dpif->dp_ifindex, port_no, in6_addr_get_mapped_ipv4(addr), OVS_VPORT_CMD_ADDMCASTGRP);
+     else
+-        error = dpif_netlink_ipv6_send(ifindex, addr->s6_addr32, OVS_VPORT_CMD_ADDMCASTGRP);
++        error = dpif_netlink_ipv6_send(dpif->dp_ifindex, port_no, addr->s6_addr32, OVS_VPORT_CMD_ADDMCASTGRP);
+ 
+     if (!error) {
+         return -1;
+@@ -4354,14 +4357,15 @@ dpif_netlink_rtm_add_mcast_grp(int ifindex, const struct in6_addr *addr)
+ }
+ 
+ int
+-dpif_netlink_rtm_del_mcast_grp(int ifindex, const struct in6_addr *addr)
++dpif_netlink_rtm_del_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr)
+ {
+     int error;
++    struct dpif_netlink *dpif = dpif_netlink_cast(dpif_);
+ 
+     if (IN6_IS_ADDR_V4MAPPED(addr))
+-        error = dpif_netlink_ipv4_send(ifindex, in6_addr_get_mapped_ipv4(addr), OVS_VPORT_CMD_DELMCASTGRP);
++        error = dpif_netlink_ipv4_send(dpif->dp_ifindex, port_no, in6_addr_get_mapped_ipv4(addr), OVS_VPORT_CMD_DELMCASTGRP);
+     else
+-        error = dpif_netlink_ipv6_send(ifindex, addr->s6_addr32, OVS_VPORT_CMD_DELMCASTGRP);
++        error = dpif_netlink_ipv6_send(dpif->dp_ifindex, port_no, addr->s6_addr32, OVS_VPORT_CMD_DELMCASTGRP);
+ 
+     if (!error) {
+         return -1;
+diff --git a/lib/dpif-netlink.h b/lib/dpif-netlink.h
+index 787ff8939..1ee7a9131 100644
+--- a/lib/dpif-netlink.h
++++ b/lib/dpif-netlink.h
+@@ -64,8 +64,8 @@ int dpif_netlink_vport_get(const char *name, struct dpif_netlink_vport *reply,
+ int dpif_netlink_rtm_newneigh(int ifindex, const struct eth_addr src_mac);
+ int dpif_netlink_rtm_delneigh(int ifindex, const struct eth_addr src_mac);
+ 
+-int dpif_netlink_rtm_add_mcast_grp(int ifindex, const struct in6_addr *addr);
+-int dpif_netlink_rtm_del_mcast_grp(int ifindex, const struct in6_addr *addr);
++int dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr);
++int dpif_netlink_rtm_del_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr);
+ 
+ bool dpif_netlink_is_internal_device(const char *name);
+ 
+diff --git a/lib/mcast-snooping.c b/lib/mcast-snooping.c
+index bb8eb8caa..31a823a90 100644
+--- a/lib/mcast-snooping.c
++++ b/lib/mcast-snooping.c
+@@ -358,7 +358,7 @@ mcast_group_bundle_insert_src_addrs(struct mcast_snooping *ms OVS_UNUSED,
+  * position and expiration if it is already there. */
+ static struct mcast_group_bundle *
+ mcast_group_insert_bundle(struct mcast_snooping *ms OVS_UNUSED,
+-                          struct mcast_group *grp, int ifindex, void *port, int idle_time,
++                          struct mcast_group *grp, void *dpif, int port_no, void *port, int idle_time,
+                           int filter_mode, const char *saddrs, bool local_port)
+     OVS_REQ_WRLOCK(ms->rwlock)
+ {
+@@ -375,7 +375,8 @@ mcast_group_insert_bundle(struct mcast_snooping *ms OVS_UNUSED,
+         ms->need_revalidate = true;
+     }
+ 
+-    b->ifindex = ifindex;
++    b->dpif = dpif;
++    b->port_no = port_no;
+     b->created = time_now();
+     if (local_port)
+         b->expires = 0;
+@@ -438,7 +439,7 @@ mcast_snooping_flush_group(struct mcast_snooping *ms, struct mcast_group *grp)
+     struct mcast_group_bundle *b;
+ 
+     LIST_FOR_EACH_POP (b, bundle_node, &grp->bundle_lru) {
+-        dpif_netlink_rtm_del_mcast_grp(b->ifindex, &grp->addr);
++        dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr);
+         mcast_snooping_flush_group_bundle(ms, b);
+     }
+ 
+@@ -459,7 +460,7 @@ mcast_group_delete_bundle(struct mcast_snooping *ms OVS_UNUSED,
+     LIST_FOR_EACH (b, bundle_node, &grp->bundle_lru) {
+         if (b->port == port) {
+             ovs_list_remove(&b->bundle_node);
+-            dpif_netlink_rtm_del_mcast_grp(b->ifindex, &grp->addr);
++            dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr);
+             mcast_snooping_flush_group_bundle(ms, b);
+             return true;
+         }
+@@ -488,7 +489,7 @@ mcast_snooping_prune_expired(struct mcast_snooping *ms,
+             break;
+         }
+         ovs_list_remove(&b->bundle_node);
+-        dpif_netlink_rtm_del_mcast_grp(b->ifindex, &grp->addr);
++        dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr);
+         mcast_snooping_flush_group_bundle(ms, b);
+         expired++;
+     }
+@@ -510,7 +511,7 @@ mcast_snooping_prune_expired(struct mcast_snooping *ms,
+  * move to the last position in the LRU list.
+  */
+ bool
+-mcast_snooping_add_group(struct mcast_snooping *ms, int ifindex,
++mcast_snooping_add_group(struct mcast_snooping *ms, void *dpif, int port_no,
+                          const struct in6_addr *addr,
+                          int filter_mode, const char *saddrs,
+                          uint16_t vlan, void *port, bool local_port)
+@@ -546,29 +547,29 @@ mcast_snooping_add_group(struct mcast_snooping *ms, int ifindex,
+     } else {
+         ovs_list_remove(&grp->group_node);
+     }
+-    mcast_group_insert_bundle(ms, grp, ifindex, port, ms->idle_time, filter_mode, saddrs, local_port);
++    mcast_group_insert_bundle(ms, grp, dpif, port_no, port, ms->idle_time, filter_mode, saddrs, local_port);
+ 
+     /* Mark 'grp' as recently used. */
+     ovs_list_push_back(&ms->group_lru, &grp->group_node);
+ 
+-    dpif_netlink_rtm_add_mcast_grp(ifindex, addr);
++    dpif_netlink_rtm_add_mcast_grp(dpif, port_no, addr);
+ 
+     return learned;
+ }
+ 
+ bool
+-mcast_snooping_add_group4(struct mcast_snooping *ms, int ifindex, ovs_be32 ip4,
++mcast_snooping_add_group4(struct mcast_snooping *ms, void *dpif, int port_no, ovs_be32 ip4,
+                          int filter_mode, const char *saddrs,
+                          uint16_t vlan, void *port, bool local_port)
+     OVS_REQ_WRLOCK(ms->rwlock)
+ {
+     struct in6_addr addr = in6_addr_mapped_ipv4(ip4);
+-    return mcast_snooping_add_group(ms, ifindex, &addr, filter_mode, saddrs, vlan, port, local_port);
++    return mcast_snooping_add_group(ms, dpif, port_no, &addr, filter_mode, saddrs, vlan, port, local_port);
+ }
+ 
+ int
+ mcast_snooping_add_report(struct mcast_snooping *ms,
+-                          int ifindex,
++                          void *dpif, int port_no,
+                           const struct dp_packet *p,
+                           uint16_t vlan, void *port, bool local_port)
+ {
+@@ -605,9 +606,9 @@ mcast_snooping_add_report(struct mcast_snooping *ms,
+         if (ntohs(record->nsrcs) == 0
+             && (record->type == IGMPV3_MODE_IS_INCLUDE
+                 || record->type == IGMPV3_CHANGE_TO_INCLUDE_MODE)) {
+-            ret = mcast_snooping_leave_group4(ms, ifindex, ip4, vlan, port);
++            ret = mcast_snooping_leave_group4(ms, ip4, vlan, port);
+         } else {
+-            ret = mcast_snooping_add_group4(ms, ifindex, ip4, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, port, local_port);
++            ret = mcast_snooping_add_group4(ms, dpif, port_no, ip4, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, port, local_port);
+         }
+         if (ret) {
+             count++;
+@@ -642,7 +643,7 @@ mcast_snooping_get_mld_grp(const struct dp_packet *p)
+ 
+ int
+ mcast_snooping_add_mld(struct mcast_snooping *ms,
+-                          int ifindex,
++                          void *dpif, int port_no,
+                           const struct dp_packet *p,
+                           uint16_t vlan, void *port, bool local_port)
+ {
+@@ -665,13 +666,13 @@ mcast_snooping_add_mld(struct mcast_snooping *ms,
+ 
+     switch (mld->type) {
+     case MLD_REPORT:
+-        ret = mcast_snooping_add_group(ms, ifindex, addr, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, port, local_port);
++        ret = mcast_snooping_add_group(ms, dpif, port_no, addr, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, port, local_port);
+         if (ret) {
+             count++;
+         }
+         break;
+     case MLD_DONE:
+-        ret = mcast_snooping_leave_group(ms, ifindex, addr, vlan, port);
++        ret = mcast_snooping_leave_group(ms, addr, vlan, port);
+         if (ret) {
+             count++;
+         }
+@@ -695,9 +696,9 @@ mcast_snooping_add_mld(struct mcast_snooping *ms,
+                 if (record->nsrcs == htons(0)
+                     && (record->type == IGMPV3_MODE_IS_INCLUDE
+                         || record->type == IGMPV3_CHANGE_TO_INCLUDE_MODE)) {
+-                    ret = mcast_snooping_leave_group(ms, ifindex, addr, vlan, port);
++                    ret = mcast_snooping_leave_group(ms, addr, vlan, port);
+                 } else {
+-                    ret = mcast_snooping_add_group(ms, ifindex, addr, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, port, local_port);
++                    ret = mcast_snooping_add_group(ms, dpif, port_no, addr, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, port, local_port);
+                 }
+                 if (ret) {
+                     count++;
+@@ -713,7 +714,7 @@ mcast_snooping_add_mld(struct mcast_snooping *ms,
+ }
+ 
+ bool
+-mcast_snooping_leave_group(struct mcast_snooping *ms, int ifindex,
++mcast_snooping_leave_group(struct mcast_snooping *ms,
+                            const struct in6_addr *addr,
+                            uint16_t vlan, void *port)
+     OVS_REQ_WRLOCK(ms->rwlock)
+@@ -736,11 +737,11 @@ mcast_snooping_leave_group(struct mcast_snooping *ms, int ifindex,
+ }
+ 
+ bool
+-mcast_snooping_leave_group4(struct mcast_snooping *ms, int ifindex, ovs_be32 ip4,
++mcast_snooping_leave_group4(struct mcast_snooping *ms, ovs_be32 ip4,
+                            uint16_t vlan, void *port)
+ {
+     struct in6_addr addr = in6_addr_mapped_ipv4(ip4);
+-    return mcast_snooping_leave_group(ms, ifindex, &addr, vlan, port);
++    return mcast_snooping_leave_group(ms, &addr, vlan, port);
+ }
+ 
+ 
+diff --git a/lib/mcast-snooping.h b/lib/mcast-snooping.h
+index 6b0c6e9da..9a146b55f 100644
+--- a/lib/mcast-snooping.h
++++ b/lib/mcast-snooping.h
+@@ -85,7 +85,8 @@ struct mcast_group_bundle {
+     time_t expires;
+ 
+     /* Interface index */
+-    int ifindex;
++    void *dpif;
++    int port_no;
+ 
+     /* Learned port. */
+     void *port OVS_GUARDED;
+@@ -216,30 +217,30 @@ mcast_snooping_lookup4(const struct mcast_snooping *ms, ovs_be32 ip4,
+     OVS_REQ_RDLOCK(ms->rwlock);
+ 
+ /* Learning. */
+-bool mcast_snooping_add_group(struct mcast_snooping *ms, int ifindex,
++bool mcast_snooping_add_group(struct mcast_snooping *ms, void* dpif, int port_no,
+                               const struct in6_addr *addr,
+                               int filter_mode, const char *saddrs,
+                               uint16_t vlan, void *port, bool local_port)
+     OVS_REQ_WRLOCK(ms->rwlock);
+-bool mcast_snooping_add_group4(struct mcast_snooping *ms, int ifindex, ovs_be32 ip4,
++bool mcast_snooping_add_group4(struct mcast_snooping *ms, void* dpif, int port_no, ovs_be32 ip4,
+                                int filter_mode, const char *saddrs,
+                                uint16_t vlan, void *port, bool local_port)
+     OVS_REQ_WRLOCK(ms->rwlock);
+ int mcast_snooping_add_report(struct mcast_snooping *ms,
+-                              int ifindex,
+-                              const struct dp_packet *p,
+-                              uint16_t vlan, void *port, bool local_port)
++                          void *dpif, int port_no,
++                          const struct dp_packet *p,
++                          uint16_t vlan, void *port, bool local_port)
+     OVS_REQ_WRLOCK(ms->rwlock);
+ int mcast_snooping_add_mld(struct mcast_snooping *ms,
+-                           int ifindex,
++                           void * dpif, int port_no,
+                            const struct dp_packet *p,
+                            uint16_t vlan, void *port, bool local_port)
+     OVS_REQ_WRLOCK(ms->rwlock);
+-bool mcast_snooping_leave_group(struct mcast_snooping *ms, int ifindex,
++bool mcast_snooping_leave_group(struct mcast_snooping *ms,
+                                 const struct in6_addr *addr,
+                                 uint16_t vlan, void *port)
+     OVS_REQ_WRLOCK(ms->rwlock);
+-bool mcast_snooping_leave_group4(struct mcast_snooping *ms, int ifindex, ovs_be32 ip4,
++bool mcast_snooping_leave_group4(struct mcast_snooping *ms, ovs_be32 ip4,
+                                  uint16_t vlan, void *port)
+     OVS_REQ_WRLOCK(ms->rwlock);
+ struct mcast_mrouter_bundle *
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 09ea9660e..9eb3114dc 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2608,7 +2608,8 @@ update_mcast_snooping_table4__(const struct xlate_ctx *ctx,
+     int count;
+     size_t offset;
+     ovs_be32 ip4 = flow->igmp_group_ip4;
+-    int ifindex = netdev_get_ifindex(CONTAINER_OF(ovs_list_front(&in_xbundle->xports), struct xport, bundle_node)->netdev);
++    struct xport* port = CONTAINER_OF(ovs_list_front(&in_xbundle->xports), struct xport, bundle_node);
++    struct dpif* dpif = port->xbridge->ofproto->backer->dpif;
+ 
+     offset = (char *) dp_packet_l4(packet) - (char *) dp_packet_data(packet);
+     igmp = dp_packet_at(packet, offset, IGMP_HEADER_LEN);
+@@ -2624,7 +2625,7 @@ update_mcast_snooping_table4__(const struct xlate_ctx *ctx,
+     /* TODO: enable/disable handling  */
+     case IGMP_HOST_MEMBERSHIP_REPORT:
+     case IGMPV2_HOST_MEMBERSHIP_REPORT:
+-        if (mcast_snooping_add_group4(ms, ifindex, ip4, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, in_xbundle->ofbundle, local_port)) {
++        if (mcast_snooping_add_group4(ms, dpif, port->odp_port, ip4, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, in_xbundle->ofbundle, local_port)) {
+             xlate_report_debug(ctx, OFT_DETAIL,
+                                "multicast snooping learned that "
+                                IP_FMT" is on port %s in VLAN %d",
+@@ -2632,7 +2633,7 @@ update_mcast_snooping_table4__(const struct xlate_ctx *ctx,
+         }
+         break;
+     case IGMP_HOST_LEAVE_MESSAGE:
+-        if (mcast_snooping_leave_group4(ms, ifindex, ip4, vlan, in_xbundle->ofbundle)) {
++        if (mcast_snooping_leave_group4(ms, ip4, vlan, in_xbundle->ofbundle)) {
+             xlate_report_debug(ctx, OFT_DETAIL, "multicast snooping leaving "
+                                IP_FMT" is on port %s in VLAN %d",
+                                IP_ARGS(ip4), in_xbundle->name, vlan);
+@@ -2647,7 +2648,7 @@ update_mcast_snooping_table4__(const struct xlate_ctx *ctx,
+         }
+         break;
+     case IGMPV3_HOST_MEMBERSHIP_REPORT:
+-        count = mcast_snooping_add_report(ms, ifindex, packet, vlan,
++        count = mcast_snooping_add_report(ms, dpif, port->odp_port, packet, vlan,
+                                           in_xbundle->ofbundle, local_port);
+         if (count) {
+             xlate_report_debug(ctx, OFT_DETAIL, "multicast snooping processed "
+@@ -2669,7 +2670,7 @@ update_mcast_snooping_table6__(const struct xlate_ctx *ctx,
+     const struct mld_header *mld;
+     int count;
+     size_t offset;
+-    int ifindex = netdev_get_ifindex(CONTAINER_OF(ovs_list_front(&in_xbundle->xports), struct xport, bundle_node)->netdev);
++    struct xport* port = CONTAINER_OF(ovs_list_front(&in_xbundle->xports), struct xport, bundle_node);
+ 
+     offset = (char *) dp_packet_l4(packet) - (char *) dp_packet_data(packet);
+     mld = dp_packet_at(packet, offset, MLD_HEADER_LEN);
+@@ -2696,7 +2697,7 @@ update_mcast_snooping_table6__(const struct xlate_ctx *ctx,
+     case MLD_REPORT:
+     case MLD_DONE:
+     case MLD2_REPORT:
+-        count = mcast_snooping_add_mld(ms, ifindex, packet, vlan, in_xbundle->ofbundle, local_port);
++        count = mcast_snooping_add_mld(ms, port->xbridge->ofproto->backer->dpif, port->odp_port, packet, vlan, in_xbundle->ofbundle, local_port);
+         if (count) {
+             xlate_report_debug(ctx, OFT_DETAIL, "multicast snooping processed "
+                                "%d addresses on port %s in VLAN %d",
+diff --git a/ofproto/ofproto-dpif.c b/ofproto/ofproto-dpif.c
+index 57da02686..179d8e8ce 100644
+--- a/ofproto/ofproto-dpif.c
++++ b/ofproto/ofproto-dpif.c
+@@ -6034,7 +6034,8 @@ ofproto_unixctl_mcast_snooping_add_grp(struct unixctl_conn *conn,
+     VLOG_INFO("ofproto_unixctl_mcast_snooping_add_grp: port=%s, gaddr=%s, filter=%u, compat=%u, saddrs=%s", argv[2], argv[3], filter, compat, saddrs != NULL ? saddrs : "null");
+ 
+     int filter_mode = filter != 0 ? IGMPV3_MODE_IS_INCLUDE : IGMPV3_MODE_IS_EXCLUDE;
+-    mcast_snooping_add_group(ofproto->ms, netdev_get_ifindex(ofport->up.netdev), &gaddr, filter_mode, saddrs, 0, ofport->bundle, false);
++
++    mcast_snooping_add_group(ofproto->ms, ofproto->backer->dpif, ofport->odp_port, &gaddr, filter_mode, saddrs, 0, ofport->bundle, false);
+ 
+     VLOG_INFO("ofproto_unixctl_mcast_snooping_add_grp: group was added");
+     unixctl_command_reply(conn, "multicast group was added");
+@@ -6083,7 +6084,7 @@ ofproto_unixctl_mcast_snooping_del_grp(struct unixctl_conn *conn,
+ 
+     VLOG_INFO("ofproto_unixctl_mcast_snooping_del_grp: port=%s, gaddr=%s", argv[2], argv[3]);
+ 
+-    mcast_snooping_leave_group(ofproto->ms, netdev_get_ifindex(ofport->up.netdev), &gaddr, 0, ofport->bundle);
++    mcast_snooping_leave_group(ofproto->ms, &gaddr, 0, ofport->bundle);
+ 
+     VLOG_INFO("ofproto_unixctl_mcast_snooping_del_grp: group was deleted");
+     unixctl_command_reply(conn, "multicast group was deleted");
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 428d4b148..0b07178a8 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -1642,6 +1642,10 @@ brc_recv_update(void)
+     case BRC_GENL_C_SET_MAC_ADDR:
+         handle_set_mac_addr_cmd(&buffer);
+         break;
++
++    case BRC_GENL_C_SET_PORT_MC_SNOOPING_FLOOD_REPORTS:
++        handle_set_ulong_val_port_cmd(&buffer, "mcast-snooping-flood-reports");
++        break;
+     /* } seamless-ovs */
+ 
+     default:

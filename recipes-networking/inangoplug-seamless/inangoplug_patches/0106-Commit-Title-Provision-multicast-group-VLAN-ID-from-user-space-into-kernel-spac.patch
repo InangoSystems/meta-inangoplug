@@ -1,0 +1,213 @@
+From 62b6200a99c61ea50f3d1904fcd3258c50d0a5b0 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Mon, 15 Nov 2021 23:42:07 +0500
+Subject: [PATCH] Commit Title          : Provision multicast group VLAN ID
+ from user space into kernel space
+
+BugID                 : 26445
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Added provisioning of VLAN tag to kernel space on add/del of multicast group
+---
+ datapath/datapath.c                               | 10 ++++++++--
+ datapath/linux/compat/include/linux/openvswitch.h |  1 +
+ lib/dpif-netlink.c                                | 21 ++++++++++++---------
+ lib/dpif-netlink.h                                |  5 +++--
+ lib/mcast-snooping.c                              |  8 ++++----
+ 5 files changed, 28 insertions(+), 17 deletions(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 1b9c0ec61..e384ea3a5 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -2177,17 +2177,22 @@ static int ovs_vport_cmd_mcast_fill_msg(struct vport* vport, struct genl_info *i
+         msg->ip.eth_proto = htons(ETH_P_IP);
+ 		group->u.ip4 = msg->ip.ipv4.s_addr;
+ 		group->proto = msg->ip.eth_proto;
+-		group->vid = 0;
+     } else if (a[OVS_VPORT_ATTR_IPV6]) {
+         ip_attr = a[OVS_VPORT_ATTR_IPV6];
+         memcpy(&msg->ip.ipv6, nla_data(ip_attr), nla_len(ip_attr));
+         msg->ip.eth_proto = htons(ETH_P_IPV6);
+ 		group->u.ip6 = msg->ip.ipv6;
+ 		group->proto = msg->ip.eth_proto;
+-		group->vid = 0;
+     } else {
+         return -EINVAL;
+     }
++
++	if (a[OVS_VPORT_ATTR_VLAN]) {
++		group->vid = nla_get_u16(a[OVS_VPORT_ATTR_VLAN]);
++	} else {
++		group->vid = 0;
++	}
++
+     return 0;
+ }
+ 
+@@ -2826,6 +2831,7 @@ static const struct nla_policy vport_policy[OVS_VPORT_ATTR_MAX + 1] = {
+ 	[OVS_VPORT_ATTR_MAC] = { .type = NLA_UNSPEC },
+ 	[OVS_VPORT_ATTR_IPV4] = { .type = NLA_UNSPEC },
+ 	[OVS_VPORT_ATTR_IPV6] = { .type = NLA_UNSPEC },
++	[OVS_VPORT_ATTR_VLAN] = { .type = NLA_U16 },
+ };
+ 
+ static const struct genl_ops dp_vport_genl_ops[] = {
+diff --git a/datapath/linux/compat/include/linux/openvswitch.h b/datapath/linux/compat/include/linux/openvswitch.h
+index 5bb3accbb..8f1d41424 100644
+--- a/datapath/linux/compat/include/linux/openvswitch.h
++++ b/datapath/linux/compat/include/linux/openvswitch.h
+@@ -300,6 +300,7 @@ enum ovs_vport_attr {
+ 	OVS_VPORT_ATTR_MAC,     /* mac address */
+ 	OVS_VPORT_ATTR_IPV4,    /* IPv4 address */
+ 	OVS_VPORT_ATTR_IPV6,    /* IPv6 address */
++	OVS_VPORT_ATTR_VLAN,    /* VLAN tag */
+ 				/* receiving upcalls */
+ 	OVS_VPORT_ATTR_STATS,	/* struct ovs_vport_stats */
+ 	OVS_VPORT_ATTR_PAD,
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index 452a47a43..9b2b0e88c 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -4195,7 +4195,8 @@ dpif_netlink_vport_to_ofpbuf(const struct dpif_netlink_vport *vport,
+         else {
+             nl_msg_put_unspec(buf, OVS_VPORT_ATTR_IPV6, vport->ipv6, sizeof(vport->ipv6));
+         }
+-        
++
++        nl_msg_put_u16(buf, OVS_VPORT_ATTR_VLAN, vport->vlan);
+     }
+ }
+ 
+@@ -4309,7 +4310,7 @@ dpif_netlink_rtm_delneigh(int ifindex, const struct eth_addr src_mac)
+ }
+ 
+ static int
+-dpif_netlink_ipv4_send(int dp_ifindex, int ifindex, __be32 ipv4, uint8_t cmd)
++dpif_netlink_ipv4_send(int dp_ifindex, int ifindex, __be32 ipv4, uint16_t vlan, uint8_t cmd)
+ {
+     struct dpif_netlink_vport request;
+ 
+@@ -4319,12 +4320,13 @@ dpif_netlink_ipv4_send(int dp_ifindex, int ifindex, __be32 ipv4, uint8_t cmd)
+     request.port_no = ifindex;
+     request.is_ipv4 = true;
+     memcpy(&request.ipv4, &ipv4, sizeof(request.ipv4));
++    request.vlan = vlan;
+ 
+     return dpif_netlink_vport_transact(&request, NULL, NULL);
+ }
+ 
+ static int
+-dpif_netlink_ipv6_send(int dp_ifindex, int ifindex, __be32 *ipv6, uint8_t cmd)
++dpif_netlink_ipv6_send(int dp_ifindex, int ifindex, __be32 *ipv6, uint16_t vlan, uint8_t cmd)
+ {
+     struct dpif_netlink_vport request;
+ 
+@@ -4334,20 +4336,21 @@ dpif_netlink_ipv6_send(int dp_ifindex, int ifindex, __be32 *ipv6, uint8_t cmd)
+     request.port_no = ifindex;
+     request.is_ipv4 = false;
+     memcpy(request.ipv6, ipv6, sizeof(request.ipv6));
++    request.vlan = vlan;
+ 
+     return dpif_netlink_vport_transact(&request, NULL, NULL);
+ }
+ 
+ int
+-dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr)
++dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan)
+ {
+     int error;
+     struct dpif_netlink *dpif = dpif_netlink_cast(dpif_);
+ 
+     if (IN6_IS_ADDR_V4MAPPED(addr))
+-        error = dpif_netlink_ipv4_send(dpif->dp_ifindex, port_no, in6_addr_get_mapped_ipv4(addr), OVS_VPORT_CMD_ADDMCASTGRP);
++        error = dpif_netlink_ipv4_send(dpif->dp_ifindex, port_no, in6_addr_get_mapped_ipv4(addr), vlan, OVS_VPORT_CMD_ADDMCASTGRP);
+     else
+-        error = dpif_netlink_ipv6_send(dpif->dp_ifindex, port_no, addr->s6_addr32, OVS_VPORT_CMD_ADDMCASTGRP);
++        error = dpif_netlink_ipv6_send(dpif->dp_ifindex, port_no, addr->s6_addr32, vlan, OVS_VPORT_CMD_ADDMCASTGRP);
+ 
+     if (!error) {
+         return -1;
+@@ -4357,15 +4360,15 @@ dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, struct in6_addr *
+ }
+ 
+ int
+-dpif_netlink_rtm_del_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr)
++dpif_netlink_rtm_del_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan)
+ {
+     int error;
+     struct dpif_netlink *dpif = dpif_netlink_cast(dpif_);
+ 
+     if (IN6_IS_ADDR_V4MAPPED(addr))
+-        error = dpif_netlink_ipv4_send(dpif->dp_ifindex, port_no, in6_addr_get_mapped_ipv4(addr), OVS_VPORT_CMD_DELMCASTGRP);
++        error = dpif_netlink_ipv4_send(dpif->dp_ifindex, port_no, in6_addr_get_mapped_ipv4(addr), vlan, OVS_VPORT_CMD_DELMCASTGRP);
+     else
+-        error = dpif_netlink_ipv6_send(dpif->dp_ifindex, port_no, addr->s6_addr32, OVS_VPORT_CMD_DELMCASTGRP);
++        error = dpif_netlink_ipv6_send(dpif->dp_ifindex, port_no, addr->s6_addr32, vlan, OVS_VPORT_CMD_DELMCASTGRP);
+ 
+     if (!error) {
+         return -1;
+diff --git a/lib/dpif-netlink.h b/lib/dpif-netlink.h
+index 1ee7a9131..e6a991974 100644
+--- a/lib/dpif-netlink.h
++++ b/lib/dpif-netlink.h
+@@ -50,6 +50,7 @@ struct dpif_netlink_vport {
+     bool is_ipv4;
+     __be32 ipv4;                           /* OVS_VPORT_ATTR_IPV4. */
+     __be32 ipv6[4];                        /* OVS_VPORT_ATTR_IPV6. */
++    uint16_t vlan;                         /* OVS_VPORT_ATTR_VLAN. */
+     size_t options_len;
+ };
+ 
+@@ -64,8 +65,8 @@ int dpif_netlink_vport_get(const char *name, struct dpif_netlink_vport *reply,
+ int dpif_netlink_rtm_newneigh(int ifindex, const struct eth_addr src_mac);
+ int dpif_netlink_rtm_delneigh(int ifindex, const struct eth_addr src_mac);
+ 
+-int dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr);
+-int dpif_netlink_rtm_del_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr);
++int dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan);
++int dpif_netlink_rtm_del_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan);
+ 
+ bool dpif_netlink_is_internal_device(const char *name);
+ 
+diff --git a/lib/mcast-snooping.c b/lib/mcast-snooping.c
+index 31a823a90..877982250 100644
+--- a/lib/mcast-snooping.c
++++ b/lib/mcast-snooping.c
+@@ -439,7 +439,7 @@ mcast_snooping_flush_group(struct mcast_snooping *ms, struct mcast_group *grp)
+     struct mcast_group_bundle *b;
+ 
+     LIST_FOR_EACH_POP (b, bundle_node, &grp->bundle_lru) {
+-        dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr);
++        dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan);
+         mcast_snooping_flush_group_bundle(ms, b);
+     }
+ 
+@@ -460,7 +460,7 @@ mcast_group_delete_bundle(struct mcast_snooping *ms OVS_UNUSED,
+     LIST_FOR_EACH (b, bundle_node, &grp->bundle_lru) {
+         if (b->port == port) {
+             ovs_list_remove(&b->bundle_node);
+-            dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr);
++            dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan);
+             mcast_snooping_flush_group_bundle(ms, b);
+             return true;
+         }
+@@ -489,7 +489,7 @@ mcast_snooping_prune_expired(struct mcast_snooping *ms,
+             break;
+         }
+         ovs_list_remove(&b->bundle_node);
+-        dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr);
++        dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan);
+         mcast_snooping_flush_group_bundle(ms, b);
+         expired++;
+     }
+@@ -552,7 +552,7 @@ mcast_snooping_add_group(struct mcast_snooping *ms, void *dpif, int port_no,
+     /* Mark 'grp' as recently used. */
+     ovs_list_push_back(&ms->group_lru, &grp->group_node);
+ 
+-    dpif_netlink_rtm_add_mcast_grp(dpif, port_no, addr);
++    dpif_netlink_rtm_add_mcast_grp(dpif, port_no, addr, vlan);
+ 
+     return learned;
+ }

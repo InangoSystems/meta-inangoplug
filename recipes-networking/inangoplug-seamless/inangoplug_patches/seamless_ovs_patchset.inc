@@ -97,5 +97,14 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0095-Commit-Title-RDK-B-CC-Soft-reboot-by-SNMPv6-takes-a-minute-and-a-half-longer.patch \
     file://0096-Commit-Title-Implement-way-to-drop-mulcticast-PP-sessions-which-include-non-acc.patch \
     file://0097-Commit-Title-HW-id-generation-hardcoded-in-ctl-script.patch \
+    file://0098-Commit-Title-brcompatd-calls-to-missing-on_ovs_bridge_event.sh.patch \
+    file://0099-Commit-Title-openvswitch-build-fails.patch \
+    file://0100-Commit-Title-Merge-branch-inango_n26261_configuration_per_port-into-branch-2.13.patch \
+    file://0101-Commit-Title-Make-new-netlinks-work.patch \
+    file://0102-Commit-Title-Fix-RTM_NEWLINK-RTM_DELLINK-events-for-ovs-bridges.patch \
+    file://0103-Commit-Title-Handle-UNREGISTER_DEVICE-event.patch \
+    file://0104-Commit-Title-Integrate-OVS-packet-forwarding-mechanism-with-mcast_helper-via-ac.patch \
+    file://0105-Commit-Title-Add-all-required-setters-to-kernel.patch \
+    file://0106-Commit-Title-Provision-multicast-group-VLAN-ID-from-user-space-into-kernel-spac.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

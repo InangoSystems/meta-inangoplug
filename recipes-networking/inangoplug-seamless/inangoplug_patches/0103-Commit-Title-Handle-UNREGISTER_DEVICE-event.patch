@@ -1,0 +1,116 @@
+From 67675dd8b0c5b0d8145773e0bc6063482ef78d73 Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Fri, 12 Nov 2021 20:44:18 +0500
+Subject: [PATCH] Commit Title          : Handle UNREGISTER_DEVICE event
+
+BugID                 : 26447
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Handle UNREGISTER_DEVICE event for destruct net_bridge_port data during remove iface
+- Handle bridge delete event
+---
+ datapath/brcompat_main.c      |  4 ++--
+ datapath/datapath.c           |  9 ---------
+ datapath/vport-internal_dev.c | 13 +++++++++----
+ datapath/vport-netdev.c       | 10 ++++++++++
+ 4 files changed, 21 insertions(+), 15 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 01fc824aa..19659d558 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -1205,8 +1205,8 @@ static int brc_br_port_set_param(struct vport *vport, struct net_device *dev, st
+ 	int err = 0;
+ 	u8 val;
+ 
+-	if (!data)
+-		return -EINVAL;
++	if (!vport || !dev || !data)
++		return 0;
+ 
+ 	if (data[IFLA_BRPORT_FAST_LEAVE]) {
+ 		val = nla_get_u8(data[IFLA_BRPORT_FAST_LEAVE]);
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index d55b11078..6827173b6 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -2506,22 +2506,13 @@ static int ovs_brcompat_bridge_destroy(struct vport *vport)
+ 	}
+ 	return EOPNOTSUPP;
+ }
+-static int ovs_brcompat_port_destroy(struct vport *vport)
+-{
+-	if (ovs_dp_br_bridge_port_setup) {
+-		return ovs_dp_br_bridge_port_setup(NULL, vport, 0);
+-	}
+ 
+-	return EOPNOTSUPP;
+-}
+ static int ovs_dp_brcompat_destroy(struct vport *vport)
+ {
+ 	int err = 0;
+ 
+ 	if (vport->type == OVS_VPORT_TYPE_INTERNAL) {
+ 		err = ovs_brcompat_bridge_destroy(vport);
+-	} else {
+-		err = ovs_brcompat_port_destroy(vport);
+ 	}
+ 
+ 	return err;
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index 62f740326..1cc7530e2 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -71,18 +71,23 @@ internal_dev_xmit(struct sk_buff *skb, struct net_device *netdev)
+ static int internal_dev_open(struct net_device *netdev)
+ {
+ 	struct vport *vport;
+-	struct internal_dev *internal_dev;
+-	internal_dev = internal_dev_priv(netdev);
+-	vport = internal_dev->vport;
++	vport = ovs_internal_dev_get_vport(netdev);
+ 
+ 	netif_start_queue(netdev);
+-	br_compat_multicast_open(vport->brcompat_data);
++	if (vport)
++		br_compat_multicast_open(vport->brcompat_data);
+ 	
+ 	return 0;
+ }
+ 
+ static int internal_dev_stop(struct net_device *netdev)
+ {
++	struct vport *vport;
++	vport = ovs_internal_dev_get_vport(netdev);
++
++	if (vport)
++		br_compat_multicast_stop(vport->brcompat_data);
++
+ 	netif_stop_queue(netdev);
+ 	return 0;
+ }
+diff --git a/datapath/vport-netdev.c b/datapath/vport-netdev.c
+index 2351da7b3..039ca9a6b 100644
+--- a/datapath/vport-netdev.c
++++ b/datapath/vport-netdev.c
+@@ -176,9 +176,19 @@ static void vport_netdev_free(struct rcu_head *rcu)
+ 	ovs_vport_free(vport);
+ }
+ 
++static int ovs_brcompat_port_destroy(struct vport *vport)
++{
++	if (ovs_dp_br_bridge_port_setup) {
++		return ovs_dp_br_bridge_port_setup(NULL, vport, 0);
++	}
++
++	return EOPNOTSUPP;
++}
++
+ void ovs_netdev_detach_dev(struct vport *vport)
+ {
+ 	ASSERT_RTNL();
++	ovs_brcompat_port_destroy(vport);
+ 	vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;
+ 	netdev_rx_handler_unregister(vport->dev);
+ 	netdev_upper_dev_unlink(vport->dev,

@@ -1,0 +1,98 @@
+From 50a3a33195ad7d381bdf742f7a0339d51371c3fe Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Thu, 4 Nov 2021 00:04:28 +0500
+Subject: [PATCH] Commit Title: Integrate OVS packet forwarding mechanism with
+ mcast_helper via acceleration module
+
+BugID                 : 26188
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Updated mcast packets forwarding mechanizm to resemble the linux bridge one
+---
+ datapath/actions.c | 4 ++++
+ datapath/am_pp.c   | 7 ++++++-
+ datapath/flow.h    | 1 +
+ datapath/vport.c   | 5 -----
+ 4 files changed, 11 insertions(+), 6 deletions(-)
+
+diff --git a/datapath/actions.c b/datapath/actions.c
+index ece56eb2b..146d68a6c 100644
+--- a/datapath/actions.c
++++ b/datapath/actions.c
+@@ -1328,6 +1328,10 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 		am_skb_postprocessing(PP_AM_SET_FLOOD, flow/*ufid*/, skb);
+ 	}
+ 
++	if (is_multicast_ether_addr(eth_hdr(skb)->h_dest) && !is_broadcast_ether_addr(eth_hdr(skb)->h_dest)) {
++		am_skb_postprocessing(PP_AM_SET_MCAST_FLOOD, flow/*ufid*/, skb);
++	}
++
+ 	for (a = attr, rem = len; rem > 0;
+ 	     a = nla_next(a, &rem)) {
+ 		int err = 0;
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index 3bcdf44aa..90c0eecb9 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -49,6 +49,7 @@ static bool check_acceleration_possibility(struct datapath *dp, struct sw_flow *
+ 	unsigned int ports[PP_AM_ALL_PORTS_MAX] = {0};
+ 	size_t ports_len = 0;
+ 	struct vport *port;
++	flow->local = 0;
+ 
+ 	for (a = flow->sf_acts->actions, rem = flow->sf_acts->actions_len; rem > 0; a = nla_next(a, &rem)) {
+ 		if (nla_type(a) == OVS_ACTION_ATTR_OUTPUT) {
+@@ -57,6 +58,8 @@ static bool check_acceleration_possibility(struct datapath *dp, struct sw_flow *
+ 				if (ports_len >= PP_AM_EGRESS_PORTS_MAX)
+ 					return false;
+ 				ports[ports_len++] = port->dev->ifindex;
++			} else {
++				flow->local = 1;
+ 			}
+ 		}
+ 	}
+@@ -64,6 +67,8 @@ static bool check_acceleration_possibility(struct datapath *dp, struct sw_flow *
+ 	port = ovs_vport_rcu(dp, flow->key.phy.in_port);
+ 	if (port && port->type != OVS_VPORT_TYPE_INTERNAL)
+ 		ports[ports_len++] = port->dev->ifindex;
++	else
++		flow->local = 1;
+ 
+ 	return can_accelerate_ports(ports, ports_len);
+ }
+@@ -250,5 +255,5 @@ void am_skb_postprocessing(pp_am_skb_process_action action, struct sw_flow *flow
+ 	if (flow->acl_state != ACCELERATED && action != PP_AM_SET_SKIP)
+ 		return;
+ 
+-	pp_am_skb_postprocess(action, (u32 *)flow->id.ufid/*ufid->ufid*/, flow->pp_am_id, skb);
++	pp_am_skb_postprocess(action, flow->local, (u32 *)flow->id.ufid/*ufid->ufid*/, flow->pp_am_id, skb);
+ }
+diff --git a/datapath/flow.h b/datapath/flow.h
+index aaf2f3326..b190cf48f 100644
+--- a/datapath/flow.h
++++ b/datapath/flow.h
+@@ -246,6 +246,7 @@ struct sw_flow {
+ 	struct sw_flow_mask *mask;
+ 	struct sw_flow_actions __rcu *sf_acts;
+ 	u32 flow_type;
++	u8 local;
+ 	struct sw_flow_stats __rcu *stats[]; /* One for each CPU.  First one
+ 					   * is allocated at flow creation time,
+ 					   * the rest are allocated on demand
+diff --git a/datapath/vport.c b/datapath/vport.c
+index 56bc33de7..c917c07a1 100644
+--- a/datapath/vport.c
++++ b/datapath/vport.c
+@@ -628,11 +628,6 @@ void ovs_vport_send(struct vport *vport, struct sk_buff *skb, u8 mac_proto)
+ 		goto drop;
+ 	}
+ 
+-	if (vport->type != OVS_VPORT_TYPE_INTERNAL &&
+-		    OVS_CB(skb)->input_vport->type != OVS_VPORT_TYPE_INTERNAL) {
+-		pp_am_skb_postprocess(PP_AM_SET_FORWARD_UDP, NULL, 0, skb);
+-	}
+-
+ 	skb->dev = vport->dev;
+ 	vport->ops->send(skb);
+ 	return;

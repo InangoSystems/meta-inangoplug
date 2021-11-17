@@ -1,0 +1,215 @@
+From 815a45f775a84d4adaa8799075fe6f9b32124cbc Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Mon, 15 Nov 2021 17:15:23 +0200
+Subject: [PATCH] Commit Title          : Add all required setters to kernel
+
+BugID                 : 26385
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+* Added all required setters to kernel
+* Added all required getters to kernel
+---
+ datapath/brcompat_main.c      | 55 +++++++++++++++++++++++++++++++++----------
+ datapath/datapath.c           |  6 +++++
+ datapath/datapath.h           |  2 ++
+ datapath/vport-internal_dev.c | 30 +++++++++++++++++++++++
+ 4 files changed, 80 insertions(+), 13 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 19659d558..550c5d743 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -31,6 +31,7 @@
+ #include <linux/completion.h>
+ #include <linux/etherdevice.h>
+ #include <linux/if_bridge.h>
++#include <linux/kconfig.h>
+ #include <linux/netdevice.h>
+ #include <linux/rtnetlink.h>
+ #include <net/br_compat.h>
+@@ -1153,47 +1154,47 @@ static int brc_br_changelink(struct vport *vport, struct nlattr *tb[], struct nl
+ 		br_compat_multicast_set_igmp_version(brcompat_data, val);
+ 	}
+ 
+-#if 0
+ 	if (data[IFLA_BR_MCAST_QUERY_USE_IFADDR]) {
+ 		u8 val = nla_get_u8(data[IFLA_BR_MCAST_QUERY_USE_IFADDR]);
+ 
+-		// TODO: Add call later
+-	}
+-
+-	if (data[IFLA_BR_MCAST_MLD_VERSION]) {
+-		u8 val = nla_get_u8(data[IFLA_BR_MCAST_MLD_VERSION]);
+-
+-		// TODO: Add call later
++		br_compat_multicast_set_query_use_ifaddr(brcompat_data, val);
+ 	}
+ 
+ 	if (data[IFLA_BR_MCAST_LAST_MEMBER_CNT]) {
+ 		u32 val = nla_get_u32(data[IFLA_BR_MCAST_LAST_MEMBER_CNT]);
+ 
+-		// TODO: Add call later
++		br_compat_multicast_set_last_member_cnt(brcompat_data, val);
+ 	}
+ 
+ 	if (data[IFLA_BR_MCAST_LAST_MEMBER_INTVL]) {
+ 		u64 val = nla_get_u64(data[IFLA_BR_MCAST_LAST_MEMBER_INTVL]);
+ 
+-		// TODO: Add call later
++		br_compat_multicast_set_last_member_intvl(brcompat_data, val);
+ 	}
+ 
+ 	if (data[IFLA_BR_MCAST_MEMBERSHIP_INTVL]) {
+ 		u64 val = nla_get_u64(data[IFLA_BR_MCAST_MEMBERSHIP_INTVL]);
+ 
+-		// TODO: Add call later
++		br_compat_multicast_set_membership_intvl(brcompat_data, val);
+ 	}
+ 
+ 	if (data[IFLA_BR_MCAST_QUERY_INTVL]) {
+ 		u64 val = nla_get_u64(data[IFLA_BR_MCAST_QUERY_INTVL]);
+ 
+-		// TODO: Add call later
++		br_compat_multicast_set_query_intvl(brcompat_data, val);
+ 	}
+ 
+ 	if (data[IFLA_BR_MCAST_QUERY_RESPONSE_INTVL]) {
+ 		u64 val = nla_get_u64(data[IFLA_BR_MCAST_QUERY_RESPONSE_INTVL]);
+ 
+-		// TODO: Add call later
++		br_compat_multicast_set_query_response_intvl(brcompat_data, val);
++	}
++
++#if IS_ENABLED(CONFIG_IPV6)
++	if (data[IFLA_BR_MCAST_MLD_VERSION]) {
++		u8 val = nla_get_u8(data[IFLA_BR_MCAST_MLD_VERSION]);
++
++		br_compat_multicast_set_mld_version(brcompat_data, val);
+ 	}
+ #endif
+ 
+@@ -1259,6 +1260,22 @@ static int brc_br_setlink(struct vport *vport, struct net_device *dev, struct nl
+ 	return brc_br_port_set_param(vport, dev, tb);
+ }
+ 
++static int brc_br_fill_info(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev)
++{
++	if (vport->brcompat_data)
++		return br_compat_multicast_fill_info(vport->brcompat_data, skb, br_dev);
++
++	return 0;
++}
++
++static int brc_br_port_fill_slave_info(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev, const struct net_device *dev)
++{
++	if (vport->brcompat_data)
++		return br_compat_multicast_fill_slave_info(vport->brcompat_data, skb, br_dev, dev);
++
++	return 0;
++}
++
+ static bool check_bridge_list(const char *name)
+ {
+ 	int i;
+@@ -1428,6 +1445,12 @@ static int __init brc_init(void)
+ 	/* Set the openvswitch br_port_slave_changelink handler */
+ 	ovs_dp_br_port_slave_changelink_hook = brc_br_port_slave_changelink;
+ 
++	/* Set the openvswitch br_fill_info handler */
++	ovs_dp_br_fill_info_hook = brc_br_fill_info;
++
++	/* Set the openvswitch br_port_fill_slave_info handler */
++	ovs_dp_br_port_fill_slave_info_hook = brc_br_port_fill_slave_info;
++
+ 	/* set the openvswitch linux bridge struct handler */
+ 	ovs_dp_br_bridge_setup = brc_br_bridge_setup;
+ 
+@@ -1507,6 +1530,12 @@ static void brc_cleanup(void)
+ 	/* Unregister br_port_slave_changelink hooks */
+ 	ovs_dp_br_port_slave_changelink_hook = NULL;
+ 
++	/* Unregister br_fill_info hooks */
++	ovs_dp_br_fill_info_hook = NULL;
++
++	/* Unregister br_port_fill_slave_info hooks */
++	ovs_dp_br_port_fill_slave_info_hook = NULL;
++
+ 	/* Unregister br_setlink hooks */
+ 	ovs_dp_br_setlink_hook = NULL;
+ 
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 6827173b6..1b9c0ec61 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -88,6 +88,12 @@ EXPORT_SYMBOL(ovs_dp_br_changelink_hook);
+ int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[]);
+ EXPORT_SYMBOL(ovs_dp_br_port_slave_changelink_hook);
+ 
++int (*ovs_dp_br_fill_info_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev);
++EXPORT_SYMBOL(ovs_dp_br_fill_info_hook);
++
++int (*ovs_dp_br_port_fill_slave_info_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev, const struct net_device *dev);
++EXPORT_SYMBOL(ovs_dp_br_port_fill_slave_info_hook);
++
+ int (*ovs_dp_br_setlink_hook)(struct vport *vport, struct net_device *dev, struct nlmsghdr *nlh, u16 flags);
+ EXPORT_SYMBOL(ovs_dp_br_setlink_hook);
+ 
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index 11a35c154..7f033e7dd 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -272,6 +272,8 @@ extern int (*ovs_dp_mac_addr_hook)(struct net_device *dev, void *p);
+ extern int (*ovs_dp_add_del_port_hook)(struct net_device *br_dev, struct net_device *p_dev, int add);
+ extern int (*ovs_dp_br_changelink_hook)(struct vport *vport, struct nlattr *tb[], struct nlattr *data[]);
+ extern int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[]);
++extern int (*ovs_dp_br_fill_info_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev);
++extern int (*ovs_dp_br_port_fill_slave_info_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev, const struct net_device *dev);
+ extern int (*ovs_dp_br_setlink_hook)(struct vport *vport, struct net_device *dev, struct nlmsghdr *nlh, u16 flags);
+ extern int (*ovs_dp_br_bridge_setup)(struct vport *vport, int add);
+ extern int (*ovs_dp_br_bridge_port_setup)(struct vport *br_vport, struct vport *vport, int add);
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index 1cc7530e2..74987c5f0 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -282,10 +282,40 @@ static int br_port_slave_changelink(struct net_device *br_dev, struct net_device
+ 	return -EOPNOTSUPP;
+ }
+ 
++static int br_fill_info(struct sk_buff *skb, const struct net_device *br_dev)
++{
++	struct vport *vport;
++
++	vport = ovs_internal_dev_get_vport((struct net_device *)br_dev);
++	if (!vport)
++		return -EINVAL;
++
++	if (ovs_dp_br_fill_info_hook) {
++		return ovs_dp_br_fill_info_hook(vport, skb, br_dev);
++	}
++	return -EOPNOTSUPP;
++}
++
++static int br_port_fill_slave_info(struct sk_buff *skb, const struct net_device *br_dev, const struct net_device *dev)
++{
++	struct vport *vport;
++
++	vport = ovs_netdev_get_vport((struct net_device *)dev);
++	if (!vport)
++		return -EINVAL;
++
++	if (ovs_dp_br_port_fill_slave_info_hook) {
++		return ovs_dp_br_port_fill_slave_info_hook(vport, skb, br_dev, dev);
++	}
++	return -EOPNOTSUPP;
++}
++
+ static struct rtnl_link_ops internal_dev_link_ops __read_mostly = {
+ 	.kind = "openvswitch",
+ 	.changelink = br_changelink,
+ 	.slave_changelink = br_port_slave_changelink,
++	.fill_info = br_fill_info,
++	.fill_slave_info = br_port_fill_slave_info,
+ };
+ 
+ static void do_setup(struct net_device *netdev)

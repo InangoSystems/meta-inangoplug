@@ -1,0 +1,58 @@
+From 56026ad182867223a4fdc644c9c4aa4908c99fff Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Fri, 12 Nov 2021 18:17:42 +0500
+Subject: [PATCH] Commit Title          : Fix RTM_NEWLINK/RTM_DELLINK events
+ for ovs bridges
+
+BugID                 : 26427
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Fix RTM_NEWLINK/RTM_DELLINK events for ovs bridges use correct IFLA_MASTER interface
+---
+ datapath/datapath.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index f43ee4299..d55b11078 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -232,7 +232,6 @@ static size_t br_nlmsg_size(void)
+ 	       + nla_total_size(1); /* IFLA_OPERSTATE */
+ }
+ 
+-/* Caller must hold RTNL lock. */
+ static int dp_fill_ifinfo(struct sk_buff *skb,
+ 			  const struct vport *port,
+ 			  int event, unsigned int flags)
+@@ -240,9 +239,13 @@ static int dp_fill_ifinfo(struct sk_buff *skb,
+ 	struct datapath *dp = port->dp;
+ 	struct ifinfomsg *hdr;
+ 	struct nlmsghdr *nlh;
++	struct net_device *upper_dev;
+ 
+ 	if (!port->ops->get_ifindex)
+ 		return -ENODEV;
++	rtnl_lock();
++	upper_dev = netdev_master_upper_dev_get(port->dev);
++	rtnl_unlock();
+ 
+ 	nlh = nlmsg_put(skb, 0, 0, event, sizeof(*hdr), flags);
+ 	if (nlh == NULL)
+@@ -257,7 +260,7 @@ static int dp_fill_ifinfo(struct sk_buff *skb,
+ 	hdr->ifi_change = 0;
+ 
+ 	if (nla_put_string(skb, IFLA_IFNAME, port->ops->get_name(port)) ||
+-	    nla_put_u32(skb, IFLA_MASTER, get_dpifindex(dp)) ||
++	    nla_put_u32(skb, IFLA_MASTER, upper_dev ? upper_dev->ifindex : get_dpifindex(dp)) ||
+ 	    nla_put_u32(skb, IFLA_MTU, port->ops->get_mtu(port)) ||
+ #ifdef IFLA_OPERSTATE
+ 	    nla_put_u8(skb, IFLA_OPERSTATE,
+@@ -276,7 +279,6 @@ nla_put_failure:
+ 	return -EMSGSIZE;
+ }
+ 
+-/* Caller must hold RTNL lock. */
+ static void dp_ifinfo_notify(int event, struct vport *port)
+ {
+ 	struct sk_buff *skb;

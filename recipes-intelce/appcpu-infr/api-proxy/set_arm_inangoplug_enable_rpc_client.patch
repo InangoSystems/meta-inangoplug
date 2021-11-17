@@ -1,0 +1,40 @@
+diff --git a/gw-proxy/api-proxy/include/gw_api_proxy.h b/gw-proxy/api-proxy/include/gw_api_proxy.h
+index 8fab492..fe3f3c0 100755
+--- a/gw-proxy/api-proxy/include/gw_api_proxy.h
++++ b/gw-proxy/api-proxy/include/gw_api_proxy.h
+@@ -355,6 +355,9 @@ extern int cgm_gw_api_proxy_prog_number_1_freeresult (SVCXPRT *, xdrproc_t, cadd
+ #define PROXY_SET_SYSTEM_TIME_EVENT 1093
+ extern  enum clnt_stat proxy_set_system_time_event_1(time_t , PROXY_STATUS *, CLIENT *);
+ extern  bool_t proxy_set_system_time_event_1_svc(time_t , PROXY_STATUS *, struct svc_req *);
++#define PROXY_SET_ARM_INANGOPLUG_ENABLE 1213
++extern  enum clnt_stat proxy_set_arm_inangoplug_enable_1(PROXY_STATUS *, CLIENT *);
++extern  bool_t proxy_set_arm_inangoplug_enable_1_svc(PROXY_STATUS *, struct svc_req *);
+ 
+ #else /* K&R C */
+ #define PROXY_DOCSISIF_INITINTERFACEDB 1000
+@@ -457,6 +460,9 @@ extern int cgm_gw_api_proxy_prog_number_1_freeresult ();
+ #define PROXY_SET_SYSTEM_TIME_EVENT 1093
+ extern  enum clnt_stat proxy_set_system_time_event_1();
+ extern  bool_t proxy_set_system_time_event_1_svc();
++#define PROXY_SET_ARM_INANGOPLUG_ENABLE 1213
++extern  enum clnt_stat proxy_set_arm_inangoplug_enable_1();
++extern  bool_t proxy_set_arm_inangoplug_enable_1_svc();
+ #endif /* K&R C */
+ 
+ /* the xdr functions */
+diff --git a/gw-proxy/api-proxy/src/gw_api_proxy_clnt.c b/gw-proxy/api-proxy/src/gw_api_proxy_clnt.c
+index b66bec1..5ded146 100755
+--- a/gw-proxy/api-proxy/src/gw_api_proxy_clnt.c
++++ b/gw-proxy/api-proxy/src/gw_api_proxy_clnt.c
+@@ -350,3 +350,11 @@ proxy_set_system_time_event_1(time_t atom_time_now, PROXY_STATUS *clnt_res,  CLI
+                 (xdrproc_t) xdr_PROXY_STATUS, (caddr_t) clnt_res,
+                 TIMEOUT));
+ }
++
++enum clnt_stat 
++proxy_set_arm_inangoplug_enable_1(PROXY_STATUS *clnt_res, CLIENT *clnt)
++{
++	 return (clnt_call (clnt, PROXY_SET_ARM_INANGOPLUG_ENABLE, (xdrproc_t) xdr_void, (caddr_t) NULL,
++		(xdrproc_t) xdr_PROXY_STATUS, (caddr_t) clnt_res,
++		TIMEOUT));
++}
