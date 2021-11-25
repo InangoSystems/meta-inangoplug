@@ -12,11 +12,11 @@ RDEPENDS_${PN} = "\
     inangoplug-rsc \
 "
 
-RDEPENDS_${PN}_append_puma7arm = "\
+RDEPENDS_${PN}_append_puma7arm = " \
     ${@bb.utils.contains('DISTRO_FEATURES', 'systemd', 'inangoplug-rsc-init-arm-systemd', '', d)} \
 "
 
-RDEPENDS_${PN}_append_puma7 = "\
+RDEPENDS_${PN}_append_puma7 = " \
     openvswitch \
     inangoplug-rsc-proxy \
     inangoplug-chandler \

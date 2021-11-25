@@ -5,7 +5,12 @@ DEPENDS_remove = "bridge-utils python perl"
 DEPENDS_remove = "virtual/kernel"
 DEPENDS_append_class-target = " inangoplug-pp-acceleration-mod"
 
-RDEPENDS_${PN}_remove = "python python3 python-twisted python3-twisted python3-six coreutils sed gawk grep"
+RDEPENDS_${PN}_remove = "\
+    python python3 python-twisted python3-twisted python3-six \
+    coreutils gawk grep \
+    ${@ 'sed' if d.getVar('BUILD_TYPE', True) == 'RDKB-OS' else ''} \
+    perl perl-module-strict \
+"
 RDEPENDS_${PN} += " ${PN}-brcompat ${PN}-testcontroller "
 RDEPENDS_${PN}-switch_remove = "procps"
 

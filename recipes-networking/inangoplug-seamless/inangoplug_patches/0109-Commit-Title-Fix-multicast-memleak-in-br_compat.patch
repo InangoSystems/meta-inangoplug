@@ -1,0 +1,35 @@
+From 567ccff26fcfb5388db5b52d71b9bd10502b7162 Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Thu, 25 Nov 2021 15:18:23 +0500
+Subject: [PATCH] Commit Title          : Fix multicast memleak in br_compat
+
+BugID                 : 26577
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Fix multicast memleak. Set null pointer after del bridge/port (kfree
+in external code).
+---
+ datapath/brcompat_main.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 56a5f3321..8ccc4cd59 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -1097,6 +1097,7 @@ static int brc_br_bridge_setup(struct vport *vport, int add)
+ 	else
+ 	{
+ 		br_compat_multicast_dev_del(vport->brcompat_data);
++		vport->brcompat_data = NULL;
+ 		return 0;
+ 	}
+ 
+@@ -1119,6 +1120,7 @@ static int brc_br_port_setup(struct vport *br_vport, struct vport *vport, int ad
+ 	{
+ 		br_compat_multicast_disable_port(vport->brcompat_data);
+ 		br_compat_multicast_del_port(vport->brcompat_data);
++		vport->brcompat_data = NULL;
+ 		return 0;
+ 	}
+ 

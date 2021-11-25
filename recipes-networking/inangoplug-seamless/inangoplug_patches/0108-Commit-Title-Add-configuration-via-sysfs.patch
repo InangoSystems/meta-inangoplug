@@ -1,0 +1,467 @@
+From 9d41749390efd3874ff6b9c765cfeb363a1831e6 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Wed, 24 Nov 2021 16:29:48 +0200
+Subject: [PATCH] Commit Title          : Add configuration via sysfs
+
+BugID                 : 26260
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Added configuration via sysfs
+---
+ datapath/brcompat_main.c |   2 +-
+ datapath/dp_sysfs_dp.c   | 204 ++++++++++++++++++++++++++++++++++++++++++-----
+ datapath/dp_sysfs_if.c   |  34 +++++---
+ vswitchd/ovs-brcompatd.c |  29 ++++++-
+ 4 files changed, 236 insertions(+), 33 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 49945321b..56a5f3321 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -1212,7 +1212,7 @@ static int brc_br_port_set_param(struct vport *vport, struct net_device *dev, st
+ 	if (data[IFLA_BRPORT_FAST_LEAVE]) {
+ 		val = nla_get_u8(data[IFLA_BRPORT_FAST_LEAVE]);
+ 
+-		err = brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_PORT_MC_SNOOPING_FLOOD_REPORTS, val);
++		err = brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_PORT_MC_SNOOPING_FLOOD_REPORTS, !val);
+ 		if (err)
+ 			return err;
+ 
+diff --git a/datapath/dp_sysfs_dp.c b/datapath/dp_sysfs_dp.c
+index b7c012223..75c8a0e49 100644
+--- a/datapath/dp_sysfs_dp.c
++++ b/datapath/dp_sysfs_dp.c
+@@ -33,11 +33,13 @@
+ 
+ #include <linux/capability.h>
+ #include <linux/device.h>
++#include <linux/kconfig.h>
+ #include <linux/kernel.h>
+ #include <linux/netdevice.h>
+ #include <linux/if_bridge.h>
+ #include <linux/rtnetlink.h>
+ #include <linux/version.h>
++#include <net/br_compat.h>
+ 
+ #include "dp_sysfs.h"
+ #include "datapath.h"
+@@ -81,17 +83,14 @@ static ssize_t store_bridge_parm(DEVICE_PARAMS,
+ 	if (endp == buf)
+ 		return -EINVAL;
+ 
+-	if (val != 0) {
+-		if (!rtnl_trylock())
+-                return restart_syscall();
+-		if (to_net_dev(d))
+-			err = (*set)(to_net_dev(d), val);
+-		else
+-			err = -ENODEV;
+-
+-		rtnl_unlock();
++	if (!rtnl_trylock())
++		return restart_syscall();
++	if (to_net_dev(d))
++		err = (*set)(to_net_dev(d), val);
++	else
++		err = -ENODEV;
+ 
+-	}
++	rtnl_unlock();
+ 
+ 	return err ? err : len;
+ }
+@@ -195,7 +194,11 @@ static ssize_t show_multicast_snooping(DEVICE_PARAMS, char *buf)
+ 
+ static int set_multicast_snooping(struct net_device *dev, unsigned long val)
+ {
++	struct vport *vport;
++
+ 	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_BRIDGE_MULTICAST_SNOOPING, SET_PARAMETER);
++	vport = ovs_internal_dev_get_vport(dev);
++	br_compat_multicast_toggle(vport->brcompat_data, !!val);
+ 	return 0;
+ }
+ 
+@@ -320,59 +323,107 @@ static INTERNAL_DEVICE_ATTR(hash_max, S_IRUGO | S_IWUSR, show_hash_max, store_ha
+ 
+ static int show_multicast_last_member_count(DEVICE_PARAMS, char *buf)
+ {
++	struct vport *vport;
+ 	unsigned long value;
+-	value = 2;
++
++	vport = ovs_internal_dev_get_vport(to_net_dev(d));
++	br_compat_multicast_get_last_member_cnt(vport->brcompat_data, &value);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+-static ssize_t store_multicast_last_member_count(DEVICE_PARAMS, const char *buf, size_t len)
++static int set_multicast_last_member_count(struct net_device *dev, unsigned long val)
+ {
++	struct vport *vport;
++
++	vport = ovs_internal_dev_get_vport(dev);
++	br_compat_multicast_set_last_member_cnt(vport->brcompat_data, val);
+ 	return 0;
+ }
+ 
++static ssize_t store_multicast_last_member_count(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_multicast_last_member_count);
++}
++
+ static INTERNAL_DEVICE_ATTR(multicast_last_member_count, S_IRUGO | S_IWUSR, show_multicast_last_member_count, store_multicast_last_member_count);
+ 
+ 
+ static int show_multicast_last_member_interval(DEVICE_PARAMS, char *buf)
+ {
++	struct vport *vport;
+ 	unsigned long value;
+-	value = 100;
++
++	vport = ovs_internal_dev_get_vport(to_net_dev(d));
++	br_compat_multicast_get_last_member_intvl(vport->brcompat_data, &value);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+-static ssize_t store_multicast_last_member_interval(DEVICE_PARAMS, const char *buf, size_t len)
++static int set_multicast_last_member_interval(struct net_device *dev, unsigned long val)
+ {
++	struct vport *vport;
++
++	vport = ovs_internal_dev_get_vport(dev);
++	br_compat_multicast_set_last_member_intvl(vport->brcompat_data, val);
+ 	return 0;
+ }
+ 
++static ssize_t store_multicast_last_member_interval(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_multicast_last_member_interval);
++}
++
+ static INTERNAL_DEVICE_ATTR(multicast_last_member_interval, S_IRUGO | S_IWUSR, show_multicast_last_member_interval, store_multicast_last_member_interval);
+ 
+ static int show_multicast_membership_interval(DEVICE_PARAMS, char *buf)
+ {
++	struct vport *vport;
+ 	unsigned long value;
+-	value = 26000;
++
++	vport = ovs_internal_dev_get_vport(to_net_dev(d));
++	br_compat_multicast_get_membership_intvl(vport->brcompat_data, &value);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+-static ssize_t store_multicast_membership_interval(DEVICE_PARAMS, const char *buf, size_t len)
++static int set_multicast_membership_interval(struct net_device *dev, unsigned long val)
+ {
++	struct vport *vport;
++
++	vport = ovs_internal_dev_get_vport(dev);
++	br_compat_multicast_set_membership_intvl(vport->brcompat_data, val);
+ 	return 0;
+ }
+ 
++static ssize_t store_multicast_membership_interval(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_multicast_membership_interval);
++}
++
+ static INTERNAL_DEVICE_ATTR(multicast_membership_interval, S_IRUGO | S_IWUSR, show_multicast_membership_interval, store_multicast_membership_interval);
+ 
+ static int show_multicast_querier(DEVICE_PARAMS, char *buf)
+ {
++	struct vport *vport;
+ 	unsigned long value;
+-	value = 0;
++
++	vport = ovs_internal_dev_get_vport(to_net_dev(d));
++	br_compat_multicast_get_querier(vport->brcompat_data, &value);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+-static ssize_t store_multicast_querier(DEVICE_PARAMS, const char *buf, size_t len)
++static int set_multicast_querier(struct net_device *dev, unsigned long val)
+ {
++	struct vport *vport;
++
++	vport = ovs_internal_dev_get_vport(dev);
++	br_compat_multicast_set_querier(vport->brcompat_data, !!val);
+ 	return 0;
+ }
+ 
++static ssize_t store_multicast_querier(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_multicast_querier);
++}
++
+ static INTERNAL_DEVICE_ATTR(multicast_querier, S_IRUGO | S_IWUSR, show_multicast_querier, store_multicast_querier);
+ 
+ static int show_multicast_querier_interval(DEVICE_PARAMS, char *buf)
+@@ -392,32 +443,136 @@ static INTERNAL_DEVICE_ATTR(multicast_querier_interval, S_IRUGO | S_IWUSR, show_
+ 
+ static int show_multicast_query_interval(DEVICE_PARAMS, char *buf)
+ {
++	struct vport *vport;
+ 	unsigned long value;
+-	value = 12500;
++
++	vport = ovs_internal_dev_get_vport(to_net_dev(d));
++	br_compat_multicast_get_query_intvl(vport->brcompat_data, &value);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+-static ssize_t store_multicast_query_interval(DEVICE_PARAMS, const char *buf, size_t len)
++static int set_multicast_query_interval(struct net_device *dev, unsigned long val)
+ {
++	struct vport *vport;
++
++	vport = ovs_internal_dev_get_vport(dev);
++	br_compat_multicast_set_query_intvl(vport->brcompat_data, val);
+ 	return 0;
+ }
+ 
++static ssize_t store_multicast_query_interval(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_multicast_query_interval);
++}
++
+ static INTERNAL_DEVICE_ATTR(multicast_query_interval, S_IRUGO | S_IWUSR, show_multicast_query_interval, store_multicast_query_interval);
+ 
+ static int show_multicast_query_response_interval(DEVICE_PARAMS, char *buf)
+ {
++	struct vport *vport;
+ 	unsigned long value;
+-	value = 1000;
++
++	vport = ovs_internal_dev_get_vport(to_net_dev(d));
++	br_compat_multicast_get_query_response_intvl(vport->brcompat_data, &value);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+-static ssize_t store_multicast_query_response_interval(DEVICE_PARAMS, const char *buf, size_t len)
++static int set_multicast_query_response_interval(struct net_device *dev, unsigned long val)
+ {
++	struct vport *vport;
++
++	vport = ovs_internal_dev_get_vport(dev);
++	br_compat_multicast_set_query_response_intvl(vport->brcompat_data, val);
+ 	return 0;
+ }
+ 
++static ssize_t store_multicast_query_response_interval(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_multicast_query_response_interval);
++}
++
+ static INTERNAL_DEVICE_ATTR(multicast_query_response_interval, S_IRUGO | S_IWUSR, show_multicast_query_response_interval, store_multicast_query_response_interval);
+ 
++static int show_multicast_query_use_ifaddr(DEVICE_PARAMS, char *buf)
++{
++	struct vport *vport;
++	unsigned long value;
++
++	vport = ovs_internal_dev_get_vport(to_net_dev(d));
++	br_compat_multicast_get_query_use_ifaddr(vport->brcompat_data, &value);
++	return sprintf(buf, "%lu\n", value);
++}
++
++static int set_multicast_query_use_ifaddr(struct net_device *dev, unsigned long val)
++{
++	struct vport *vport;
++
++	vport = ovs_internal_dev_get_vport(dev);
++	br_compat_multicast_set_query_use_ifaddr(vport->brcompat_data, !!val);
++	return 0;
++}
++
++static ssize_t store_multicast_query_use_ifaddr(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_multicast_query_use_ifaddr);
++}
++
++static INTERNAL_DEVICE_ATTR(multicast_query_use_ifaddr, S_IRUGO | S_IWUSR, show_multicast_query_use_ifaddr, store_multicast_query_use_ifaddr);
++
++static int show_multicast_igmp_version(DEVICE_PARAMS, char *buf)
++{
++	struct vport *vport;
++	unsigned long value;
++
++	vport = ovs_internal_dev_get_vport(to_net_dev(d));
++	br_compat_multicast_get_igmp_version(vport->brcompat_data, &value);
++	return sprintf(buf, "%lu\n", value);
++}
++
++static int set_multicast_igmp_version(struct net_device *dev, unsigned long val)
++{
++	struct vport *vport;
++
++	vport = ovs_internal_dev_get_vport(dev);
++	br_compat_multicast_set_igmp_version(vport->brcompat_data, val);
++	return 0;
++}
++
++static ssize_t store_multicast_igmp_version(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_multicast_igmp_version);
++}
++
++static INTERNAL_DEVICE_ATTR(multicast_igmp_version, S_IRUGO | S_IWUSR, show_multicast_igmp_version, store_multicast_igmp_version);
++
++#if IS_ENABLED(CONFIG_IPV6)
++static int show_multicast_mld_version(DEVICE_PARAMS, char *buf)
++{
++	struct vport *vport;
++	unsigned long value;
++
++	vport = ovs_internal_dev_get_vport(to_net_dev(d));
++	br_compat_multicast_get_mld_version(vport->brcompat_data, &value);
++	return sprintf(buf, "%lu\n", value);
++}
++
++static int set_multicast_mld_version(struct net_device *dev, unsigned long val)
++{
++	struct vport *vport;
++
++	vport = ovs_internal_dev_get_vport(dev);
++	br_compat_multicast_set_mld_version(vport->brcompat_data, val);
++	return 0;
++}
++
++static ssize_t store_multicast_mld_version(DEVICE_PARAMS, const char *buf, size_t len)
++{
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_multicast_mld_version);
++}
++
++static INTERNAL_DEVICE_ATTR(multicast_mld_version, S_IRUGO | S_IWUSR, show_multicast_mld_version, store_multicast_mld_version);
++#endif
++
+ static int show_multicast_router(DEVICE_PARAMS, char *buf)
+ {
+ 	unsigned long value;
+@@ -616,6 +771,11 @@ static struct attribute *bridge_attrs[] = {
+ 	&DEV_ATTR(nf_disable_iptables).attr,
+ 	&DEV_ATTR(topology_change).attr,
+ 	&DEV_ATTR(topology_change_timer).attr,
++	&DEV_ATTR(multicast_query_use_ifaddr).attr,
++	&DEV_ATTR(multicast_igmp_version).attr,
++#if IS_ENABLED(CONFIG_IPV6)
++	&DEV_ATTR(multicast_mld_version).attr,
++#endif
+ 	NULL
+ };
+ 
+diff --git a/datapath/dp_sysfs_if.c b/datapath/dp_sysfs_if.c
+index 246234050..fdb7e7118 100644
+--- a/datapath/dp_sysfs_if.c
++++ b/datapath/dp_sysfs_if.c
+@@ -28,6 +28,7 @@
+ #include <linux/netdevice.h>
+ #include <linux/if_bridge.h>
+ #include <linux/rtnetlink.h>
++#include <net/br_compat.h>
+ 
+ #include "datapath.h"
+ #include "dp_sysfs.h"
+@@ -166,6 +167,22 @@ static ssize_t show_hold_timer(struct vport *p, char *buf)
+ }
+ static BRPORT_ATTR(hold_timer, S_IRUGO, show_hold_timer, NULL);
+ 
++static ssize_t show_fastleave(struct vport *p, char *buf)
++{
++	unsigned long flag;
++
++	br_compat_get_port_flag(p->brcompat_data, &flag, BR_MULTICAST_FAST_LEAVE);
++	return sprintf(buf, "%lu\n", flag);
++}
++static ssize_t store_fastleave(struct vport *p, unsigned long v)
++{
++	unsigned long val = !v;
++	ovs_dp_sysfs_hook(p->dev, &val, BRC_GENL_C_SET_PORT_MC_SNOOPING_FLOOD_REPORTS, SET_PARAMETER);
++	br_compat_set_port_flag(p->brcompat_data, !!v, BR_MULTICAST_FAST_LEAVE);
++	return 0;
++}
++static BRPORT_ATTR(fastleave, S_IRUGO | S_IWUSR, show_fastleave, store_fastleave);
++
+ static struct brport_attribute *brport_attrs[] = {
+ 	&brport_attr_path_cost,
+ 	&brport_attr_priority,
+@@ -181,6 +198,7 @@ static struct brport_attribute *brport_attrs[] = {
+ 	&brport_attr_message_age_timer,
+ 	&brport_attr_forward_delay_timer,
+ 	&brport_attr_hold_timer,
++	&brport_attr_fastleave,
+ 	NULL
+ };
+ 
+@@ -212,16 +230,14 @@ static ssize_t brport_store(struct kobject *kobj,
+ 	if (endp == buf)
+ 		return -EINVAL;
+ 
+-	if (val != 0) {
+-		if (!rtnl_trylock())
+-                return restart_syscall();
+-		if (p)
+-			err = brport_attr->store(p, val);
+-		else
+-			err = -ENODEV;
++	if (!rtnl_trylock())
++		return restart_syscall();
++	if (p)
++		err = brport_attr->store(p, val);
++	else
++		err = -ENODEV;
+ 
+-		rtnl_unlock();
+-	}
++	rtnl_unlock();
+ 
+ 	return err ? err : count;
+ }
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 0b07178a8..7053ac779 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -1163,6 +1163,33 @@ handle_set_boolean_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+     return error;
+ }
+ 
++static int
++handle_set_boolean_val_port_cmd(struct ofpbuf *buffer, const char *sub_cmd)
++{
++    const char *pr_name;
++    const char *str_key_value;
++    uint64_t param;
++    uint32_t seq;
++    int error;
++
++    error = parse_command(buffer, &seq, &pr_name, NULL, NULL, NULL, &param);
++
++    if (!error) {
++        str_key_value = xasprintf("%s=%s", sub_cmd, param ? "true" : "false");
++
++        if (!run_vsctl(vsctl_program, VSCTL_OPTIONS,
++                       "--", "set", "Port", pr_name, str_key_value,
++                       "--", "comment", "ovs-brcompatd:", sub_cmd,
++                       pr_name, param ? "true" : "false", (char *) NULL)) {
++            error = EINVAL;
++        }
++        send_simple_reply(seq, error);
++
++        free(str_key_value);
++    }
++    return error;
++}
++
+ static int
+ handle_set_mc_router_port_cmd(struct ofpbuf *buffer)
+ {
+@@ -1644,7 +1671,7 @@ brc_recv_update(void)
+         break;
+ 
+     case BRC_GENL_C_SET_PORT_MC_SNOOPING_FLOOD_REPORTS:
+-        handle_set_ulong_val_port_cmd(&buffer, "mcast-snooping-flood-reports");
++        handle_set_boolean_val_port_cmd(&buffer, "other-config:mcast-snooping-flood-reports");
+         break;
+     /* } seamless-ovs */
+ 

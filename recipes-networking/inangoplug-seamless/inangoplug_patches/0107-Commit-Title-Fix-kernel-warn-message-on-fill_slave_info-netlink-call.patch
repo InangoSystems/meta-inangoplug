@@ -1,0 +1,111 @@
+From c4c3df0c754fa959604f20090cfbc59fa5e80997 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Sun, 21 Nov 2021 07:39:14 +0200
+Subject: [PATCH] Commit Title          : Fix kernel warn message on
+ fill_slave_info netlink call
+
+BugID                 : 26506
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Fixed kernel warn message on fill_slave_info netlink call
+---
+ datapath/brcompat_main.c | 32 +++++++++++++++++++-------------
+ 1 file changed, 19 insertions(+), 13 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 550c5d743..49945321b 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -1329,7 +1329,7 @@ nla_put_failure:
+ 
+ void br_dev_setup(struct net_device *dev)
+ {
+-	if (dev->priv_flags & IFF_OVS_DATAPATH || dev->priv_flags & IFF_OPENVSWITCH) {
++	if (dev->priv_flags & IFF_OPENVSWITCH) {
+ 		if (br_ovs_link_ops->setup)
+ 			br_ovs_link_ops->setup(dev);
+ 	} else
+@@ -1343,21 +1343,21 @@ static int br_validate(struct nlattr *tb[], struct nlattr *data[])
+ 
+ static int br_dev_newlink(struct net *src_net, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[])
+ {
+-	if (dev->priv_flags & IFF_OVS_DATAPATH || dev->priv_flags & IFF_OPENVSWITCH)
++	if (dev->priv_flags & IFF_OPENVSWITCH)
+ 		return br_ovs_link_ops->newlink ? br_ovs_link_ops->newlink(src_net, dev, tb, data) : -EOPNOTSUPP;
+ 	return br_compat_link_ops.newlink(src_net, dev, tb, data);
+ }
+ 
+ static int br_changelink(struct net_device *brdev, struct nlattr *tb[], struct nlattr *data[])
+ {
+-	if (brdev->priv_flags & IFF_OVS_DATAPATH || brdev->priv_flags & IFF_OPENVSWITCH)
++	if (brdev->priv_flags & IFF_OPENVSWITCH)
+ 		return br_ovs_link_ops->changelink ? br_ovs_link_ops->changelink(brdev, tb, data) : -EOPNOTSUPP;
+ 	return br_compat_link_ops.changelink(brdev, tb, data);
+ }
+ 
+ void br_dev_delete(struct net_device *dev, struct list_head *head)
+ {
+-	if (dev->priv_flags & IFF_OVS_DATAPATH || dev->priv_flags & IFF_OPENVSWITCH) {
++	if (dev->priv_flags & IFF_OPENVSWITCH) {
+ 		if (br_ovs_link_ops->dellink)
+ 			br_ovs_link_ops->dellink(dev, head);
+ 	} else
+@@ -1371,43 +1371,49 @@ static size_t br_get_size(const struct net_device *brdev)
+ 
+ static int br_fill_info(struct sk_buff *skb, const struct net_device *brdev)
+ {
+-	if (brdev->priv_flags & IFF_OVS_DATAPATH || brdev->priv_flags & IFF_OPENVSWITCH)
++	if (brdev->priv_flags & IFF_OPENVSWITCH)
+ 		return br_ovs_link_ops->fill_info ? br_ovs_link_ops->fill_info(skb, brdev) : 0;
+ 	return br_compat_link_ops.fill_info(skb, brdev);
+ }
+ 
+ static int br_fill_linkxstats(struct sk_buff *skb, const struct net_device *dev, int *prividx, int attr)
+ {
+-	if (dev->priv_flags & IFF_OVS_DATAPATH || dev->priv_flags & IFF_OPENVSWITCH)
++	if (dev->priv_flags & IFF_OPENVSWITCH)
+ 		return br_ovs_link_ops->fill_linkxstats ? br_ovs_link_ops->fill_linkxstats(skb, dev, prividx, attr) : -EOPNOTSUPP;
+ 	return br_compat_link_ops.fill_linkxstats(skb, dev, prividx, attr);
+ }
+ 
+ static size_t br_get_linkxstats_size(const struct net_device *dev, int attr)
+ {
+-	if (dev->priv_flags & IFF_OVS_DATAPATH || dev->priv_flags & IFF_OPENVSWITCH)
++	if (dev->priv_flags & IFF_OPENVSWITCH)
+ 		return br_ovs_link_ops->get_linkxstats_size ? br_ovs_link_ops->get_linkxstats_size(dev, attr) : 0;
+ 	return br_compat_link_ops.get_linkxstats_size(dev, attr);
+ }
+ 
+ static int br_port_slave_changelink(struct net_device *brdev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[])
+ {
+-	if (brdev->priv_flags & IFF_OVS_DATAPATH || brdev->priv_flags & IFF_OPENVSWITCH)
+-		return br_ovs_link_ops->slave_changelink ? br_ovs_link_ops->slave_changelink(brdev, dev, tb, data) : -EOPNOTSUPP;
++	if (brdev->priv_flags & IFF_OPENVSWITCH) {
++		if (dev->priv_flags & IFF_OVS_DATAPATH)
++			return br_ovs_link_ops->slave_changelink ? br_ovs_link_ops->slave_changelink(brdev, dev, tb, data) : -EOPNOTSUPP;
++		return -EOPNOTSUPP;
++	}
+ 	return br_compat_link_ops.slave_changelink(brdev, dev, tb, data);
+ }
+ 
+ static size_t br_port_get_slave_size(const struct net_device *brdev, const struct net_device *dev)
+ {
+-	if (brdev->priv_flags & IFF_OVS_DATAPATH || brdev->priv_flags & IFF_OPENVSWITCH)
+-		return br_ovs_link_ops->get_slave_size ? br_ovs_link_ops->get_slave_size(brdev, dev) : br_compat_link_ops.get_slave_size(brdev, dev);
++	if (brdev->priv_flags & IFF_OPENVSWITCH && dev->priv_flags & IFF_OVS_DATAPATH)
++			return br_ovs_link_ops->get_slave_size ? br_ovs_link_ops->get_slave_size(brdev, dev) : br_compat_link_ops.get_slave_size(brdev, dev);
+ 	return br_compat_link_ops.get_slave_size(brdev, dev);
+ }
+ 
+ static int br_port_fill_slave_info(struct sk_buff *skb, const struct net_device *brdev, const struct net_device *dev)
+ {
+-	if (brdev->priv_flags & IFF_OVS_DATAPATH || brdev->priv_flags & IFF_OPENVSWITCH)
+-		return br_ovs_link_ops->fill_slave_info ? br_ovs_link_ops->fill_slave_info(skb, brdev, dev) : 0;
++	if (brdev->priv_flags & IFF_OPENVSWITCH) {
++		if (dev->priv_flags & IFF_OVS_DATAPATH)
++			return br_ovs_link_ops->fill_slave_info ? br_ovs_link_ops->fill_slave_info(skb, brdev, dev) : 0;
++		return 0;
++	}
+ 	return br_compat_link_ops.fill_slave_info(skb, brdev, dev);
+ }
+ 

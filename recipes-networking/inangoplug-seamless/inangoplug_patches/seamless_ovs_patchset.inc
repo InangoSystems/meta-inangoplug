@@ -106,5 +106,8 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0104-Commit-Title-Integrate-OVS-packet-forwarding-mechanism-with-mcast_helper-via-ac.patch \
     file://0105-Commit-Title-Add-all-required-setters-to-kernel.patch \
     file://0106-Commit-Title-Provision-multicast-group-VLAN-ID-from-user-space-into-kernel-spac.patch \
+    file://0107-Commit-Title-Fix-kernel-warn-message-on-fill_slave_info-netlink-call.patch \
+    file://0108-Commit-Title-Add-configuration-via-sysfs.patch \
+    file://0109-Commit-Title-Fix-multicast-memleak-in-br_compat.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"
