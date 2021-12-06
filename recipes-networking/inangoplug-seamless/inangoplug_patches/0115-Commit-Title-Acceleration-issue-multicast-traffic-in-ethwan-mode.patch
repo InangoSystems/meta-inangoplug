@@ -1,0 +1,44 @@
+From 14e6e4838ebfa26e84c4e1ff2a70e572f9b2ed74 Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Mon, 6 Dec 2021 22:17:08 +0500
+Subject: [PATCH] Commit Title: Acceleration issue multicast traffic in ethwan
+ mode
+
+BugID: 26770
+Bug Fixed(y/N[blankN]):
+CodeReviewId: 0
+Description:
+* Filter OVS_VPORT_TYPE_INTERNAL for PP_AM_SET_MCAST_PORT_OUTPUT
+post_processing action
+---
+ datapath/actions.c | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/datapath/actions.c b/datapath/actions.c
+index 4ea9fa0ca..ef6e95bbe 100644
+--- a/datapath/actions.c
++++ b/datapath/actions.c
+@@ -1365,17 +1365,18 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			struct ovs_action_mcast_output *mcast_output = nla_data(a);
+ 			int port = mcast_output->out_port;
+ 			struct sk_buff *clone;
+-			struct vport *vport = ovs_vport_rcu(dp, port);
++			struct vport *vport;
+ 			struct pp_am_mcast_port_output mcast_port_output;
+ 
+ 			am_skb_postprocessing(PP_AM_SET_OUTPUT, flow/*ufid*/, skb);
+-
+ 			vport = ovs_vport_rcu(dp, port);
+ 			if (likely(vport)) {
+-				mcast_port_output.ifindex = vport->dev->ifindex;
+-				memcpy(mcast_port_output.host_mac, mcast_output->host_mac, sizeof(mcast_port_output.host_mac));
++				if (vport->type != OVS_VPORT_TYPE_INTERNAL) {
++					mcast_port_output.ifindex = vport->dev->ifindex;
++					memcpy(mcast_port_output.host_mac, mcast_output->host_mac, sizeof(mcast_port_output.host_mac));
+ 
+-				am_skb_postprocessing_ext(PP_AM_SET_MCAST_PORT_OUTPUT, flow, skb, &mcast_port_output);
++					am_skb_postprocessing_ext(PP_AM_SET_MCAST_PORT_OUTPUT, flow, skb, &mcast_port_output);
++				}
+ 			}
+ 
+ 			/* Every output action needs a separate clone

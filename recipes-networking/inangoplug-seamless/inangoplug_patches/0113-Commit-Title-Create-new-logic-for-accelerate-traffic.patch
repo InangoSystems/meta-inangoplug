@@ -1,0 +1,93 @@
+From 70cf08252f5fca5af4643b1ff75b4a66ce0a54d3 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Fri, 3 Dec 2021 20:24:07 +0500
+Subject: [PATCH] Commit Title: Create new logic for accelerate traffic
+
+BugID                 : 26629
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Implemented new logic to accelerate traffic inside OVS bridge
+---
+ datapath/actions.c | 17 ++++++++++-------
+ datapath/am_pp.c   | 13 ++++++++++++-
+ datapath/am_pp.h   |  1 +
+ 3 files changed, 23 insertions(+), 8 deletions(-)
+
+diff --git a/datapath/actions.c b/datapath/actions.c
+index 986234232..4ea9fa0ca 100644
+--- a/datapath/actions.c
++++ b/datapath/actions.c
+@@ -1118,11 +1118,6 @@ static void execute_hash(struct sk_buff *skb, struct sw_flow_key *key,
+ 	key->ovs_flow_hash = hash;
+ }
+ 
+-#if IS_ENABLED(CONFIG_MCAST_HELPER)
+-extern void mcast_helper_learning(struct sk_buff *skb,
+-				  struct net_device *mem_dev, u8 *host_mac);
+-#endif
+-
+ static int execute_set_action(struct sk_buff *skb,
+ 			      struct sw_flow_key *flow_key,
+ 			      const struct nlattr *a)
+@@ -1324,7 +1319,6 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 	int rem;
+ 	struct vport *prev = NULL;
+ 
+-
+ 	// TODO: Set correct action instead of PP_AM_SET_OUTPUT
+ 	am_skb_preprocessing(PP_AM_SET_OUTPUT, flow/*ufid*/, skb);
+ 
+@@ -1372,9 +1366,18 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			int port = mcast_output->out_port;
+ 			struct sk_buff *clone;
+ 			struct vport *vport = ovs_vport_rcu(dp, port);
++			struct pp_am_mcast_port_output mcast_port_output;
+ 
+ 			am_skb_postprocessing(PP_AM_SET_OUTPUT, flow/*ufid*/, skb);
+-			mcast_helper_learning(skb, vport->dev, mcast_output->host_mac);
++
++			vport = ovs_vport_rcu(dp, port);
++			if (likely(vport)) {
++				mcast_port_output.ifindex = vport->dev->ifindex;
++				memcpy(mcast_port_output.host_mac, mcast_output->host_mac, sizeof(mcast_port_output.host_mac));
++
++				am_skb_postprocessing_ext(PP_AM_SET_MCAST_PORT_OUTPUT, flow, skb, &mcast_port_output);
++			}
++
+ 			/* Every output action needs a separate clone
+ 			 * of 'skb', In case the output action is the
+ 			 * last action, cloning can be avoided.
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index 90c0eecb9..a6994f07b 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -255,5 +255,16 @@ void am_skb_postprocessing(pp_am_skb_process_action action, struct sw_flow *flow
+ 	if (flow->acl_state != ACCELERATED && action != PP_AM_SET_SKIP)
+ 		return;
+ 
+-	pp_am_skb_postprocess(action, flow->local, (u32 *)flow->id.ufid/*ufid->ufid*/, flow->pp_am_id, skb);
++	pp_am_skb_postprocess(action, NULL, (u32 *)flow->id.ufid/*ufid->ufid*/, flow->pp_am_id, skb);
++}
++
++void am_skb_postprocessing_ext(pp_am_skb_process_action action, struct sw_flow *flow, struct sk_buff *skb, void *data)
++{
++	if (!flow || !skb)
++		return;
++
++	if (flow->acl_state != ACCELERATED && action != PP_AM_SET_SKIP)
++		return;
++
++	pp_am_skb_postprocess(action, data, (u32 *)flow->id.ufid, flow->pp_am_id, skb);
+ }
+diff --git a/datapath/am_pp.h b/datapath/am_pp.h
+index 6f608e210..0fc3c0865 100644
+--- a/datapath/am_pp.h
++++ b/datapath/am_pp.h
+@@ -46,5 +46,6 @@ int am_remove_session(struct sw_flow *flow);
+ void am_get_session_stats(const struct sw_flow *flow, struct ovs_flow_stats *stats, unsigned long *used);
+ void am_skb_preprocessing(pp_am_skb_process_action action, struct sw_flow *flow/*const struct sw_flow_id *ufid*/, struct sk_buff *skb);
+ void am_skb_postprocessing(pp_am_skb_process_action action, struct sw_flow *flow/*const struct sw_flow_id *ufid*/, struct sk_buff *skb);
++void am_skb_postprocessing_ext(pp_am_skb_process_action action, struct sw_flow *flow, struct sk_buff *skb, void *data);
+ 
+ #endif /* am_pp.h */

@@ -1,0 +1,372 @@
+From ab99b7503234ea828afaef21db44fc359ac50a82 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Thu, 2 Dec 2021 23:46:45 +0200
+Subject: [PATCH] Commit Title          : During join/leave request save ethMac
+ address too bridge/port group
+
+BugID                 : 26690
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Saved ethMac address too bridge/port group during join/leave request
+---
+ lib/mcast-snooping.c         | 50 +++++++++++++++++++++++---------------------
+ lib/mcast-snooping.h         | 17 ++++++++-------
+ ofproto/ofproto-dpif-xlate.c |  8 +++----
+ ofproto/ofproto-dpif.c       | 13 ++++++------
+ 4 files changed, 47 insertions(+), 41 deletions(-)
+
+diff --git a/lib/mcast-snooping.c b/lib/mcast-snooping.c
+index 877982250..d637f8192 100644
+--- a/lib/mcast-snooping.c
++++ b/lib/mcast-snooping.c
+@@ -302,13 +302,14 @@ mcast_snooping_set_enabled(struct mcast_snooping *ms, bool enable)
+ 
+ static struct mcast_group_bundle *
+ mcast_group_bundle_lookup(struct mcast_snooping *ms OVS_UNUSED,
+-                          struct mcast_group *grp, void *port)
++                          struct mcast_group *grp, void *port,
++                          const struct eth_addr *mac)
+     OVS_REQ_RDLOCK(ms->rwlock)
+ {
+     struct mcast_group_bundle *b;
+ 
+     LIST_FOR_EACH (b, bundle_node, &grp->bundle_lru) {
+-        if (b->port == port) {
++        if (b->port == port && (mac ? eth_addr_equals(*mac, b->mac) : eth_addr_is_broadcast(b->mac))) {
+             return b;
+         }
+     }
+@@ -359,12 +360,12 @@ mcast_group_bundle_insert_src_addrs(struct mcast_snooping *ms OVS_UNUSED,
+ static struct mcast_group_bundle *
+ mcast_group_insert_bundle(struct mcast_snooping *ms OVS_UNUSED,
+                           struct mcast_group *grp, void *dpif, int port_no, void *port, int idle_time,
+-                          int filter_mode, const char *saddrs, bool local_port)
++                          int filter_mode, const char *saddrs, bool local_port, const struct eth_addr *mac)
+     OVS_REQ_WRLOCK(ms->rwlock)
+ {
+     struct mcast_group_bundle *b;
+ 
+-    b = mcast_group_bundle_lookup(ms, grp, port);
++    b = mcast_group_bundle_lookup(ms, grp, port, mac);
+     if (b) {
+         ovs_list_remove(&b->bundle_node);
+     } else {
+@@ -372,6 +373,7 @@ mcast_group_insert_bundle(struct mcast_snooping *ms OVS_UNUSED,
+         ovs_list_init(&b->bundle_node);
+         ovs_list_init(&b->src_addrs);
+         b->port = port;
++        memcpy(&b->mac, mac ? mac : &eth_addr_broadcast, sizeof(struct eth_addr));
+         ms->need_revalidate = true;
+     }
+ 
+@@ -452,13 +454,13 @@ mcast_snooping_flush_group(struct mcast_snooping *ms, struct mcast_group *grp)
+  * false if it didn't find the group. */
+ static bool
+ mcast_group_delete_bundle(struct mcast_snooping *ms OVS_UNUSED,
+-                          struct mcast_group *grp, void *port)
++                          struct mcast_group *grp, void *port, const struct eth_addr *mac)
+     OVS_REQ_WRLOCK(ms->rwlock)
+ {
+     struct mcast_group_bundle *b;
+ 
+     LIST_FOR_EACH (b, bundle_node, &grp->bundle_lru) {
+-        if (b->port == port) {
++        if (b->port == port && (mac ? eth_addr_equals(*mac, b->mac) : eth_addr_is_broadcast(b->mac))) {
+             ovs_list_remove(&b->bundle_node);
+             dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan);
+             mcast_snooping_flush_group_bundle(ms, b);
+@@ -514,7 +516,7 @@ bool
+ mcast_snooping_add_group(struct mcast_snooping *ms, void *dpif, int port_no,
+                          const struct in6_addr *addr,
+                          int filter_mode, const char *saddrs,
+-                         uint16_t vlan, void *port, bool local_port)
++                         uint16_t vlan, void *port, bool local_port, const struct eth_addr *mac)
+     OVS_REQ_WRLOCK(ms->rwlock)
+ {
+     bool learned;
+@@ -547,7 +549,7 @@ mcast_snooping_add_group(struct mcast_snooping *ms, void *dpif, int port_no,
+     } else {
+         ovs_list_remove(&grp->group_node);
+     }
+-    mcast_group_insert_bundle(ms, grp, dpif, port_no, port, ms->idle_time, filter_mode, saddrs, local_port);
++    mcast_group_insert_bundle(ms, grp, dpif, port_no, port, ms->idle_time, filter_mode, saddrs, local_port, mac);
+ 
+     /* Mark 'grp' as recently used. */
+     ovs_list_push_back(&ms->group_lru, &grp->group_node);
+@@ -560,18 +562,18 @@ mcast_snooping_add_group(struct mcast_snooping *ms, void *dpif, int port_no,
+ bool
+ mcast_snooping_add_group4(struct mcast_snooping *ms, void *dpif, int port_no, ovs_be32 ip4,
+                          int filter_mode, const char *saddrs,
+-                         uint16_t vlan, void *port, bool local_port)
++                         uint16_t vlan, void *port, bool local_port, const struct eth_addr *mac)
+     OVS_REQ_WRLOCK(ms->rwlock)
+ {
+     struct in6_addr addr = in6_addr_mapped_ipv4(ip4);
+-    return mcast_snooping_add_group(ms, dpif, port_no, &addr, filter_mode, saddrs, vlan, port, local_port);
++    return mcast_snooping_add_group(ms, dpif, port_no, &addr, filter_mode, saddrs, vlan, port, local_port, mac);
+ }
+ 
+ int
+ mcast_snooping_add_report(struct mcast_snooping *ms,
+                           void *dpif, int port_no,
+                           const struct dp_packet *p,
+-                          uint16_t vlan, void *port, bool local_port)
++                          uint16_t vlan, void *port, bool local_port, const struct eth_addr *mac)
+ {
+     ovs_be32 ip4;
+     size_t offset;
+@@ -606,9 +608,9 @@ mcast_snooping_add_report(struct mcast_snooping *ms,
+         if (ntohs(record->nsrcs) == 0
+             && (record->type == IGMPV3_MODE_IS_INCLUDE
+                 || record->type == IGMPV3_CHANGE_TO_INCLUDE_MODE)) {
+-            ret = mcast_snooping_leave_group4(ms, ip4, vlan, port);
++            ret = mcast_snooping_leave_group4(ms, ip4, vlan, port, mac);
+         } else {
+-            ret = mcast_snooping_add_group4(ms, dpif, port_no, ip4, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, port, local_port);
++            ret = mcast_snooping_add_group4(ms, dpif, port_no, ip4, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, port, local_port, mac);
+         }
+         if (ret) {
+             count++;
+@@ -645,7 +647,7 @@ int
+ mcast_snooping_add_mld(struct mcast_snooping *ms,
+                           void *dpif, int port_no,
+                           const struct dp_packet *p,
+-                          uint16_t vlan, void *port, bool local_port)
++                          uint16_t vlan, void *port, bool local_port, const struct eth_addr *mac)
+ {
+     const struct in6_addr *addr;
+     size_t offset;
+@@ -666,13 +668,13 @@ mcast_snooping_add_mld(struct mcast_snooping *ms,
+ 
+     switch (mld->type) {
+     case MLD_REPORT:
+-        ret = mcast_snooping_add_group(ms, dpif, port_no, addr, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, port, local_port);
++        ret = mcast_snooping_add_group(ms, dpif, port_no, addr, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, port, local_port, mac);
+         if (ret) {
+             count++;
+         }
+         break;
+     case MLD_DONE:
+-        ret = mcast_snooping_leave_group(ms, addr, vlan, port);
++        ret = mcast_snooping_leave_group(ms, addr, vlan, port, mac);
+         if (ret) {
+             count++;
+         }
+@@ -696,9 +698,9 @@ mcast_snooping_add_mld(struct mcast_snooping *ms,
+                 if (record->nsrcs == htons(0)
+                     && (record->type == IGMPV3_MODE_IS_INCLUDE
+                         || record->type == IGMPV3_CHANGE_TO_INCLUDE_MODE)) {
+-                    ret = mcast_snooping_leave_group(ms, addr, vlan, port);
++                    ret = mcast_snooping_leave_group(ms, addr, vlan, port, mac);
+                 } else {
+-                    ret = mcast_snooping_add_group(ms, dpif, port_no, addr, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, port, local_port);
++                    ret = mcast_snooping_add_group(ms, dpif, port_no, addr, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, port, local_port, mac);
+                 }
+                 if (ret) {
+                     count++;
+@@ -716,7 +718,7 @@ mcast_snooping_add_mld(struct mcast_snooping *ms,
+ bool
+ mcast_snooping_leave_group(struct mcast_snooping *ms,
+                            const struct in6_addr *addr,
+-                           uint16_t vlan, void *port)
++                           uint16_t vlan, void *port, const struct eth_addr *mac)
+     OVS_REQ_WRLOCK(ms->rwlock)
+ {
+     struct mcast_group *grp;
+@@ -729,7 +731,7 @@ mcast_snooping_leave_group(struct mcast_snooping *ms,
+     }
+ 
+     grp = mcast_snooping_lookup(ms, addr, vlan);
+-    if (grp && mcast_group_delete_bundle(ms, grp, port)) {
++    if (grp && mcast_group_delete_bundle(ms, grp, port, mac)) {
+         ms->need_revalidate = true;
+         return true;
+     }
+@@ -738,10 +740,10 @@ mcast_snooping_leave_group(struct mcast_snooping *ms,
+ 
+ bool
+ mcast_snooping_leave_group4(struct mcast_snooping *ms, ovs_be32 ip4,
+-                           uint16_t vlan, void *port)
++                           uint16_t vlan, void *port, const struct eth_addr *mac)
+ {
+     struct in6_addr addr = in6_addr_mapped_ipv4(ip4);
+-    return mcast_snooping_leave_group(ms, &addr, vlan, port);
++    return mcast_snooping_leave_group(ms, &addr, vlan, port, mac);
+ }
+ 
+ 
+@@ -1125,7 +1127,7 @@ mcast_snooping_wait(struct mcast_snooping *ms)
+ }
+ 
+ void
+-mcast_snooping_flush_bundle(struct mcast_snooping *ms, void *port)
++mcast_snooping_flush_bundle(struct mcast_snooping *ms, void *port, const struct eth_addr *mac)
+ {
+     struct mcast_group *g, *next_g;
+     struct mcast_mrouter_bundle *m, *next_m;
+@@ -1136,7 +1138,7 @@ mcast_snooping_flush_bundle(struct mcast_snooping *ms, void *port)
+ 
+     ovs_rwlock_wrlock(&ms->rwlock);
+     LIST_FOR_EACH_SAFE (g, next_g, group_node, &ms->group_lru) {
+-        if (mcast_group_delete_bundle(ms, g, port)) {
++        if (mcast_group_delete_bundle(ms, g, port, mac)) {
+             ms->need_revalidate = true;
+ 
+             if (!mcast_group_has_bundles(g)) {
+diff --git a/lib/mcast-snooping.h b/lib/mcast-snooping.h
+index 9a146b55f..d6bcbadda 100644
+--- a/lib/mcast-snooping.h
++++ b/lib/mcast-snooping.h
+@@ -91,6 +91,9 @@ struct mcast_group_bundle {
+     /* Learned port. */
+     void *port OVS_GUARDED;
+ 
++    /* Learned mac. */
++    struct eth_addr mac OVS_GUARDED;
++
+     /* Source list filter mode: IGMPV3_MODE_IS_INCLUDE | IGMPV3_MODE_IS_EXCLUDE */
+     int filter_mode;
+ 
+@@ -220,28 +223,28 @@ mcast_snooping_lookup4(const struct mcast_snooping *ms, ovs_be32 ip4,
+ bool mcast_snooping_add_group(struct mcast_snooping *ms, void* dpif, int port_no,
+                               const struct in6_addr *addr,
+                               int filter_mode, const char *saddrs,
+-                              uint16_t vlan, void *port, bool local_port)
++                              uint16_t vlan, void *port, bool local_port, const struct eth_addr *mac)
+     OVS_REQ_WRLOCK(ms->rwlock);
+ bool mcast_snooping_add_group4(struct mcast_snooping *ms, void* dpif, int port_no, ovs_be32 ip4,
+                                int filter_mode, const char *saddrs,
+-                               uint16_t vlan, void *port, bool local_port)
++                               uint16_t vlan, void *port, bool local_port, const struct eth_addr *mac)
+     OVS_REQ_WRLOCK(ms->rwlock);
+ int mcast_snooping_add_report(struct mcast_snooping *ms,
+                           void *dpif, int port_no,
+                           const struct dp_packet *p,
+-                          uint16_t vlan, void *port, bool local_port)
++                          uint16_t vlan, void *port, bool local_port, const struct eth_addr *mac)
+     OVS_REQ_WRLOCK(ms->rwlock);
+ int mcast_snooping_add_mld(struct mcast_snooping *ms,
+                            void * dpif, int port_no,
+                            const struct dp_packet *p,
+-                           uint16_t vlan, void *port, bool local_port)
++                           uint16_t vlan, void *port, bool local_port, const struct eth_addr *mac)
+     OVS_REQ_WRLOCK(ms->rwlock);
+ bool mcast_snooping_leave_group(struct mcast_snooping *ms,
+                                 const struct in6_addr *addr,
+-                                uint16_t vlan, void *port)
++                                uint16_t vlan, void *port, const struct eth_addr *mac)
+     OVS_REQ_WRLOCK(ms->rwlock);
+ bool mcast_snooping_leave_group4(struct mcast_snooping *ms, ovs_be32 ip4,
+-                                 uint16_t vlan, void *port)
++                                 uint16_t vlan, void *port, const struct eth_addr *mac)
+     OVS_REQ_WRLOCK(ms->rwlock);
+ struct mcast_mrouter_bundle *
+ mcast_snooping_mrouter_lookup(struct mcast_snooping *ms, uint16_t vlan,
+@@ -259,7 +262,7 @@ bool mcast_snooping_is_membership(ovs_be16 igmp_type);
+ /* Flush. */
+ void mcast_snooping_mdb_flush(struct mcast_snooping *ms);
+ void mcast_snooping_flush(struct mcast_snooping *ms);
+-void mcast_snooping_flush_bundle(struct mcast_snooping *ms, void *port);
++void mcast_snooping_flush_bundle(struct mcast_snooping *ms, void *port, const struct eth_addr *mac);
+ 
+ int mcast_external_igmp_handler_enabled();
+ int mcast_external_mld_handler_enabled();
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 9eb3114dc..84592887e 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2625,7 +2625,7 @@ update_mcast_snooping_table4__(const struct xlate_ctx *ctx,
+     /* TODO: enable/disable handling  */
+     case IGMP_HOST_MEMBERSHIP_REPORT:
+     case IGMPV2_HOST_MEMBERSHIP_REPORT:
+-        if (mcast_snooping_add_group4(ms, dpif, port->odp_port, ip4, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, in_xbundle->ofbundle, local_port)) {
++        if (mcast_snooping_add_group4(ms, dpif, port->odp_port, ip4, IGMPV3_MODE_IS_EXCLUDE, NULL, vlan, in_xbundle->ofbundle, local_port, &flow->dl_src)) {
+             xlate_report_debug(ctx, OFT_DETAIL,
+                                "multicast snooping learned that "
+                                IP_FMT" is on port %s in VLAN %d",
+@@ -2633,7 +2633,7 @@ update_mcast_snooping_table4__(const struct xlate_ctx *ctx,
+         }
+         break;
+     case IGMP_HOST_LEAVE_MESSAGE:
+-        if (mcast_snooping_leave_group4(ms, ip4, vlan, in_xbundle->ofbundle)) {
++        if (mcast_snooping_leave_group4(ms, ip4, vlan, in_xbundle->ofbundle, &flow->dl_src)) {
+             xlate_report_debug(ctx, OFT_DETAIL, "multicast snooping leaving "
+                                IP_FMT" is on port %s in VLAN %d",
+                                IP_ARGS(ip4), in_xbundle->name, vlan);
+@@ -2649,7 +2649,7 @@ update_mcast_snooping_table4__(const struct xlate_ctx *ctx,
+         break;
+     case IGMPV3_HOST_MEMBERSHIP_REPORT:
+         count = mcast_snooping_add_report(ms, dpif, port->odp_port, packet, vlan,
+-                                          in_xbundle->ofbundle, local_port);
++                                          in_xbundle->ofbundle, local_port, &flow->dl_src);
+         if (count) {
+             xlate_report_debug(ctx, OFT_DETAIL, "multicast snooping processed "
+                                "%d addresses on port %s in VLAN %d",
+@@ -2697,7 +2697,7 @@ update_mcast_snooping_table6__(const struct xlate_ctx *ctx,
+     case MLD_REPORT:
+     case MLD_DONE:
+     case MLD2_REPORT:
+-        count = mcast_snooping_add_mld(ms, port->xbridge->ofproto->backer->dpif, port->odp_port, packet, vlan, in_xbundle->ofbundle, local_port);
++        count = mcast_snooping_add_mld(ms, port->xbridge->ofproto->backer->dpif, port->odp_port, packet, vlan, in_xbundle->ofbundle, local_port, &flow->dl_src);
+         if (count) {
+             xlate_report_debug(ctx, OFT_DETAIL, "multicast snooping processed "
+                                "%d addresses on port %s in VLAN %d",
+diff --git a/ofproto/ofproto-dpif.c b/ofproto/ofproto-dpif.c
+index 179d8e8ce..8a72ca682 100644
+--- a/ofproto/ofproto-dpif.c
++++ b/ofproto/ofproto-dpif.c
+@@ -3194,7 +3194,7 @@ bundle_destroy(struct ofbundle *bundle)
+     }
+ 
+     bundle_flush_macs(bundle, true);
+-    mcast_snooping_flush_bundle(ofproto->ms, bundle);
++    mcast_snooping_flush_bundle(ofproto->ms, bundle, NULL);
+     hmap_remove(&ofproto->bundles, &bundle->hmap_node);
+     free(bundle->name);
+     free(bundle->trunks);
+@@ -3415,7 +3415,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
+      * everything on this port and force flow revalidation. */
+     if (need_flush) {
+         bundle_flush_macs(bundle, false);
+-        mcast_snooping_flush_bundle(ofproto->ms, bundle);
++        mcast_snooping_flush_bundle(ofproto->ms, bundle, NULL);
+     }
+ 
+     return 0;
+@@ -5917,7 +5917,7 @@ ofproto_unixctl_mcast_snooping_show(struct unixctl_conn *conn,
+         return;
+     }
+ 
+-    ds_put_cstr(&ds, " port  VLAN  GROUP                Age  Filter  SADDRS\n");
++    ds_put_cstr(&ds, " port                MAC  VLAN  GROUP                Age  Filter  SADDRS\n");
+     ovs_rwlock_rdlock(&ofproto->ms->rwlock);
+     LIST_FOR_EACH (grp, group_node, &ofproto->ms->group_lru) {
+         LIST_FOR_EACH(b, bundle_node, &grp->bundle_lru) {
+@@ -5927,7 +5927,8 @@ ofproto_unixctl_mcast_snooping_show(struct unixctl_conn *conn,
+             bundle = b->port;
+             ofputil_port_to_string(ofbundle_get_a_port(bundle)->up.ofp_port,
+                                    NULL, name, sizeof name);
+-            ds_put_format(&ds, "%5s  %4d  ", name, grp->vlan);
++            ds_put_format(&ds, "%5s  "ETH_ADDR_FMT"  %4d  ",
++                name, ETH_ADDR_ARGS(b->mac), grp->vlan);
+             ipv6_format_mapped(&grp->addr, &ds);
+             ds_put_format(&ds, "         %3d  ",
+                           mcast_bundle_age(ofproto->ms, b));
+@@ -6035,7 +6036,7 @@ ofproto_unixctl_mcast_snooping_add_grp(struct unixctl_conn *conn,
+ 
+     int filter_mode = filter != 0 ? IGMPV3_MODE_IS_INCLUDE : IGMPV3_MODE_IS_EXCLUDE;
+ 
+-    mcast_snooping_add_group(ofproto->ms, ofproto->backer->dpif, ofport->odp_port, &gaddr, filter_mode, saddrs, 0, ofport->bundle, false);
++    mcast_snooping_add_group(ofproto->ms, ofproto->backer->dpif, ofport->odp_port, &gaddr, filter_mode, saddrs, 0, ofport->bundle, false, NULL);
+ 
+     VLOG_INFO("ofproto_unixctl_mcast_snooping_add_grp: group was added");
+     unixctl_command_reply(conn, "multicast group was added");
+@@ -6084,7 +6085,7 @@ ofproto_unixctl_mcast_snooping_del_grp(struct unixctl_conn *conn,
+ 
+     VLOG_INFO("ofproto_unixctl_mcast_snooping_del_grp: port=%s, gaddr=%s", argv[2], argv[3]);
+ 
+-    mcast_snooping_leave_group(ofproto->ms, &gaddr, 0, ofport->bundle);
++    mcast_snooping_leave_group(ofproto->ms, &gaddr, 0, ofport->bundle, NULL);
+ 
+     VLOG_INFO("ofproto_unixctl_mcast_snooping_del_grp: group was deleted");
+     unixctl_command_reply(conn, "multicast group was deleted");

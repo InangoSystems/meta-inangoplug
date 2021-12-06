@@ -1,0 +1,574 @@
+From 37ba79f95d69f63be8c96f14485bc70886941879 Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Mon, 6 Dec 2021 17:15:05 +0200
+Subject: [PATCH] Inango n26692 new multicast action
+
+---
+ datapath/actions.c                                | 39 +++++++++++++++
+ datapath/brcompat_main.c                          |  3 +-
+ datapath/flow_netlink.c                           | 11 ++++-
+ datapath/linux/compat/include/linux/openvswitch.h | 11 +++++
+ datapath/translate_dp_am.c                        | 11 +++++
+ lib/dpctl.c                                       | 12 +++--
+ lib/dpif-netdev.c                                 |  1 +
+ lib/dpif.c                                        |  2 +
+ lib/netlink.c                                     |  3 +-
+ lib/odp-execute.c                                 |  6 ++-
+ lib/odp-util.c                                    | 10 ++++
+ ofproto/ofproto-dpif-ipfix.c                      |  4 ++
+ ofproto/ofproto-dpif-sflow.c                      |  4 ++
+ ofproto/ofproto-dpif-trace.c                      |  1 +
+ ofproto/ofproto-dpif-xlate.c                      | 59 +++++++++++++++--------
+ 15 files changed, 150 insertions(+), 27 deletions(-)
+
+diff --git a/datapath/actions.c b/datapath/actions.c
+index 146d68a6c..986234232 100644
+--- a/datapath/actions.c
++++ b/datapath/actions.c
+@@ -1118,6 +1118,11 @@ static void execute_hash(struct sk_buff *skb, struct sw_flow_key *key,
+ 	key->ovs_flow_hash = hash;
+ }
+ 
++#if IS_ENABLED(CONFIG_MCAST_HELPER)
++extern void mcast_helper_learning(struct sk_buff *skb,
++				  struct net_device *mem_dev, u8 *host_mac);
++#endif
++
+ static int execute_set_action(struct sk_buff *skb,
+ 			      struct sw_flow_key *flow_key,
+ 			      const struct nlattr *a)
+@@ -1317,6 +1322,8 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ {
+ 	const struct nlattr *a;
+ 	int rem;
++	struct vport *prev = NULL;
++
+ 
+ 	// TODO: Set correct action instead of PP_AM_SET_OUTPUT
+ 	am_skb_preprocessing(PP_AM_SET_OUTPUT, flow/*ufid*/, skb);
+@@ -1359,6 +1366,38 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			OVS_CB(skb)->cutlen = 0;
+ 			break;
+ 		}
++		
++		case OVS_ACTION_ATTR_MULTICAST_OUTPUT: {
++			struct ovs_action_mcast_output *mcast_output = nla_data(a);
++			int port = mcast_output->out_port;
++			struct sk_buff *clone;
++			struct vport *vport = ovs_vport_rcu(dp, port);
++
++			am_skb_postprocessing(PP_AM_SET_OUTPUT, flow/*ufid*/, skb);
++			mcast_helper_learning(skb, vport->dev, mcast_output->host_mac);
++			/* Every output action needs a separate clone
++			 * of 'skb', In case the output action is the
++			 * last action, cloning can be avoided.
++			 */
++			if (nla_is_last(a, rem)) {
++				if (prev != vport)
++					do_output(dp, skb, port, key);
++				else
++					kfree_skb(skb);
++				/* 'skb' has been used for output.
++				 */
++				return 0;
++			}
++			if (prev == vport)
++				break;
++
++			prev = vport;
++			clone = skb_clone(skb, GFP_ATOMIC);
++			if (clone)
++				do_output(dp, clone, port, key);
++			OVS_CB(skb)->cutlen = 0;
++			break;
++		}
+ 
+ 		case OVS_ACTION_ATTR_TRUNC: {
+ 			struct ovs_action_trunc *trunc = nla_data(a);
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 8ccc4cd59..6089ac53e 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -1111,8 +1111,9 @@ static int brc_br_port_setup(struct vport *br_vport, struct vport *vport, int ad
+ 
+ 	if (add)
+ 	{
+-		if (!br_vport)
++		if (!br_vport || !br_vport->brcompat_data)
+ 			return -EINVAL;
++		
+ 
+ 		return br_compat_bridge_port_create(br_vport->brcompat_data, vport->dev, &vport->brcompat_data);
+ 	}
+diff --git a/datapath/flow_netlink.c b/datapath/flow_netlink.c
+index 9fc1a1922..9487d7270 100644
+--- a/datapath/flow_netlink.c
++++ b/datapath/flow_netlink.c
+@@ -77,7 +77,7 @@ static bool actions_may_change_flow(const struct nlattr *actions)
+ 		case OVS_ACTION_ATTR_TRUNC:
+ 		case OVS_ACTION_ATTR_USERSPACE:
+ 			break;
+-
++		case OVS_ACTION_ATTR_MULTICAST_OUTPUT:
+ 		case OVS_ACTION_ATTR_CT:
+ 		case OVS_ACTION_ATTR_CT_CLEAR:
+ 		case OVS_ACTION_ATTR_HASH:
+@@ -2981,6 +2981,7 @@ static int __ovs_nla_copy_actions(struct net *net, const struct nlattr *attr,
+ 		/* Expected argument lengths, (u32)-1 for variable length. */
+ 		static const u32 action_lens[OVS_ACTION_ATTR_MAX + 1] = {
+ 			[OVS_ACTION_ATTR_OUTPUT] = sizeof(u32),
++			[OVS_ACTION_ATTR_MULTICAST_OUTPUT] = sizeof(struct ovs_action_mcast_output),
+ 			[OVS_ACTION_ATTR_RECIRC] = sizeof(u32),
+ 			[OVS_ACTION_ATTR_USERSPACE] = (u32)-1,
+ 			[OVS_ACTION_ATTR_PUSH_MPLS] = sizeof(struct ovs_action_push_mpls),
+@@ -3005,7 +3006,6 @@ static int __ovs_nla_copy_actions(struct net *net, const struct nlattr *attr,
+ 		const struct ovs_action_push_vlan *vlan;
+ 		int type = nla_type(a);
+ 		bool skip_copy;
+-
+ 		if (type > OVS_ACTION_ATTR_MAX ||
+ 		    (action_lens[type] != nla_len(a) &&
+ 		     action_lens[type] != (u32)-1))
+@@ -3027,6 +3027,13 @@ static int __ovs_nla_copy_actions(struct net *net, const struct nlattr *attr,
+ 				return -EINVAL;
+ 			break;
+ 
++		case OVS_ACTION_ATTR_MULTICAST_OUTPUT: {
++			struct ovs_action_mcast_output *mcast_output = nla_data(a);
++			if (mcast_output->out_port >= DP_MAX_PORTS)
++				return -EINVAL;
++
++			break;
++		}
+ 		case OVS_ACTION_ATTR_TRUNC: {
+ 			const struct ovs_action_trunc *trunc = nla_data(a);
+ 
+diff --git a/datapath/linux/compat/include/linux/openvswitch.h b/datapath/linux/compat/include/linux/openvswitch.h
+index 8f1d41424..77dadb3e5 100644
+--- a/datapath/linux/compat/include/linux/openvswitch.h
++++ b/datapath/linux/compat/include/linux/openvswitch.h
+@@ -750,6 +750,15 @@ enum ovs_userspace_attr {
+ 
+ #define OVS_USERSPACE_ATTR_MAX (__OVS_USERSPACE_ATTR_MAX - 1)
+ 
++/**
++ * struct ovs_action_mcast_output
++ * TODO. fill
++ */
++struct ovs_action_mcast_output {
++	uint32_t out_port;
++	__u8	 host_mac[ETH_ALEN];
++	__u8	unicast_to_mcast;
++};
+ struct ovs_action_trunc {
+ 	uint32_t max_len; /* Max packet size in bytes. */
+ };
+@@ -966,6 +975,7 @@ struct check_pkt_len_arg {
+  * enum ovs_action_attr - Action types.
+  *
+  * @OVS_ACTION_ATTR_OUTPUT: Output packet to port.
++ * @OVS_ACTION_ATTR_MULTICAST_OUTPUT: 
+  * @OVS_ACTION_ATTR_TRUNC: Output packet to port with truncated packet size.
+  * @OVS_ACTION_ATTR_USERSPACE: Send packet to userspace according to nested
+  * %OVS_USERSPACE_ATTR_* attributes.
+@@ -1027,6 +1037,7 @@ struct check_pkt_len_arg {
+ enum ovs_action_attr {
+ 	OVS_ACTION_ATTR_UNSPEC,
+ 	OVS_ACTION_ATTR_OUTPUT,	      /* u32 port number. */
++	OVS_ACTION_ATTR_MULTICAST_OUTPUT, /* struct ovs_action_mcast_output */
+ 	OVS_ACTION_ATTR_USERSPACE,    /* Nested OVS_USERSPACE_ATTR_*. */
+ 	OVS_ACTION_ATTR_SET,          /* One nested OVS_KEY_ATTR_*. */
+ 	OVS_ACTION_ATTR_PUSH_VLAN,    /* struct ovs_action_push_vlan. */
+diff --git a/datapath/translate_dp_am.c b/datapath/translate_dp_am.c
+index 6132fdb00..0a9454d45 100644
+--- a/datapath/translate_dp_am.c
++++ b/datapath/translate_dp_am.c
+@@ -263,6 +263,17 @@ int translate_to_egr_prop(struct datapath *dp, const struct sw_flow_actions *act
+ 			}
+ 			break;
+ 		}
++		case OVS_ACTION_ATTR_MULTICAST_OUTPUT: {
++			struct ovs_action_mcast_output *mcast_output = nla_data(a);
++			struct vport * port = ovs_vport_rcu(dp, mcast_output->out_port);
++			if (port && port->dev && session->match.egress_ports_len < PP_AM_EGRESS_PORTS_MAX) {
++				session->match.egress_ports[session->match.egress_ports_len] = port->dev->ifindex;
++				session->match.egress_ports_len++;
++			} else {
++				return -EINVAL;
++			}
++			break;
++		}
+ 		case OVS_ACTION_ATTR_PUSH_MPLS: {
+ 			const struct ovs_action_push_mpls *mpls = nla_data(a);
+ 			u32 num_labels = hweight_long(egr_key->mpls.num_labels_mask);
+diff --git a/lib/dpctl.c b/lib/dpctl.c
+index 8c9fa8a26..3ccbeb001 100644
+--- a/lib/dpctl.c
++++ b/lib/dpctl.c
+@@ -2285,8 +2285,13 @@ compare_output_actions(const void *a_, const void *b_)
+ {
+     const struct nlattr *a = a_;
+     const struct nlattr *b = b_;
+-    uint32_t a_port = nl_attr_get_u32(a);
+-    uint32_t b_port = nl_attr_get_u32(b);
++    uint32_t a_port;
++    uint32_t b_port;
++    a_port = nl_attr_type(a) == OVS_ACTION_ATTR_OUTPUT ? nl_attr_get_u32(a) : 
++        ((struct ovs_action_mcast_output *)nl_attr_get(a))->out_port;
++    b_port = nl_attr_type(b) == OVS_ACTION_ATTR_OUTPUT ? nl_attr_get_u32(b) : 
++        ((struct ovs_action_mcast_output *)nl_attr_get(b))->out_port;
++
+ 
+     return a_port < b_port ? -1 : a_port > b_port;
+ }
+@@ -2309,7 +2314,8 @@ sort_output_actions(struct nlattr *actions, size_t length)
+     int left;
+ 
+     NL_ATTR_FOR_EACH (a, left, actions, length) {
+-        if (nl_attr_type(a) == OVS_ACTION_ATTR_OUTPUT) {
++        if (nl_attr_type(a) == OVS_ACTION_ATTR_OUTPUT || 
++            nl_attr_type(a) == OVS_ACTION_ATTR_MULTICAST_OUTPUT) {
+             if (!first_output) {
+                 first_output = a;
+             }
+diff --git a/lib/dpif-netdev.c b/lib/dpif-netdev.c
+index 979350473..3a5ae5dd6 100644
+--- a/lib/dpif-netdev.c
++++ b/lib/dpif-netdev.c
+@@ -7459,6 +7459,7 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
+                             pmd->ctx.now);
+         break;
+ 
++    case OVS_ACTION_ATTR_MULTICAST_OUTPUT:
+     case OVS_ACTION_ATTR_PUSH_VLAN:
+     case OVS_ACTION_ATTR_POP_VLAN:
+     case OVS_ACTION_ATTR_PUSH_MPLS:
+diff --git a/lib/dpif.c b/lib/dpif.c
+index ea9aa293c..fed6701f3 100644
+--- a/lib/dpif.c
++++ b/lib/dpif.c
+@@ -1222,6 +1222,7 @@ dpif_execute_helper_cb(void *aux_, struct dp_packet_batch *packets_,
+         struct dp_packet *clone = NULL;
+         uint32_t cutlen = dp_packet_get_cutlen(packet);
+         if (cutlen && (type == OVS_ACTION_ATTR_OUTPUT
++                        || type == OVS_ACTION_ATTR_MULTICAST_OUTPUT
+                         || type == OVS_ACTION_ATTR_TUNNEL_PUSH
+                         || type == OVS_ACTION_ATTR_TUNNEL_POP
+                         || type == OVS_ACTION_ATTR_USERSPACE)) {
+@@ -1252,6 +1253,7 @@ dpif_execute_helper_cb(void *aux_, struct dp_packet_batch *packets_,
+         break;
+     }
+ 
++    case OVS_ACTION_ATTR_MULTICAST_OUTPUT:
+     case OVS_ACTION_ATTR_HASH:
+     case OVS_ACTION_ATTR_PUSH_VLAN:
+     case OVS_ACTION_ATTR_POP_VLAN:
+diff --git a/lib/netlink.c b/lib/netlink.c
+index de3ebcd0e..9515456d8 100644
+--- a/lib/netlink.c
++++ b/lib/netlink.c
+@@ -719,7 +719,8 @@ nl_attr_get_in6_addr(const struct nlattr *nla)
+ odp_port_t
+ nl_attr_get_odp_port(const struct nlattr *nla)
+ {
+-    return u32_to_odp(nl_attr_get_u32(nla));
++    return u32_to_odp(nl_attr_type(nla) == OVS_ACTION_ATTR_OUTPUT ? nl_attr_get_u32(nla) : 
++        ((struct ovs_action_mcast_output *)nl_attr_get(nla))->out_port);
+ }
+ 
+ /* Returns the null-terminated string value in 'nla''s payload.
+diff --git a/lib/odp-execute.c b/lib/odp-execute.c
+index 42d3335f0..bb5ebd061 100644
+--- a/lib/odp-execute.c
++++ b/lib/odp-execute.c
+@@ -800,7 +800,8 @@ requires_datapath_assistance(const struct nlattr *a)
+     case OVS_ACTION_ATTR_CT:
+     case OVS_ACTION_ATTR_METER:
+         return true;
+-
++    /* TODO understand this case*/
++    case OVS_ACTION_ATTR_MULTICAST_OUTPUT:
+     case OVS_ACTION_ATTR_SET:
+     case OVS_ACTION_ATTR_SET_MASKED:
+     case OVS_ACTION_ATTR_PUSH_VLAN:
+@@ -921,6 +922,9 @@ odp_execute_actions(void *dp, struct dp_packet_batch *batch, bool steal,
+             }
+             break;
+         }
++        case OVS_ACTION_ATTR_MULTICAST_OUTPUT:
++            // TODO support mcast to unicast feature
++            break;
+ 
+         case OVS_ACTION_ATTR_PUSH_VLAN: {
+             const struct ovs_action_push_vlan *vlan = nl_attr_get(a);
+diff --git a/lib/odp-util.c b/lib/odp-util.c
+index 746d1e97d..7283fdaab 100644
+--- a/lib/odp-util.c
++++ b/lib/odp-util.c
+@@ -119,6 +119,7 @@ odp_action_len(uint16_t type)
+ 
+     switch ((enum ovs_action_attr) type) {
+     case OVS_ACTION_ATTR_OUTPUT: return sizeof(uint32_t);
++    case OVS_ACTION_ATTR_MULTICAST_OUTPUT: return sizeof(struct ovs_action_mcast_output);
+     case OVS_ACTION_ATTR_TRUNC: return sizeof(struct ovs_action_trunc);
+     case OVS_ACTION_ATTR_TUNNEL_PUSH: return ATTR_LEN_VARIABLE;
+     case OVS_ACTION_ATTR_TUNNEL_POP: return sizeof(uint32_t);
+@@ -1122,6 +1123,15 @@ format_odp_action(struct ds *ds, const struct nlattr *a,
+     case OVS_ACTION_ATTR_OUTPUT:
+         odp_portno_name_format(portno_names, nl_attr_get_odp_port(a), ds);
+         break;
++    case OVS_ACTION_ATTR_MULTICAST_OUTPUT: {
++        const struct ovs_action_mcast_output *mcast_output = nl_attr_get(a);
++        ds_put_cstr(ds, "mcast_output(");
++        ds_put_format(ds, "dst_mac="ETH_ADDR_FMT",port=",
++                      ETH_ADDR_ARGS(mcast_output->host_mac));
++        odp_portno_name_format(portno_names, nl_attr_get_odp_port(a), ds);
++        ds_put_char(ds, ')');
++        break;
++    }
+     case OVS_ACTION_ATTR_TRUNC: {
+         const struct ovs_action_trunc *trunc =
+                        nl_attr_get_unspec(a, sizeof *trunc);
+diff --git a/ofproto/ofproto-dpif-ipfix.c b/ofproto/ofproto-dpif-ipfix.c
+index b413768ef..6efa0a537 100644
+--- a/ofproto/ofproto-dpif-ipfix.c
++++ b/ofproto/ofproto-dpif-ipfix.c
+@@ -2989,6 +2989,10 @@ dpif_ipfix_read_actions(const struct flow *flow,
+             dpif_ipfix_read_actions(flow, nl_attr_get(a), nl_attr_get_size(a),
+                                     ipfix_actions);
+             break;
++        /* TODO. check behaviour */
++        case OVS_ACTION_ATTR_MULTICAST_OUTPUT:
++            ipfix_actions->output_action = true;
++            break;
+ 
+         /* OVS_ACTION_ATTR_USERSPACE and OVS_ACTION_ATTR_RECIRC actions can
+          * yield absolutely any kind of behavior. Let's assume that flow drops
+diff --git a/ofproto/ofproto-dpif-sflow.c b/ofproto/ofproto-dpif-sflow.c
+index f9ea47a2f..e1336b238 100644
+--- a/ofproto/ofproto-dpif-sflow.c
++++ b/ofproto/ofproto-dpif-sflow.c
+@@ -1135,6 +1135,10 @@ dpif_sflow_read_actions(const struct flow *flow,
+             sflow_actions->out_port = nl_attr_get_odp_port(a);
+             break;
+ 
++        case OVS_ACTION_ATTR_MULTICAST_OUTPUT:
++            sflow_actions->out_port = nl_attr_get_odp_port(a);
++            break;
++
+         case OVS_ACTION_ATTR_TUNNEL_POP:
+             /* XXX: Do not handle this for now.  It's not clear
+              * if we should start with encap_depth == 1 when we
+diff --git a/ofproto/ofproto-dpif-trace.c b/ofproto/ofproto-dpif-trace.c
+index 8ae8a221a..26ddb5694 100644
+--- a/ofproto/ofproto-dpif-trace.c
++++ b/ofproto/ofproto-dpif-trace.c
+@@ -595,6 +595,7 @@ prune_output_actions(const struct ofpbuf *in, struct ofpbuf *out)
+             prune_output_actions(&in_nested, out);
+             nl_msg_end_nested(out, ofs);
+         } else if (a->nla_type != OVS_ACTION_ATTR_OUTPUT &&
++                   a->nla_type != OVS_ACTION_ATTR_MULTICAST_OUTPUT &&
+                    a->nla_type != OVS_ACTION_ATTR_RECIRC) {
+             ofpbuf_put(out, a, NLA_ALIGN(a->nla_len));
+         }
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 84592887e..e2df0942d 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -269,6 +269,7 @@ struct xlate_ctx {
+     bool exit;                  /* No further actions should be processed. */
+     mirror_mask_t mirrors;      /* Bitmap of associated mirrors. */
+     int mirror_snaplen;         /* Max size of a mirror packet in byte. */
++    struct eth_addr *mcast_host_mac;
+ 
+    /* Freezing Translation
+     * ====================
+@@ -564,7 +565,7 @@ static void xvlan_output_translate(const struct xbundle *,
+                                    const struct xvlan *xvlan,
+                                    struct xvlan *out);
+ static void output_normal(struct xlate_ctx *, const struct xbundle *,
+-                          const struct xvlan *);
++                          const struct xvlan *, struct mcast_group_bundle *);
+ 
+ /* Optional bond recirculation parameter to compose_output_action(). */
+ struct xlate_bond_recirc {
+@@ -2130,7 +2131,7 @@ mirror_packet(struct xlate_ctx *ctx, struct xbundle *xbundle,
+         if (out) {
+             struct xbundle *out_xbundle = xbundle_lookup(ctx->xcfg, out);
+             if (out_xbundle) {
+-                output_normal(ctx, out_xbundle, &xvlan);
++                output_normal(ctx, out_xbundle, &xvlan, NULL);
+             }
+         } else if (xvlan.v[0].vid != out_vlan
+                    && !eth_addr_is_reserved(ctx->xin->flow.dl_dst)) {
+@@ -2141,7 +2142,7 @@ mirror_packet(struct xlate_ctx *ctx, struct xbundle *xbundle,
+             LIST_FOR_EACH (xb, list_node, &xbridge->xbundles) {
+                 if (xbundle_includes_vlan(xb, &xvlan)
+                     && !xbundle_mirror_out(xbridge, xb)) {
+-                    output_normal(ctx, xb, &xvlan);
++                    output_normal(ctx, xb, &xvlan, NULL);
+                 }
+             }
+             xvlan.v[0].vid = old_vid;
+@@ -2389,7 +2390,7 @@ check_and_set_cvlan_mask(struct flow_wildcards *wc,
+ 
+ static void
+ output_normal(struct xlate_ctx *ctx, const struct xbundle *out_xbundle,
+-              const struct xvlan *xvlan)
++              const struct xvlan *xvlan, struct mcast_group_bundle *mg_bundle)
+ {
+     uint16_t vid;
+     union flow_vlan_hdr old_vlans[FLOW_MAX_VLAN_HEADERS];
+@@ -2463,10 +2464,14 @@ output_normal(struct xlate_ctx *ctx, const struct xbundle *out_xbundle,
+ 
+     memcpy(&old_vlans, &ctx->xin->flow.vlans, sizeof(old_vlans));
+     xvlan_put(&ctx->xin->flow, &out_xvlan, out_xbundle->use_priority_tags);
++    if(mg_bundle) {
++        ctx->mcast_host_mac = &mg_bundle->mac;
++    }
+ 
+     compose_output_action(ctx, xport->ofp_port, use_recirc ? &xr : NULL,
+                           false, false);
+     memcpy(&ctx->xin->flow.vlans, &old_vlans, sizeof(old_vlans));
++    ctx->mcast_host_mac = NULL;
+ }
+ 
+ /* A VM broadcasts a gratuitous ARP to indicate that it has resumed after
+@@ -2757,9 +2762,14 @@ update_mcast_snooping_table(const struct xlate_ctx *ctx,
+  * doing an output, if it goes to a patch port, can eventually come back to the
+  * same mcast_snooping and attempt to take the write lock (see
+  * https://github.com/openvswitch/ovs-issues/issues/153). */
++
++ struct mcast_group_xbundle {
++     struct mcast_group_bundle *mg_bundle;
++     struct xbundle *bundle;
++ };
+ struct mcast_output {
+     /* Discrete ports. */
+-    struct xbundle **xbundles;
++    struct mcast_group_xbundle *xbundles;
+     size_t n, allocated;
+ 
+     /* If set, flood to all ports. */
+@@ -2769,13 +2779,14 @@ struct mcast_output {
+ 
+ /* Add 'mcast_bundle' to 'out'. */
+ static void
+-mcast_output_add(struct mcast_output *out, struct xbundle *mcast_xbundle)
++mcast_output_add(struct mcast_output *out, struct xbundle *mcast_xbundle, struct mcast_group_bundle *mg_bundle)
+ {
+     if (out->n >= out->allocated) {
+         out->xbundles = x2nrealloc(out->xbundles, &out->allocated,
+                                    sizeof *out->xbundles);
+     }
+-    out->xbundles[out->n++] = mcast_xbundle;
++    out->xbundles[out->n].bundle = mcast_xbundle;
++    out->xbundles[out->n++].mg_bundle = mg_bundle;
+ }
+ 
+ /* Outputs the packet in 'ctx' to all of the output ports in 'out', given input
+@@ -2789,7 +2800,7 @@ mcast_output_finish(struct xlate_ctx *ctx, struct mcast_output *out,
+         xlate_normal_flood(ctx, in_xbundle, xvlan);
+     } else {
+         for (size_t i = 0; i < out->n; i++) {
+-            output_normal(ctx, out->xbundles[i], xvlan);
++            output_normal(ctx, out->xbundles[i].bundle, xvlan, out->xbundles[i].mg_bundle);
+         }
+     }
+ 
+@@ -2813,7 +2824,7 @@ mcast_xlate_query_external_handler(struct xlate_ctx *ctx,
+                 {
+                     VLOG_INFO("forwarding query to mcast group port");
+                     xlate_report(ctx, OFT_DETAIL, "forwarding query to mcast group port");
+-                    mcast_output_add(out, mcast_xbundle);
++                    mcast_output_add(out, mcast_xbundle, NULL);
+                 } else {
+                     VLOG_INFO("query not forwarded to mrouter port");
+ 
+@@ -2922,7 +2933,7 @@ mcast_xlate_igmp_external_data_handler(struct xlate_ctx *ctx,
+         }
+         if (forward && mcast_xbundle && mcast_xbundle != in_xbundle) {
+             xlate_report(ctx, OFT_DETAIL, "forwarding to mcast group port");
+-            mcast_output_add(out, mcast_xbundle);
++            mcast_output_add(out, mcast_xbundle, NULL);
+         } else if (!forward) {
+             xlate_report(ctx, OFT_WARN,
+                          "mcast shouldn't forward to port, dropping");
+@@ -2954,7 +2965,8 @@ xlate_normal_mcast_send_group(struct xlate_ctx *ctx,
+         mcast_xbundle = xbundle_lookup(ctx->xcfg, b->port);
+         if (mcast_xbundle && mcast_xbundle != in_xbundle) {
+             xlate_report(ctx, OFT_DETAIL, "forwarding to mcast group port");
+-            mcast_output_add(out, mcast_xbundle);
++            // TODO
++            mcast_output_add(out, mcast_xbundle, b);
+         } else if (!mcast_xbundle) {
+             xlate_report(ctx, OFT_WARN,
+                          "mcast group port is unknown, dropping");
+@@ -2982,7 +2994,7 @@ xlate_normal_mcast_send_mrouters(struct xlate_ctx *ctx,
+         if (mcast_xbundle && mcast_xbundle != in_xbundle
+             && mrouter->vlan == xvlan->v[0].vid) {
+             xlate_report(ctx, OFT_DETAIL, "forwarding to mcast router port");
+-            mcast_output_add(out, mcast_xbundle);
++            mcast_output_add(out, mcast_xbundle, NULL);
+         } else if (!mcast_xbundle) {
+             xlate_report(ctx, OFT_WARN,
+                          "mcast router port is unknown, dropping");
+@@ -3011,7 +3023,7 @@ xlate_normal_mcast_send_fports(struct xlate_ctx *ctx,
+         mcast_xbundle = xbundle_lookup(ctx->xcfg, fport->port);
+         if (mcast_xbundle && mcast_xbundle != in_xbundle) {
+             xlate_report(ctx, OFT_DETAIL, "forwarding to mcast flood port");
+-            mcast_output_add(out, mcast_xbundle);
++            mcast_output_add(out, mcast_xbundle, NULL);
+         } else if (!mcast_xbundle) {
+             xlate_report(ctx, OFT_WARN,
+                          "mcast flood port is unknown, dropping");
+@@ -3040,7 +3052,7 @@ xlate_normal_mcast_send_rports(struct xlate_ctx *ctx,
+             && mcast_xbundle->ofbundle != in_xbundle->ofbundle) {
+             xlate_report(ctx, OFT_DETAIL,
+                          "forwarding report to mcast flagged port");
+-            mcast_output_add(out, mcast_xbundle);
++            mcast_output_add(out, mcast_xbundle, NULL);
+         } else if (!mcast_xbundle) {
+             xlate_report(ctx, OFT_WARN,
+                          "mcast port is unknown, dropping the report");
+@@ -3063,7 +3075,7 @@ xlate_normal_flood(struct xlate_ctx *ctx, struct xbundle *in_xbundle,
+             && xbundle_includes_vlan(xbundle, xvlan)
+             && xbundle->floodable
+             && !xbundle_mirror_out(ctx->xbridge, xbundle)) {
+-            output_normal(ctx, xbundle, xvlan);
++            output_normal(ctx, xbundle, xvlan, NULL);
+         }
+     }
+     ctx->nf_output_iface = NF_OUT_FLOOD;
+@@ -3346,7 +3358,7 @@ xlate_normal(struct xlate_ctx *ctx)
+                 && mac_xbundle->ofbundle != in_xbundle->ofbundle) {
+                 xlate_report(ctx, OFT_DETAIL, "forwarding to learned port");
+                 xin->flow_type = UNICAST_FLOW_TYPE;
+-                output_normal(ctx, mac_xbundle, &xvlan);
++                output_normal(ctx, mac_xbundle, &xvlan, NULL);
+             } else if (!mac_xbundle) {
+                 xlate_report(ctx, OFT_WARN,
+                              "learned port is unknown, dropping");
+@@ -4446,10 +4458,19 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
+                     ctx->xout->slow |= SLOW_ACTION;
+                 }
+             }
++            if (ctx->mcast_host_mac) {
++                struct ovs_action_mcast_output mcast_output;
++                mcast_output.out_port = out_port;
++                mcast_output.unicast_to_mcast = 0;
++                memcpy(&mcast_output.host_mac, ctx->mcast_host_mac, sizeof(mcast_output.host_mac));
++                nl_msg_put_unspec(ctx->odp_actions, OVS_ACTION_ATTR_MULTICAST_OUTPUT,
++                              &mcast_output, sizeof mcast_output);
+ 
+-            nl_msg_put_odp_port(ctx->odp_actions,
+-                                OVS_ACTION_ATTR_OUTPUT,
+-                                out_port);
++            } else {
++                nl_msg_put_odp_port(ctx->odp_actions,
++                                    OVS_ACTION_ATTR_OUTPUT,
++                                    out_port);
++            }
+         }
+ 
+         ctx->sflow_odp_port = odp_port;

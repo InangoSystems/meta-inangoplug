@@ -1,0 +1,229 @@
+From 52d4bb58776ce172f98d595d662a0c708cc97337 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Mon, 6 Dec 2021 14:25:47 +0200
+Subject: [PATCH] Commit Title          : Update join/leave cmd between
+ kernelspace/userspace.
+
+BugID                 : 26691
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Updated join/leave cmd between kernelspace/userspace.
+---
+ datapath/datapath.c  | 18 +++++++++++++-----
+ lib/dpif-netlink.c   | 20 ++++++++++++--------
+ lib/dpif-netlink.h   |  4 ++--
+ lib/mcast-snooping.c |  8 ++++----
+ 4 files changed, 31 insertions(+), 19 deletions(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index e384ea3a5..20d0f95be 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -2161,7 +2161,9 @@ error:
+     return -EMSGSIZE;
+ }
+ 
+-static int ovs_vport_cmd_mcast_fill_msg(struct vport* vport, struct genl_info *info, struct pp_am_multicast_event_msg *msg, struct br_ip *group)
++static int ovs_vport_cmd_mcast_fill_msg(struct vport* vport, struct genl_info *info,
++                                        struct pp_am_multicast_event_msg *msg, struct br_ip *group,
++                                        unsigned char *mac)
+ {
+     struct nlattr **a = info->attrs;
+     struct nlattr *ip_attr;
+@@ -2193,6 +2195,10 @@ static int ovs_vport_cmd_mcast_fill_msg(struct vport* vport, struct genl_info *i
+ 		group->vid = 0;
+ 	}
+ 
++	if (a[OVS_VPORT_ATTR_MAC]) {
++		memcpy(mac, nla_data(a[OVS_VPORT_ATTR_MAC]), nla_len(a[OVS_VPORT_ATTR_MAC]));
++	}
++
+     return 0;
+ }
+ 
+@@ -2205,13 +2211,14 @@ static int ovs_vport_cmd_addmcastgrp(struct sk_buff *skb, struct genl_info *info
+ 	void *mport = NULL;
+ 	struct nlattr **a = info->attrs;
+ 	struct br_ip group;
++	unsigned char mac[ETH_ALEN];
+ 
+ 	vport = lookup_vport(sock_net(skb->sk), info->userhdr, a);
+ 	if (vport == NULL){
+ 		return -1;
+ 	}
+ 
+-    err = ovs_vport_cmd_mcast_fill_msg(vport, info, &msg, &group);
++    err = ovs_vport_cmd_mcast_fill_msg(vport, info, &msg, &group, mac);
+     if (err) {
+         return err;
+     }
+@@ -2223,7 +2230,7 @@ static int ovs_vport_cmd_addmcastgrp(struct sk_buff *skb, struct genl_info *info
+ 	}
+ 
+ 	pp_am_port_event(PP_AM_MULTICAST_JOIN, &msg);
+-	return br_compat_multicast_add_group(br_mport, mport, &group);
++	return br_compat_multicast_add_group(br_mport, mport, &group, mac);
+ }
+ 
+ static int ovs_vport_cmd_delmcastgrp(struct sk_buff *skb, struct genl_info *info)
+@@ -2235,13 +2242,14 @@ static int ovs_vport_cmd_delmcastgrp(struct sk_buff *skb, struct genl_info *info
+ 	void *mport;
+ 	struct nlattr **a = info->attrs;
+ 	struct br_ip group;
++	unsigned char mac[ETH_ALEN];
+ 
+ 	vport = lookup_vport(sock_net(skb->sk), info->userhdr, a);
+ 	if (vport == NULL){
+ 		return -1;
+ 	}
+ 
+-    err = ovs_vport_cmd_mcast_fill_msg(vport, info, &msg, &group);
++    err = ovs_vport_cmd_mcast_fill_msg(vport, info, &msg, &group, mac);
+     if (err) {
+         return err;
+     }
+@@ -2253,7 +2261,7 @@ static int ovs_vport_cmd_delmcastgrp(struct sk_buff *skb, struct genl_info *info
+ 	}
+ 
+ 	pp_am_port_event(PP_AM_MULTICAST_LEAVE, &msg);
+-	br_compat_multicast_leave_group(br_mport, mport, &group);
++	br_compat_multicast_leave_group(br_mport, mport, &group, mac);
+ 	return err;
+ }
+ 
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index 9b2b0e88c..d7f84716b 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -4197,6 +4197,8 @@ dpif_netlink_vport_to_ofpbuf(const struct dpif_netlink_vport *vport,
+         }
+ 
+         nl_msg_put_u16(buf, OVS_VPORT_ATTR_VLAN, vport->vlan);
++
++        nl_msg_put_unspec(buf, OVS_VPORT_ATTR_MAC, vport->ea, sizeof(vport->ea));
+     }
+ }
+ 
+@@ -4310,7 +4312,7 @@ dpif_netlink_rtm_delneigh(int ifindex, const struct eth_addr src_mac)
+ }
+ 
+ static int
+-dpif_netlink_ipv4_send(int dp_ifindex, int ifindex, __be32 ipv4, uint16_t vlan, uint8_t cmd)
++dpif_netlink_ipv4_send(int dp_ifindex, int ifindex, __be32 ipv4, uint16_t vlan, const struct eth_addr *mac, uint8_t cmd)
+ {
+     struct dpif_netlink_vport request;
+ 
+@@ -4321,12 +4323,13 @@ dpif_netlink_ipv4_send(int dp_ifindex, int ifindex, __be32 ipv4, uint16_t vlan,
+     request.is_ipv4 = true;
+     memcpy(&request.ipv4, &ipv4, sizeof(request.ipv4));
+     request.vlan = vlan;
++    memcpy(request.ea, mac ? mac->ea : eth_addr_broadcast.ea, sizeof(request.ea));
+ 
+     return dpif_netlink_vport_transact(&request, NULL, NULL);
+ }
+ 
+ static int
+-dpif_netlink_ipv6_send(int dp_ifindex, int ifindex, __be32 *ipv6, uint16_t vlan, uint8_t cmd)
++dpif_netlink_ipv6_send(int dp_ifindex, int ifindex, __be32 *ipv6, uint16_t vlan, const struct eth_addr *mac, uint8_t cmd)
+ {
+     struct dpif_netlink_vport request;
+ 
+@@ -4337,20 +4340,21 @@ dpif_netlink_ipv6_send(int dp_ifindex, int ifindex, __be32 *ipv6, uint16_t vlan,
+     request.is_ipv4 = false;
+     memcpy(request.ipv6, ipv6, sizeof(request.ipv6));
+     request.vlan = vlan;
++    memcpy(request.ea, mac ? mac->ea : eth_addr_broadcast.ea, sizeof(request.ea));
+ 
+     return dpif_netlink_vport_transact(&request, NULL, NULL);
+ }
+ 
+ int
+-dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan)
++dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan, const struct eth_addr *mac)
+ {
+     int error;
+     struct dpif_netlink *dpif = dpif_netlink_cast(dpif_);
+ 
+     if (IN6_IS_ADDR_V4MAPPED(addr))
+-        error = dpif_netlink_ipv4_send(dpif->dp_ifindex, port_no, in6_addr_get_mapped_ipv4(addr), vlan, OVS_VPORT_CMD_ADDMCASTGRP);
++        error = dpif_netlink_ipv4_send(dpif->dp_ifindex, port_no, in6_addr_get_mapped_ipv4(addr), vlan, mac, OVS_VPORT_CMD_ADDMCASTGRP);
+     else
+-        error = dpif_netlink_ipv6_send(dpif->dp_ifindex, port_no, addr->s6_addr32, vlan, OVS_VPORT_CMD_ADDMCASTGRP);
++        error = dpif_netlink_ipv6_send(dpif->dp_ifindex, port_no, addr->s6_addr32, vlan, mac, OVS_VPORT_CMD_ADDMCASTGRP);
+ 
+     if (!error) {
+         return -1;
+@@ -4360,15 +4364,15 @@ dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, struct in6_addr *
+ }
+ 
+ int
+-dpif_netlink_rtm_del_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan)
++dpif_netlink_rtm_del_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan, const struct eth_addr *mac)
+ {
+     int error;
+     struct dpif_netlink *dpif = dpif_netlink_cast(dpif_);
+ 
+     if (IN6_IS_ADDR_V4MAPPED(addr))
+-        error = dpif_netlink_ipv4_send(dpif->dp_ifindex, port_no, in6_addr_get_mapped_ipv4(addr), vlan, OVS_VPORT_CMD_DELMCASTGRP);
++        error = dpif_netlink_ipv4_send(dpif->dp_ifindex, port_no, in6_addr_get_mapped_ipv4(addr), vlan, mac, OVS_VPORT_CMD_DELMCASTGRP);
+     else
+-        error = dpif_netlink_ipv6_send(dpif->dp_ifindex, port_no, addr->s6_addr32, vlan, OVS_VPORT_CMD_DELMCASTGRP);
++        error = dpif_netlink_ipv6_send(dpif->dp_ifindex, port_no, addr->s6_addr32, vlan, mac, OVS_VPORT_CMD_DELMCASTGRP);
+ 
+     if (!error) {
+         return -1;
+diff --git a/lib/dpif-netlink.h b/lib/dpif-netlink.h
+index e6a991974..3a9027a85 100644
+--- a/lib/dpif-netlink.h
++++ b/lib/dpif-netlink.h
+@@ -65,8 +65,8 @@ int dpif_netlink_vport_get(const char *name, struct dpif_netlink_vport *reply,
+ int dpif_netlink_rtm_newneigh(int ifindex, const struct eth_addr src_mac);
+ int dpif_netlink_rtm_delneigh(int ifindex, const struct eth_addr src_mac);
+ 
+-int dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan);
+-int dpif_netlink_rtm_del_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan);
++int dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan, const struct eth_addr *mac);
++int dpif_netlink_rtm_del_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan, const struct eth_addr *mac);
+ 
+ bool dpif_netlink_is_internal_device(const char *name);
+ 
+diff --git a/lib/mcast-snooping.c b/lib/mcast-snooping.c
+index 5f134291c..d447725c1 100644
+--- a/lib/mcast-snooping.c
++++ b/lib/mcast-snooping.c
+@@ -441,7 +441,7 @@ mcast_snooping_flush_group(struct mcast_snooping *ms, struct mcast_group *grp)
+     struct mcast_group_bundle *b;
+ 
+     LIST_FOR_EACH_POP (b, bundle_node, &grp->bundle_lru) {
+-        dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan);
++        dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan, b->mac);
+         mcast_snooping_flush_group_bundle(ms, b);
+     }
+ 
+@@ -462,7 +462,7 @@ mcast_group_delete_bundle(struct mcast_snooping *ms OVS_UNUSED,
+     LIST_FOR_EACH (b, bundle_node, &grp->bundle_lru) {
+         if (b->port == port && (mac ? eth_addr_equals(*mac, b->mac) : eth_addr_is_broadcast(b->mac))) {
+             ovs_list_remove(&b->bundle_node);
+-            dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan);
++            dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan, mac);
+             mcast_snooping_flush_group_bundle(ms, b);
+             return true;
+         }
+@@ -494,7 +494,7 @@ mcast_snooping_prune_expired(struct mcast_snooping *ms,
+             break;
+         }
+         ovs_list_remove(&b->bundle_node);
+-        dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan);
++        dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan, b->mac);
+         mcast_snooping_flush_group_bundle(ms, b);
+         expired++;
+     }
+@@ -561,7 +561,7 @@ mcast_snooping_add_group(struct mcast_snooping *ms, void *dpif, int port_no,
+     /* Mark 'grp' as recently used. */
+     ovs_list_push_back(&ms->group_lru, &grp->group_node);
+ 
+-    dpif_netlink_rtm_add_mcast_grp(dpif, port_no, addr, vlan);
++    dpif_netlink_rtm_add_mcast_grp(dpif, port_no, addr, vlan, mac);
+ 
+     return learned;
+ }

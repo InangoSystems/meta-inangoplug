@@ -1,0 +1,47 @@
+From e1a7f739eb91ffaa7e9f281c8cb026df43a94b18 Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Fri, 3 Dec 2021 20:17:35 +0500
+Subject: [PATCH] Commit Title          : mark grp as recently used if nothing
+ to remove
+
+BugID                 : 26746
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Mark group as recently used if nothing remove
+---
+ lib/mcast-snooping.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/lib/mcast-snooping.c b/lib/mcast-snooping.c
+index d637f8192..5f134291c 100644
+--- a/lib/mcast-snooping.c
++++ b/lib/mcast-snooping.c
+@@ -478,13 +478,16 @@ mcast_snooping_prune_expired(struct mcast_snooping *ms,
+     OVS_REQ_WRLOCK(ms->rwlock)
+ {
+     int expired;
++    int timeless;
+     struct mcast_group_bundle *b, *next_b;
+     time_t timenow = time_now();
+ 
+     expired = 0;
++    timeless = 0;
+     LIST_FOR_EACH_SAFE (b, next_b, bundle_node, &grp->bundle_lru) {
+         /* This list is sorted on expiration time. */
+         if (!b->expires) {
++            timeless++;
+             continue;
+         }
+         if (b->expires > timenow) {
+@@ -504,6 +507,10 @@ mcast_snooping_prune_expired(struct mcast_snooping *ms,
+     if (expired) {
+         ms->need_revalidate = true;
+         COVERAGE_ADD(mcast_snooping_expired, expired);
++    } else if (timeless) {
++        /* Mark 'grp' as recently used. */
++        ovs_list_remove(&grp->group_node);
++        ovs_list_push_back(&ms->group_lru, &grp->group_node);
+     }
+ 
+     return expired;

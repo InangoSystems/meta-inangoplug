@@ -109,5 +109,11 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0107-Commit-Title-Fix-kernel-warn-message-on-fill_slave_info-netlink-call.patch \
     file://0108-Commit-Title-Add-configuration-via-sysfs.patch \
     file://0109-Commit-Title-Fix-multicast-memleak-in-br_compat.patch \
+    file://0110-Commit-Title-During-join-leave-request-save-ethMac-address-too-bridge-port-grou.patch \
+    file://0111-Inango-n26692-new-multicast-action.patch \
+    file://0112-Commit-Title-mark-grp-as-recently-used-if-nothing-to-remove.patch \
+    file://0113-Commit-Title-Create-new-logic-for-accelerate-traffic.patch \
+    file://0114-Commit-Title-Update-join-leave-cmd-between-kernelspace-userspace.patch \
+    file://0115-Commit-Title-Acceleration-issue-multicast-traffic-in-ethwan-mode.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"
