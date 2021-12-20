@@ -1,0 +1,94 @@
+From b55afdb16e263df8010beb5932ea6abcefeb56c8 Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Tue, 14 Dec 2021 17:20:35 +0500
+Subject: [PATCH] Commit Title: Return error value for all parameter which
+ unsupported in ovs now
+
+BugID: 26876
+Bug Fixed(y/N[blankN]): n
+CodeReviewId: 0
+Description:
+- return -EOPNOTSUPP for all parameters which not support in OVS
+---
+ datapath/dp_sysfs_dp.c | 19 ++++++++++++-------
+ 1 file changed, 12 insertions(+), 7 deletions(-)
+
+diff --git a/datapath/dp_sysfs_dp.c b/datapath/dp_sysfs_dp.c
+index 75c8a0e49..2386ed9f3 100644
+--- a/datapath/dp_sysfs_dp.c
++++ b/datapath/dp_sysfs_dp.c
+@@ -68,6 +68,11 @@ static bool nf_disable_iptables_value = false;
+ /*
+  * Common code for storing bridge parameters.
+  */
++static int set_unsupported_param(struct net_device *dev, unsigned long val)
++{
++	return -EOPNOTSUPP;
++}
++
+ static ssize_t store_bridge_parm(DEVICE_PARAMS,
+ 				 const char *buf, size_t len,
+ 				 int (*set)(struct net_device *, unsigned long))
+@@ -316,7 +321,7 @@ static int show_hash_max(DEVICE_PARAMS, char *buf)
+ 
+ static ssize_t store_hash_max(DEVICE_PARAMS, const char *buf, size_t len)
+ {
+-	return 0;
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_unsupported_param);
+ }
+ 
+ static INTERNAL_DEVICE_ATTR(hash_max, S_IRUGO | S_IWUSR, show_hash_max, store_hash_max);
+@@ -435,7 +440,7 @@ static int show_multicast_querier_interval(DEVICE_PARAMS, char *buf)
+ 
+ static ssize_t store_multicast_querier_interval(DEVICE_PARAMS, const char *buf, size_t len)
+ {
+-	return 0;
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_unsupported_param);
+ }
+ 
+ static INTERNAL_DEVICE_ATTR(multicast_querier_interval, S_IRUGO | S_IWUSR, show_multicast_querier_interval, store_multicast_querier_interval);
+@@ -582,7 +587,7 @@ static int show_multicast_router(DEVICE_PARAMS, char *buf)
+ 
+ static ssize_t store_multicast_router(DEVICE_PARAMS, const char *buf, size_t len)
+ {
+-	return 0;
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_unsupported_param);
+ }
+ 
+ static INTERNAL_DEVICE_ATTR(multicast_router, S_IRUGO | S_IWUSR, show_multicast_router, store_multicast_router);
+@@ -596,7 +601,7 @@ static int show_multicast_startup_query_count(DEVICE_PARAMS, char *buf)
+ 
+ static ssize_t store_multicast_startup_query_count(DEVICE_PARAMS, const char *buf, size_t len)
+ {
+-	return 0;
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_unsupported_param);
+ }
+ 
+ static INTERNAL_DEVICE_ATTR(multicast_startup_query_count, S_IRUGO | S_IWUSR, show_multicast_startup_query_count, store_multicast_startup_query_count);
+@@ -610,7 +615,7 @@ static int show_multicast_startup_query_interval(DEVICE_PARAMS, char *buf)
+ 
+ static ssize_t store_multicast_startup_query_interval(DEVICE_PARAMS, const char *buf, size_t len)
+ {
+-	return 0;
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_unsupported_param);
+ }
+ 
+ static INTERNAL_DEVICE_ATTR(multicast_startup_query_interval, S_IRUGO | S_IWUSR, show_multicast_startup_query_interval, store_multicast_startup_query_interval);
+@@ -624,7 +629,7 @@ static int show_nf_call_iptables(DEVICE_PARAMS, char *buf)
+ 
+ static ssize_t store_nf_call_iptables(DEVICE_PARAMS, const char *buf, size_t len)
+ {
+-	return 0;
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_unsupported_param);
+ }
+ 
+ static INTERNAL_DEVICE_ATTR(nf_call_iptables, S_IRUGO | S_IWUSR, show_nf_call_iptables, store_nf_call_iptables);
+@@ -638,7 +643,7 @@ static int show_nf_call_arptables(DEVICE_PARAMS, char *buf)
+ 
+ static ssize_t store_nf_call_arptables(DEVICE_PARAMS, const char *buf, size_t len)
+ {
+-	return 0;
++	return store_bridge_parm(DEVICE_ARGS, buf, len, set_unsupported_param);
+ }
+ 
+ static INTERNAL_DEVICE_ATTR(nf_call_arptables, S_IRUGO | S_IWUSR, show_nf_call_arptables, store_nf_call_arptables);
