@@ -1,0 +1,221 @@
+From be555adf5e59ad1f310fd8674c3cae3a6f015840 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Thu, 25 Nov 2021 21:04:20 +0500
+Subject: [PATCH] Commit Title: Intercept MTU assignment and provision it to
+ openvswitch
+
+BugID: 26838
+Bug Fixed(y/N[blankN]):
+CodeReviewId: 0
+Description:
+- Made assignment of internal_dev_change_mtu() to ndo_change_mtu field of internal_dev_netdev_ops unconditional
+- Added netlink messge to deliver MTU to user space
+- Added ovs-vsctl invocation to set mtu_request for interface
+- Added br_compat_set_mtu_set_by_user() invocation to internal_dev_change_mtu() before setting mtu to dev
+---
+ datapath/brcompat_main.c               | 15 +++++++++++++++
+ datapath/datapath.c                    |  3 +++
+ datapath/datapath.h                    |  1 +
+ datapath/vport-internal_dev.c          | 28 ++++++++++++++++++++--------
+ include/openvswitch/brcompat-netlink.h |  2 ++
+ vswitchd/ovs-brcompatd.c               | 34 ++++++++++++++++++++++++++++++++++
+ 6 files changed, 75 insertions(+), 8 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 9d67b20ae..91473113b 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -863,6 +863,15 @@ brc_dev_mac_addr_put_failure:
+ 	return -ENOMEM;
+ }
+ 
++/* Called with the rtnl_lock. */
++static int brc_dev_mtu(struct net_device *dev, int mtu)
++{
++	if (!capable(CAP_NET_ADMIN))
++		return -EPERM;
++
++	return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_MTU, mtu);
++}
++
+ /* Called with the rtnl_lock. */
+ static int brc_dev_sysfs(struct net_device *dev, unsigned long *ul_value, int cmd, int oper)
+ {
+@@ -1457,6 +1466,9 @@ static int __init brc_init(void)
+ 	/* Set the openvswitch device mac address assignment handler */
+ 	ovs_dp_mac_addr_hook = brc_dev_mac_addr;
+ 
++	/* Set the openvswitch device mtu assignment handler */
++	ovs_dp_mtu_hook = brc_dev_mtu;
++
+ 	/* Set the openvswitch device add/del port handler */
+ 	ovs_dp_add_del_port_hook = brc_add_del_port_dev;
+ 
+@@ -1545,6 +1557,9 @@ static void brc_cleanup(void)
+ 	/* Unregister mac address hooks */
+ 	ovs_dp_mac_addr_hook = NULL;
+ 
++	/* Unregister mtu hooks */
++	ovs_dp_mtu_hook = NULL;
++
+ 	/* Unregister add/del port hooks */
+ 	ovs_dp_add_del_port_hook = NULL;
+ 
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 48cfcfa77..ef3beb264 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -79,6 +79,9 @@ EXPORT_SYMBOL(ovs_dp_ioctl_hook);
+ int (*ovs_dp_mac_addr_hook)(struct net_device *dev, void *p);
+ EXPORT_SYMBOL(ovs_dp_mac_addr_hook);
+ 
++int (*ovs_dp_mtu_hook)(struct net_device *dev, int mtu);
++EXPORT_SYMBOL(ovs_dp_mtu_hook);
++
+ int (*ovs_dp_add_del_port_hook)(struct net_device *br_dev, struct net_device *p_dev, int add);
+ EXPORT_SYMBOL(ovs_dp_add_del_port_hook);
+ 
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index 978350d3b..b831d164f 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -269,6 +269,7 @@ extern struct genl_family dp_vport_genl_family;
+ extern const struct genl_multicast_group ovs_dp_vport_multicast_group;
+ extern int (*ovs_dp_ioctl_hook)(struct net_device *dev, struct ifreq *rq, int cmd);
+ extern int (*ovs_dp_mac_addr_hook)(struct net_device *dev, void *p);
++extern int (*ovs_dp_mtu_hook)(struct net_device *dev, int mtu);
+ extern int (*ovs_dp_add_del_port_hook)(struct net_device *br_dev, struct net_device *p_dev, int add);
+ extern int (*ovs_dp_br_changelink_hook)(struct vport *vport, struct nlattr *tb[], struct nlattr *data[]);
+ extern int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[]);
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index 99a28a4df..6a4d323d6 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -103,9 +103,13 @@ static const struct ethtool_ops internal_dev_ethtool_ops = {
+ 	.get_link	= ethtool_op_get_link,
+ };
+ 
+-#if	!defined(HAVE_NET_DEVICE_WITH_MAX_MTU) && !defined(HAVE_RHEL7_MAX_MTU)
+ static int internal_dev_change_mtu(struct net_device *dev, int new_mtu)
+ {
++	const uint32_t flags_mask = OVS_VPORT_FLAG_SET_MTU_BY_USER | OVS_VPORT_FLAG_SET_MTU_AUTO;
++	uint32_t old_flags;
++	struct vport *vport;
++	int ret;
++
+ 	if (new_mtu < ETH_MIN_MTU) {
+ 		net_err_ratelimited("%s: Invalid MTU %d requested, hw min %d\n",
+ 				    dev->name, new_mtu, ETH_MIN_MTU);
+@@ -118,15 +122,25 @@ static int internal_dev_change_mtu(struct net_device *dev, int new_mtu)
+ 		return -EINVAL;
+ 	}
+ 
+-	/* TODO: check flags 
+-	 * struct vport *vport = ovs_internal_dev_get_vport(dev);
+-	 * if (vport->flags) {}
+-	 */
++	if (ovs_dp_mtu_hook) {
++		vport = ovs_internal_dev_get_vport(dev);
++		old_flags = del_vport_flags(vport, flags_mask);
++		if (0 == (old_flags & flags_mask)) {
++			ret = ovs_dp_mtu_hook(dev, new_mtu);
++			if (ret < 0) {
++				printk(KERN_WARNING "internal_dev_change_mtu(dev=\"%s\", mtu=%d): error: ovs_dp_mtu_hook() -> %d\n", dev->name, new_mtu, ret);
++				return ret;
++			}
++
++			return 0;
++		}
++	}
++
++	br_compat_set_mtu_set_by_user(dev, (old_flags & OVS_VPORT_FLAG_SET_MTU_BY_USER) ? 1 : 0);
+ 
+ 	dev->mtu = new_mtu;
+ 	return 0;
+ }
+-#endif
+ 
+ static int internal_dev_do_ioctl(struct net_device *dev,
+ 				 struct ifreq *ifr, int cmd)
+@@ -250,9 +264,7 @@ static const struct net_device_ops internal_dev_netdev_ops = {
+ 	.ndo_start_xmit = internal_dev_xmit,
+ 	.ndo_do_ioctl = internal_dev_do_ioctl,
+ 	.ndo_set_mac_address = internal_eth_mac_addr,
+-#if	!defined(HAVE_NET_DEVICE_WITH_MAX_MTU) && !defined(HAVE_RHEL7_MAX_MTU)
+ 	.ndo_change_mtu = internal_dev_change_mtu,
+-#endif
+ 	.ndo_get_stats64 = (void *)internal_get_stats,
+ 	.ndo_add_slave = internal_add_slave,
+ 	.ndo_del_slave = internal_del_slave,
+diff --git a/include/openvswitch/brcompat-netlink.h b/include/openvswitch/brcompat-netlink.h
+index 54a4213fe..ebc8eaa46 100644
+--- a/include/openvswitch/brcompat-netlink.h
++++ b/include/openvswitch/brcompat-netlink.h
+@@ -92,6 +92,7 @@ enum {
+     BRC_GENL_A_MG_SADDR,
+ 
+     BRC_GENL_A_MAC_ADDR,
++    BRC_GENL_A_MTU,
+ 
+     BRC_GENL_A_PAD,
+     __BRC_GENL_A_MAX,
+@@ -141,6 +142,7 @@ enum brc_genl_command {
+     BRC_GENL_C_GET_BRIDGE_BY_PORT, /* K: Get bridge name by port. */
+     BRC_GENL_C_GET_BRIDGE_EXISTS, /* K: Check that bridge exists. */
+     BRC_GENL_C_SET_MAC_ADDR, /* K: Set MAC address. */
++    BRC_GENL_C_SET_MTU, /* K: Set MTU. */
+     BRC_GENL_C_SET_PORT_MC_SNOOPING_FLOOD_REPORTS, /* K: Set the port multicast snooping flood reports */
+ 
+     __BRC_GENL_C_MAX,
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 7053ac779..e9890c5f7 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -1136,6 +1136,36 @@ handle_set_ulong_val_port_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+     return error;
+ }
+ 
++static int
++handle_set_ulong_val_interface_cmd(struct ofpbuf *buffer, const char *sub_cmd)
++{
++    const char *pr_name;
++    const char *str_key_value;
++    const char *str_param;
++    uint64_t param;
++    uint32_t seq;
++    int error;
++
++    error = parse_command(buffer, &seq, &pr_name, NULL, NULL, NULL, &param);
++
++    if (!error) {
++        str_key_value = xasprintf("%s=%llu", sub_cmd, param);
++        str_param     = xasprintf("%llu", param);
++
++        if (!run_vsctl(vsctl_program, VSCTL_OPTIONS,
++                       "--", "set", "Interface", pr_name, str_key_value,
++                       "--", "comment", "ovs-brcompatd:", sub_cmd,
++                       pr_name, str_param, (char *) NULL)) {
++            error = EINVAL;
++        }
++        send_simple_reply(seq, error);
++
++        free(str_key_value);
++        free(str_param);
++    }
++    return error;
++}
++
+ static int
+ handle_set_boolean_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+ {
+@@ -1673,6 +1703,10 @@ brc_recv_update(void)
+     case BRC_GENL_C_SET_PORT_MC_SNOOPING_FLOOD_REPORTS:
+         handle_set_boolean_val_port_cmd(&buffer, "other-config:mcast-snooping-flood-reports");
+         break;
++
++    case BRC_GENL_C_SET_MTU:
++        handle_set_ulong_val_interface_cmd(&buffer, "mtu_request");
++        break;
+     /* } seamless-ovs */
+ 
+     default:

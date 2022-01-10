@@ -1,0 +1,72 @@
+From 04585799190667fd0ba93afe98a42f9c7aaaecea Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Tue, 14 Dec 2021 15:48:50 +0200
+Subject: [PATCH] Commit Title          : Create getter and setter for
+ mtu_set_by_user field
+
+BugID                 : 26732
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+* Added an exported function which can get mtu_set_by_user parameter from struct net_device from Open vSwitch
+* Added an exported function which can set mtu_set_by_user parameter to struct net_device from Open vSwitch
+---
+ datapath/brcompat_main.c      | 18 ++++++++++++++++++
+ datapath/vport-internal_dev.c |  1 +
+ 2 files changed, 19 insertions(+)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 6089ac53e..9d67b20ae 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -1279,6 +1279,18 @@ static int brc_br_port_fill_slave_info(struct vport *vport, struct sk_buff *skb,
+ 	return 0;
+ }
+ 
++static void *brc_br_get_bridge(struct net_device *dev)
++{
++	struct vport *vport;
++
++	vport = ovs_internal_dev_get_vport(dev);
++
++	if (vport && vport->brcompat_data)
++		return vport->brcompat_data;
++
++	return NULL;
++}
++
+ static bool check_bridge_list(const char *name)
+ {
+ 	int i;
+@@ -1469,6 +1481,9 @@ static int __init brc_init(void)
+ 	/* Set the openvswitch br_setlink handler */
+ 	ovs_dp_br_setlink_hook = brc_br_setlink;
+ 
++	/* Set the br_compat br_get_mtu_set_by_user handler */
++	br_compat_get_bridge_hook = brc_br_get_bridge;
++
+ 	/* Set the openvswitch device sysfs handler */
+ 	ovs_dp_sysfs_hook = brc_dev_sysfs;
+ 	ovs_dp_sysfs_string_hook = brc_dev_sysfs_string;
+@@ -1557,6 +1572,9 @@ static void brc_cleanup(void)
+ 	/* Unregister get_rtnl_link_ops hooks */
+ 	ovs_dp_get_rtnl_link_ops_hook = NULL;
+ 
++	/* Unregister get_mtu_set_by_user hooks */
++	br_compat_get_bridge_hook = NULL;
++
+ 	/* Unregister brc_get_fdb_entries */
+ 	ovs_get_fdb_entries = NULL;
+ 
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index 74987c5f0..ee5895d3a 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -483,6 +483,7 @@ struct vport *ovs_internal_dev_get_vport(struct net_device *netdev)
+ 
+ 	return internal_dev_priv(netdev)->vport;
+ }
++EXPORT_SYMBOL(ovs_internal_dev_get_vport);
+ 
+ int ovs_internal_dev_rtnl_link_register(void)
+ {

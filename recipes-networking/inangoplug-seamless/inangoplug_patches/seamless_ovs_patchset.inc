@@ -116,5 +116,11 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0114-Commit-Title-Update-join-leave-cmd-between-kernelspace-userspace.patch \
     file://0115-Commit-Title-Acceleration-issue-multicast-traffic-in-ethwan-mode.patch \
     file://0116-Commit-Title-Return-error-value-for-all-parameter-which-unsupported-in-ovs-now.patch \
+    file://0117-Commit-Title-Bug-with-multicast-group-deletion.patch \
+    file://0118-Commit-Title-Create-getter-and-setter-for-mtu_set_by_user-field.patch \
+    file://0119-Commit-Title-Add-MTU-change-related-flags-to-vport-kernel-space.patch \
+    file://0120-Commit-Title-Implement-setting-of-MTU-using-mtu_request-user-space.patch \
+    file://0121-Commit-Title-Intercept-MTU-assignment-and-provision-it-to-openvswitch.patch \
+    file://0122-Integrate-support-for-DISH-service-in-master.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

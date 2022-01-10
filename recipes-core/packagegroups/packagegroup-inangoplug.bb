@@ -23,4 +23,5 @@ RDEPENDS_${PN}_append_puma7 = " \
     inangoplug-pp-acceleration-mod \
     ${@bb.utils.contains('DISTRO_FEATURES', 'systemd', 'inangoplug-rsc-init-atom-systemd', '', d)} \
     inangoplug-mngm \
+    ${@bb.utils.contains('DISTRO_FEATURES', 'inangoplug_linux_bpf', 'iproute2-tc', '', d)} \
 "

@@ -1,0 +1,248 @@
+From e210f51b1315c010d0f25411b594ff9175c04dfb Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Mon, 13 Dec 2021 12:58:04 +0500
+Subject: [PATCH] Commit Title: Add MTU change related flags to vport (kernel
+ space)
+
+BugID: 26836
+Bug Fixed(y/N[blankN]):
+CodeReviewId: 0
+Description:
+- Added flags support to vport struct
+- Added netlink handler to set vport flags
+---
+ datapath/datapath.c                               | 79 +++++++++++++++++++++++
+ datapath/datapath.h                               |  3 +
+ datapath/linux/compat/include/linux/openvswitch.h |  9 ++-
+ datapath/vport-internal_dev.c                     |  5 ++
+ datapath/vport.h                                  |  2 +
+ lib/dpif-netlink.c                                |  6 ++
+ lib/dpif-netlink.h                                |  3 +
+ 7 files changed, 106 insertions(+), 1 deletion(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 20d0f95be..48cfcfa77 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -2265,6 +2265,68 @@ static int ovs_vport_cmd_delmcastgrp(struct sk_buff *skb, struct genl_info *info
+ 	return err;
+ }
+ 
++uint32_t set_vport_flags(struct vport *vport, uint32_t flags) {
++	uint32_t old_flags;
++	ovs_lock();
++	old_flags = vport->flags;
++	vport->flags |= flags;
++	ovs_unlock();
++	return old_flags;
++}
++
++uint32_t del_vport_flags(struct vport *vport, uint32_t flags) {
++	uint32_t old_flags;
++	ovs_lock();
++	old_flags = vport->flags;
++	vport->flags &= ~flags;
++	ovs_unlock();
++	return old_flags;
++}
++
++static int ovs_vport_cmd_set_flags(struct sk_buff *skb, struct genl_info *info)
++{
++	struct vport *vport;
++	struct nlattr **a = info->attrs;
++	uint32_t flags;
++
++	vport = lookup_vport(sock_net(skb->sk), info->userhdr, a);
++	if (vport == NULL){
++		return -1;
++	}
++
++	if (a[OVS_VPORT_ATTR_FLAGS]) {
++		flags = nla_get_u32(a[OVS_VPORT_ATTR_FLAGS]);
++	} else {
++		flags = 0;
++	}
++
++	set_vport_flags(vport, flags);
++
++	return 0;
++}
++
++static int ovs_vport_cmd_del_flags(struct sk_buff *skb, struct genl_info *info)
++{
++	struct vport *vport;
++	struct nlattr **a = info->attrs;
++	uint32_t flags;
++
++	vport = lookup_vport(sock_net(skb->sk), info->userhdr, a);
++	if (vport == NULL){
++		return -1;
++	}
++
++	if (a[OVS_VPORT_ATTR_FLAGS]) {
++		flags = nla_get_u32(a[OVS_VPORT_ATTR_FLAGS]);
++	} else {
++		flags = 0;
++	}
++
++	del_vport_flags(vport, flags);
++
++	return 0;
++}
++
+ static const struct nla_policy datapath_policy[OVS_DP_ATTR_MAX + 1] = {
+ 	[OVS_DP_ATTR_NAME] = { .type = NLA_NUL_STRING, .len = IFNAMSIZ - 1 },
+ 	[OVS_DP_ATTR_UPCALL_PID] = { .type = NLA_U32 },
+@@ -2840,6 +2902,7 @@ static const struct nla_policy vport_policy[OVS_VPORT_ATTR_MAX + 1] = {
+ 	[OVS_VPORT_ATTR_IPV4] = { .type = NLA_UNSPEC },
+ 	[OVS_VPORT_ATTR_IPV6] = { .type = NLA_UNSPEC },
+ 	[OVS_VPORT_ATTR_VLAN] = { .type = NLA_U16 },
++	[OVS_VPORT_ATTR_FLAGS] = { .type = NLA_U32 },
+ };
+ 
+ static const struct genl_ops dp_vport_genl_ops[] = {
+@@ -2908,6 +2971,22 @@ static const struct genl_ops dp_vport_genl_ops[] = {
+ 	  .policy = vport_policy,
+ 	  .doit = ovs_vport_cmd_delmcastgrp,
+ 	},
++	{ .cmd = OVS_VPORT_CMD_SET_FLAGS,
++#ifdef HAVE_GENL_VALIDATE_FLAGS
++	  .validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
++#endif
++	  .flags = 0,		    /* OK for unprivileged users. */
++	  .policy = vport_policy,
++	  .doit = ovs_vport_cmd_set_flags,
++	},
++	{ .cmd = OVS_VPORT_CMD_DEL_FLAGS,
++#ifdef HAVE_GENL_VALIDATE_FLAGS
++	  .validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
++#endif
++	  .flags = 0,		    /* OK for unprivileged users. */
++	  .policy = vport_policy,
++	  .doit = ovs_vport_cmd_del_flags,
++	},
+ };
+ 
+ struct genl_family dp_vport_genl_family __ro_after_init = {
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index 7f033e7dd..978350d3b 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -301,6 +301,9 @@ void ovs_dp_notify_wq(struct work_struct *work);
+ int action_fifos_init(void);
+ void action_fifos_exit(void);
+ 
++uint32_t set_vport_flags(struct vport *vport, uint32_t flags);
++uint32_t del_vport_flags(struct vport *vport, uint32_t flags);
++
+ /* 'KEY' must not have any bits set outside of the 'MASK' */
+ #define OVS_MASKED(OLD, KEY, MASK) ((KEY) | ((OLD) & ~(MASK)))
+ #define OVS_SET_MASKED(OLD, KEY, MASK) ((OLD) = OVS_MASKED(OLD, KEY, MASK))
+diff --git a/datapath/linux/compat/include/linux/openvswitch.h b/datapath/linux/compat/include/linux/openvswitch.h
+index 77dadb3e5..d07e723f1 100644
+--- a/datapath/linux/compat/include/linux/openvswitch.h
++++ b/datapath/linux/compat/include/linux/openvswitch.h
+@@ -239,7 +239,9 @@ enum ovs_vport_cmd {
+ 	OVS_VPORT_CMD_NEWNEIGH,
+ 	OVS_VPORT_CMD_DELNEIGH,
+ 	OVS_VPORT_CMD_ADDMCASTGRP,
+-	OVS_VPORT_CMD_DELMCASTGRP
++	OVS_VPORT_CMD_DELMCASTGRP,
++	OVS_VPORT_CMD_SET_FLAGS,
++	OVS_VPORT_CMD_DEL_FLAGS
+ };
+ 
+ enum ovs_vport_type {
+@@ -301,6 +303,7 @@ enum ovs_vport_attr {
+ 	OVS_VPORT_ATTR_IPV4,    /* IPv4 address */
+ 	OVS_VPORT_ATTR_IPV6,    /* IPv6 address */
+ 	OVS_VPORT_ATTR_VLAN,    /* VLAN tag */
++	OVS_VPORT_ATTR_FLAGS,   /* operational flags */
+ 				/* receiving upcalls */
+ 	OVS_VPORT_ATTR_STATS,	/* struct ovs_vport_stats */
+ 	OVS_VPORT_ATTR_PAD,
+@@ -463,6 +466,10 @@ enum ovs_frag_type {
+ 
+ #define OVS_FRAG_TYPE_MAX (__OVS_FRAG_TYPE_MAX - 1)
+ 
++/* vport operational flags */
++#define	OVS_VPORT_FLAG_SET_MTU_BY_USER  (0x01u)
++#define	OVS_VPORT_FLAG_SET_MTU_AUTO     (0x02u)
++
+ struct ovs_key_ethernet {
+ 	__u8	 eth_src[ETH_ALEN];
+ 	__u8	 eth_dst[ETH_ALEN];
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index ee5895d3a..99a28a4df 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -118,6 +118,11 @@ static int internal_dev_change_mtu(struct net_device *dev, int new_mtu)
+ 		return -EINVAL;
+ 	}
+ 
++	/* TODO: check flags 
++	 * struct vport *vport = ovs_internal_dev_get_vport(dev);
++	 * if (vport->flags) {}
++	 */
++
+ 	dev->mtu = new_mtu;
+ 	return 0;
+ }
+diff --git a/datapath/vport.h b/datapath/vport.h
+index ce0e8a216..35867e406 100644
+--- a/datapath/vport.h
++++ b/datapath/vport.h
+@@ -82,6 +82,7 @@ struct vport_portids {
+  * @type: serves for storing information about vport type. OVS_VPORT_TYPE_INTERNAL and so on.
+  * @upcall_portids: RCU protected 'struct vport_portids'.
+  * @port_no: Index into @dp's @ports array.
++ * @flags: Operational flags.
+  * @hash_node: Element in @dev_table hash table in vport.c.
+  * @dp_hash_node: Element in @datapath->ports hash table in datapath.c.
+  * @ops: Class structure.
+@@ -97,6 +98,7 @@ struct vport {
+ 	char linkname[IFNAMSIZ];
+ 	struct vport_portids __rcu *upcall_portids;
+ 	u16 port_no;
++	u32 flags;
+ 
+ 	struct hlist_node hash_node;
+ 	struct hlist_node dp_hash_node;
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index d7f84716b..7d8729cb7 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -4073,6 +4073,12 @@ dpif_netlink_is_internal_device(const char *name)
+     return reply.type == OVS_VPORT_TYPE_INTERNAL;
+ }
+ 
++int dpif_netlink_vport_set_flags(const char *name, uint32_t flags) {
++    (void)name;
++    (void)flags;
++
++    return 0;
++}
+ /* Parses the contents of 'buf', which contains a "struct ovs_header" followed
+  * by Netlink attributes, into 'vport'.  Returns 0 if successful, otherwise a
+  * positive errno value.
+diff --git a/lib/dpif-netlink.h b/lib/dpif-netlink.h
+index 3a9027a85..053f7f0d7 100644
+--- a/lib/dpif-netlink.h
++++ b/lib/dpif-netlink.h
+@@ -46,6 +46,7 @@ struct dpif_netlink_vport {
+     const uint32_t *upcall_pids;           /* OVS_VPORT_ATTR_UPCALL_PID. */
+     const struct ovs_vport_stats *stats;   /* OVS_VPORT_ATTR_STATS. */
+     const struct nlattr *options;          /* OVS_VPORT_ATTR_OPTIONS. */
++    uint32_t flags;                        /* OVS_VPORT_ATTR_FLAGS. */
+     uint8_t ea[6];                         /* OVS_VPORT_ATTR_MAC. */
+     bool is_ipv4;
+     __be32 ipv4;                           /* OVS_VPORT_ATTR_IPV4. */
+@@ -70,6 +71,8 @@ int dpif_netlink_rtm_del_mcast_grp(const void *dpif_, int port_no, struct in6_ad
+ 
+ bool dpif_netlink_is_internal_device(const char *name);
+ 
++int dpif_netlink_vport_set_flags(const char *name, uint32_t flags);
++
+ enum ovs_vport_type netdev_to_ovs_vport_type(const char *type);
+ 
+ #endif /* dpif-netlink.h */

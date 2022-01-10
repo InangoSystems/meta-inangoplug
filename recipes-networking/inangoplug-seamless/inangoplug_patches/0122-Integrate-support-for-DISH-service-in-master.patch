@@ -1,0 +1,756 @@
+From 22747a7fd95455ac7c5428227437c7844fa75437 Mon Sep 17 00:00:00 2001
+From: Georgii Okhokhonin <g.okhokhonin@inango-systems.com>
+Date: Mon, 10 Jan 2022 15:44:52 +0200
+Subject: [PATCH] Integrate support for DISH service in master
+
+---
+ build-aux/extract-ofp-actions                     |   3 +-
+ datapath/actions.c                                |  32 +++
+ datapath/flow_netlink.c                           |  11 +
+ datapath/linux/compat/include/linux/openvswitch.h |  12 +
+ include/openflow/openflow-common.h                |   1 +
+ include/openvswitch/ofp-actions.h                 |  25 +++
+ lib/dpif-netdev.c                                 |   5 +
+ lib/dpif.c                                        |   4 +
+ lib/odp-execute.c                                 |   9 +
+ lib/odp-util.c                                    |  32 +++
+ lib/ofp-actions.c                                 | 256 +++++++++++++++++++++-
+ ofproto/ofproto-dpif-ipfix.c                      |   5 +
+ ofproto/ofproto-dpif-sflow.c                      |   5 +
+ ofproto/ofproto-dpif-xlate.c                      |  47 ++++
+ 14 files changed, 445 insertions(+), 2 deletions(-)
+
+diff --git a/build-aux/extract-ofp-actions b/build-aux/extract-ofp-actions
+index 2d1dbe709..9cf59a996 100755
+--- a/build-aux/extract-ofp-actions
++++ b/build-aux/extract-ofp-actions
+@@ -21,7 +21,8 @@ version_reverse_map = dict((v, k) for (k, v) in version_map.items())
+ # Map from vendor name to the length of the action header.
+ vendor_map = {"OF": (0x00000000,  4),
+               "ONF": (0x4f4e4600, 10),
+-              "NX": (0x00002320, 10)}
++              "NX": (0x00002320, 10),
++              "INANGO": (0x00002b2a, 10)}
+ 
+ # Basic types used in action arguments.
+ types = {}
+diff --git a/datapath/actions.c b/datapath/actions.c
+index ef6e95bbe..3f36db115 100644
+--- a/datapath/actions.c
++++ b/datapath/actions.c
+@@ -1303,6 +1303,18 @@ static bool should_skip(const struct sw_flow_key *key,
+ 			case OVS_ACTION_ATTR_USERSPACE:
+ 				return true;
+ 				break;
++			case OVS_ACTION_ATTR_SKIP_ACC: {
++				struct ovs_flow_stats stats;
++				__be16 tcp_flags;
++				unsigned long used;
++				struct ovs_action_skip_acc * skip_acc;
++				skip_acc = nla_data(a);
++				ovs_flow_stats_get(flow, &stats, &used, &tcp_flags);
++				if (stats.n_packets < skip_acc->number_of_packets-1) {
++					return true;
++				}
++				break;
++			}
+ 		}
+ 	}
+ 
+@@ -1403,6 +1415,26 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
+ 			break;
+ 		}
+ 
++		case OVS_ACTION_ATTR_SET_OF_MARK1: {
++#ifdef CONFIG_TI_PACKET_PROCESSOR
++			struct ovs_action_set_of_mark *of_mark = nla_data(a);
++			SKB_GET_PP_INFO_P(skb)->pp_session.of_mark1 =
++				(SKB_GET_PP_INFO_P(skb)->pp_session.of_mark1 & ~of_mark->mask) |
++				(of_mark->value & of_mark->mask);
++#endif
++			break;
++		}
++
++		case OVS_ACTION_ATTR_SET_OF_MARK2: {
++#ifdef CONFIG_TI_PACKET_PROCESSOR
++			struct ovs_action_set_of_mark *of_mark = nla_data(a);
++			SKB_GET_PP_INFO_P(skb)->pp_session.of_mark2 =
++				(SKB_GET_PP_INFO_P(skb)->pp_session.of_mark2 & ~of_mark->mask) |
++				(of_mark->value & of_mark->mask);
++#endif
++			break;
++		}
++
+ 		case OVS_ACTION_ATTR_TRUNC: {
+ 			struct ovs_action_trunc *trunc = nla_data(a);
+ 
+diff --git a/datapath/flow_netlink.c b/datapath/flow_netlink.c
+index 9487d7270..e664b8054 100644
+--- a/datapath/flow_netlink.c
++++ b/datapath/flow_netlink.c
+@@ -76,6 +76,9 @@ static bool actions_may_change_flow(const struct nlattr *actions)
+ 		case OVS_ACTION_ATTR_RECIRC:
+ 		case OVS_ACTION_ATTR_TRUNC:
+ 		case OVS_ACTION_ATTR_USERSPACE:
++		case OVS_ACTION_ATTR_SET_OF_MARK1:
++		case OVS_ACTION_ATTR_SET_OF_MARK2:
++		case OVS_ACTION_ATTR_SKIP_ACC:
+ 			break;
+ 		case OVS_ACTION_ATTR_MULTICAST_OUTPUT:
+ 		case OVS_ACTION_ATTR_CT:
+@@ -3002,6 +3005,9 @@ static int __ovs_nla_copy_actions(struct net *net, const struct nlattr *attr,
+ 			[OVS_ACTION_ATTR_METER] = sizeof(u32),
+ 			[OVS_ACTION_ATTR_CLONE] = (u32)-1,
+ 			[OVS_ACTION_ATTR_CHECK_PKT_LEN] = (u32)-1,
++			[OVS_ACTION_ATTR_SET_OF_MARK1] = sizeof(struct ovs_action_set_of_mark),
++			[OVS_ACTION_ATTR_SET_OF_MARK2] = sizeof(struct ovs_action_set_of_mark),
++			[OVS_ACTION_ATTR_SKIP_ACC] = sizeof(struct ovs_action_skip_acc),
+ 		};
+ 		const struct ovs_action_push_vlan *vlan;
+ 		int type = nla_type(a);
+@@ -3015,6 +3021,11 @@ static int __ovs_nla_copy_actions(struct net *net, const struct nlattr *attr,
+ 		switch (type) {
+ 		case OVS_ACTION_ATTR_UNSPEC:
+ 			return -EINVAL;
++		
++		case OVS_ACTION_ATTR_SET_OF_MARK1:
++		case OVS_ACTION_ATTR_SET_OF_MARK2:
++		case OVS_ACTION_ATTR_SKIP_ACC:
++			break;
+ 
+ 		case OVS_ACTION_ATTR_USERSPACE:
+ 			err = validate_userspace(a);
+diff --git a/datapath/linux/compat/include/linux/openvswitch.h b/datapath/linux/compat/include/linux/openvswitch.h
+index d07e723f1..29fd19672 100644
+--- a/datapath/linux/compat/include/linux/openvswitch.h
++++ b/datapath/linux/compat/include/linux/openvswitch.h
+@@ -770,6 +770,15 @@ struct ovs_action_trunc {
+ 	uint32_t max_len; /* Max packet size in bytes. */
+ };
+ 
++struct ovs_action_set_of_mark {
++	uint32_t value;  /* Some value. */
++	uint32_t mask;   /* Some mask. */
++};
++
++struct ovs_action_skip_acc {
++	uint32_t number_of_packets;  /* Packets number to prevent acceleration */
++};
++
+ /**
+  * struct ovs_action_push_mpls - %OVS_ACTION_ATTR_PUSH_MPLS action argument.
+  * @mpls_lse: MPLS label stack entry to push.
+@@ -1067,6 +1076,9 @@ enum ovs_action_attr {
+ 	OVS_ACTION_ATTR_POP_NSH,      /* No argument. */
+ 	OVS_ACTION_ATTR_METER,        /* u32 meter number. */
+ 	OVS_ACTION_ATTR_CLONE,        /* Nested OVS_CLONE_ATTR_*.  */
++	OVS_ACTION_ATTR_SET_OF_MARK1,  /* struct ovs_action_set_of_mark. */
++	OVS_ACTION_ATTR_SET_OF_MARK2,  /* struct ovs_action_set_of_mark. */
++	OVS_ACTION_ATTR_SKIP_ACC,     /* struct ovs_action_skip_acc */
+ 	OVS_ACTION_ATTR_CHECK_PKT_LEN, /* Nested OVS_CHECK_PKT_LEN_ATTR_*. */
+ 
+ #ifndef __KERNEL__
+diff --git a/include/openflow/openflow-common.h b/include/openflow/openflow-common.h
+index 584f20ec1..d542e43d2 100644
+--- a/include/openflow/openflow-common.h
++++ b/include/openflow/openflow-common.h
+@@ -109,6 +109,7 @@ enum ofp_version {
+ #define NTR_COMPAT_VENDOR_ID   0x00001540 /* Incorrect value used in v2.4. */
+ #define NX_VENDOR_ID    0x00002320 /* Nicira. */
+ #define ONF_VENDOR_ID   0x4f4e4600 /* Open Networking Foundation. */
++#define INANGO_VENDOR_ID   0x00002b2a /* Inango Systems */
+ #define INTEL_VENDOR_ID 0x0000AA01 /* Intel */
+ 
+ #define OFP_MAX_TABLE_NAME_LEN 32
+diff --git a/include/openvswitch/ofp-actions.h b/include/openvswitch/ofp-actions.h
+index c8948e0d6..aee8bf767 100644
+--- a/include/openvswitch/ofp-actions.h
++++ b/include/openvswitch/ofp-actions.h
+@@ -125,6 +125,10 @@ struct vl_mff_map;
+     OFPACT(CLONE,           ofpact_nest,        actions, "clone")       \
+     OFPACT(CHECK_PKT_LARGER, ofpact_check_pkt_larger, ofpact,           \
+            "check_pkt_larger")                                          \
++    /* Inango */                                                        \
++    OFPACT(SET_OF_MARK1,    ofpact_set_of_mark, ofpact, "set_of_mark1") \
++    OFPACT(SET_OF_MARK2,    ofpact_set_of_mark, ofpact, "set_of_mark2") \
++    OFPACT(SKIP_ACC,        ofpact_skip_acc, ofpact, "skip_acc")        \
+                                                                         \
+     /* Debugging actions.                                               \
+      *                                                                  \
+@@ -300,6 +304,27 @@ struct ofpact_output {
+     );
+ };
+ 
++/* OFPACT_SET_OF_MARK1, OFPACT_SET_OF_MARK2
++ *
++ * Used for OFPAT_SET_OF_MARK1, OFPAT_SET_OF_MARK2. */
++struct ofpact_set_of_mark {
++    OFPACT_PADDED_MEMBERS(
++        struct ofpact ofpact;
++        uint32_t value;
++        uint32_t mask;
++    );
++};
++
++/* OFPACT_SKIP_ACC
++ *
++ * Used for OFPAT_SKIP_ACC. */
++struct ofpact_skip_acc {
++    OFPACT_PADDED_MEMBERS(
++        struct ofpact ofpact;
++        uint32_t number_of_packets;
++    );
++};
++
+ #define NX_CTLR_NO_METER 0
+ 
+ /* OFPACT_CONTROLLER.
+diff --git a/lib/dpif-netdev.c b/lib/dpif-netdev.c
+index 3a5ae5dd6..202dd4b76 100644
+--- a/lib/dpif-netdev.c
++++ b/lib/dpif-netdev.c
+@@ -7458,6 +7458,11 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
+         dp_netdev_run_meter(pmd->dp, packets_, nl_attr_get_u32(a),
+                             pmd->ctx.now);
+         break;
++    
++    case OVS_ACTION_ATTR_SET_OF_MARK1:
++    case OVS_ACTION_ATTR_SET_OF_MARK2:
++    case OVS_ACTION_ATTR_SKIP_ACC:
++        break;
+ 
+     case OVS_ACTION_ATTR_MULTICAST_OUTPUT:
+     case OVS_ACTION_ATTR_PUSH_VLAN:
+diff --git a/lib/dpif.c b/lib/dpif.c
+index fed6701f3..2bb98a3fd 100644
+--- a/lib/dpif.c
++++ b/lib/dpif.c
+@@ -1170,6 +1170,10 @@ dpif_execute_helper_cb(void *aux_, struct dp_packet_batch *packets_,
+         }
+         break;
+ 
++    case OVS_ACTION_ATTR_SET_OF_MARK1:
++    case OVS_ACTION_ATTR_SET_OF_MARK2:
++    case OVS_ACTION_ATTR_SKIP_ACC:
++        break;
+     case OVS_ACTION_ATTR_CT:
+     case OVS_ACTION_ATTR_OUTPUT:
+     case OVS_ACTION_ATTR_TUNNEL_PUSH:
+diff --git a/lib/odp-execute.c b/lib/odp-execute.c
+index bb5ebd061..08bb59458 100644
+--- a/lib/odp-execute.c
++++ b/lib/odp-execute.c
+@@ -802,6 +802,10 @@ requires_datapath_assistance(const struct nlattr *a)
+         return true;
+     /* TODO understand this case*/
+     case OVS_ACTION_ATTR_MULTICAST_OUTPUT:
++    case OVS_ACTION_ATTR_SET_OF_MARK1:
++    case OVS_ACTION_ATTR_SET_OF_MARK2:
++    case OVS_ACTION_ATTR_SKIP_ACC:
++        break;
+     case OVS_ACTION_ATTR_SET:
+     case OVS_ACTION_ATTR_SET_MASKED:
+     case OVS_ACTION_ATTR_PUSH_VLAN:
+@@ -877,6 +881,11 @@ odp_execute_actions(void *dp, struct dp_packet_batch *batch, bool steal,
+ 
+         switch ((enum ovs_action_attr) type) {
+ 
++        case OVS_ACTION_ATTR_SET_OF_MARK1:
++        case OVS_ACTION_ATTR_SET_OF_MARK2:
++        case OVS_ACTION_ATTR_SKIP_ACC:
++            break;
++
+         case OVS_ACTION_ATTR_HASH: {
+             const struct ovs_action_hash *hash_act = nl_attr_get(a);
+ 
+diff --git a/lib/odp-util.c b/lib/odp-util.c
+index 7283fdaab..b266ab17a 100644
+--- a/lib/odp-util.c
++++ b/lib/odp-util.c
+@@ -118,6 +118,9 @@ odp_action_len(uint16_t type)
+     }
+ 
+     switch ((enum ovs_action_attr) type) {
++    case OVS_ACTION_ATTR_SET_OF_MARK1: return sizeof(struct ovs_action_set_of_mark);
++    case OVS_ACTION_ATTR_SET_OF_MARK2: return sizeof(struct ovs_action_set_of_mark);
++    case OVS_ACTION_ATTR_SKIP_ACC: return sizeof(struct ovs_action_skip_acc);
+     case OVS_ACTION_ATTR_OUTPUT: return sizeof(uint32_t);
+     case OVS_ACTION_ATTR_MULTICAST_OUTPUT: return sizeof(struct ovs_action_mcast_output);
+     case OVS_ACTION_ATTR_TRUNC: return sizeof(struct ovs_action_trunc);
+@@ -1117,6 +1120,35 @@ format_odp_action(struct ds *ds, const struct nlattr *a,
+     }
+ 
+     switch (type) {
++    case OVS_ACTION_ATTR_SET_OF_MARK1: {
++        const struct ovs_action_set_of_mark *set_of_mark =
++                       nl_attr_get_unspec(a, sizeof *set_of_mark);
++        ds_put_format(ds, "set_of_mark1:%"PRIu32, set_of_mark->value);
++
++        if (set_of_mark->mask != OVS_BE32_MAX) {
++            ds_put_format(ds, "/%#"PRIx32, set_of_mark->mask);
++        }
++        break;
++    }
++
++    case OVS_ACTION_ATTR_SET_OF_MARK2: {
++        const struct ovs_action_set_of_mark *set_of_mark =
++                       nl_attr_get_unspec(a, sizeof *set_of_mark);
++        ds_put_format(ds, "set_of_mark2:%"PRIu32, set_of_mark->value);
++
++        if (set_of_mark->mask != OVS_BE32_MAX) {
++            ds_put_format(ds, "/%#"PRIx32, set_of_mark->mask);
++        }
++        break;
++    }
++
++    case OVS_ACTION_ATTR_SKIP_ACC: {
++        const struct ovs_action_skip_acc *value =
++                     nl_attr_get_unspec(a, sizeof *value);
++        ds_put_format(ds, "skip_acc:%"PRIu32, value->number_of_packets);
++        break;
++    }
++
+     case OVS_ACTION_ATTR_METER:
+         ds_put_format(ds, "meter(%"PRIu32")", nl_attr_get_u32(a));
+         break;
+diff --git a/lib/ofp-actions.c b/lib/ofp-actions.c
+index ddef3b0c8..02fd6561e 100644
+--- a/lib/ofp-actions.c
++++ b/lib/ofp-actions.c
+@@ -361,6 +361,16 @@ enum ofp_raw_action_type {
+     /* NX1.0+(49): struct nx_action_check_pkt_larger, ... VLMFF */
+     NXAST_RAW_CHECK_PKT_LARGER,
+ 
++
++    /* INANGO1.0+(1): struct nx_action_set_of_mark. */
++    NXAST_RAW_SET_OF_MARK1,
++
++    /* INANGO1.0+(2): struct nx_action_set_of_mark. */
++    NXAST_RAW_SET_OF_MARK2,
++
++    /* INANGO1.0+(3): struct nx_action_skip_acc. */
++    NXAST_RAW_SKIP_ACC,
++
+ /* ## ------------------ ## */
+ /* ## Debugging actions. ## */
+ /* ## ------------------ ## */
+@@ -500,6 +510,9 @@ ofpact_next_flattened(const struct ofpact *ofpact)
+     case OFPACT_DECAP:
+     case OFPACT_DEC_NSH_TTL:
+     case OFPACT_CHECK_PKT_LARGER:
++    case OFPACT_SET_OF_MARK1:
++    case OFPACT_SET_OF_MARK2:
++    case OFPACT_SKIP_ACC:
+         return ofpact_next(ofpact);
+ 
+     case OFPACT_CLONE:
+@@ -2308,6 +2321,236 @@ decode_OFPAT_RAW_SET_TP_SRC(ovs_be16 port,
+     return 0;
+ }
+ 
++#pragma pack(push,1)
++/* Action structure for NXAST_RAW_SET_OF_MARK1,  NXAST_RAW_SET_OF_MARK2 */
++struct nx_action_set_of_mark {
++    ovs_be16 type;         /* OFPAT_VENDOR. */
++    ovs_be16 len;          /* Total size. */
++    ovs_be32 vendor;       /* INANGO_VENDOR_ID. */
++    ovs_be16 subtype;      /* SET_OF_MARK1, SET_OF_MARK2. */
++
++    ovs_be32 value;
++    ovs_be32 mask;
++
++    uint8_t pad[6];
++};
++#pragma pack(pop)
++
++
++OFP_ASSERT(sizeof(struct nx_action_set_of_mark) == 24);
++
++static enum ofperr
++decode_NXAST_RAW_SET_OF_MARK1(const struct nx_action_set_of_mark *nad,
++                                  enum ofp_version ofp_version OVS_UNUSED,
++                                  struct ofpbuf *ofpacts)
++{
++    struct ofpact_set_of_mark *set_of_mark;
++
++    if (!is_all_zeros(nad->pad, sizeof(nad->pad))) {
++        return OFPERR_NXBRC_MUST_BE_ZERO;
++    }
++
++    set_of_mark = ofpact_put_SET_OF_MARK1(ofpacts);
++    set_of_mark->ofpact.raw = NXAST_RAW_SET_OF_MARK1;
++    set_of_mark->value = ntohl(nad->value);
++    set_of_mark->mask = ntohl(nad->mask);
++
++    return 0;
++}
++
++static void
++encode_SET_OF_MARK1(const struct ofpact_set_of_mark *ofp,
++              enum ofp_version ofp_version, struct ofpbuf *out)
++{
++    struct nx_action_set_of_mark *nxa = put_NXAST_SET_OF_MARK1(out);
++
++    nxa->value = htonl(ofp->value);
++    nxa->mask = htonl(ofp->mask);
++}
++
++static char * OVS_WARN_UNUSED_RESULT
++parse_SET_OF_MARK1(char *arg, const struct ofpact_parse_params *pp)
++{
++    struct ofpact_set_of_mark *ofp;
++    char *mask = NULL;
++    char *error = NULL;
++
++    ofp = ofpact_put_SET_OF_MARK1(pp->ofpacts);
++
++    mask = strchr(arg, '/');
++    if (mask) {
++
++        *mask = '\0';
++        error = str_to_u32(mask + 1, &ofp->mask);
++        if (error) {
++            return error;
++        }
++    } else {
++        ofp->mask = OVS_BE32_MAX;
++    }
++
++    return str_to_u32(arg, &ofp->value);
++}
++
++static void
++format_SET_OF_MARK1(const struct ofpact_set_of_mark *a,
++                       const struct ofpact_format_params *fp)
++{
++    ds_put_format(fp->s, "%sset_of_mark1:%s%#"PRIx32,
++                  colors.param, colors.end, a->value);
++    if (a->mask != OVS_BE32_MAX) {
++        ds_put_format(fp->s, "/%#"PRIx32, a->mask);
++    }
++}
++
++static enum ofperr
++check_SET_OF_MARK1(const struct ofpact_set_of_mark *a,
++             const struct ofpact_check_params *cp)
++{
++    return 0;
++}
++
++
++static enum ofperr
++decode_NXAST_RAW_SET_OF_MARK2(const struct nx_action_set_of_mark *nad,
++                                  enum ofp_version ofp_version OVS_UNUSED,
++                                  struct ofpbuf *ofpacts)
++{
++    struct ofpact_set_of_mark *set_of_mark;
++
++    if (!is_all_zeros(nad->pad, sizeof(nad->pad))) {
++        return OFPERR_NXBRC_MUST_BE_ZERO;
++    }
++
++    set_of_mark = ofpact_put_SET_OF_MARK2(ofpacts);
++    set_of_mark->ofpact.raw = NXAST_RAW_SET_OF_MARK2;
++    set_of_mark->value = ntohl(nad->value);
++    set_of_mark->mask = ntohl(nad->mask);
++
++    return 0;
++}
++
++static void
++encode_SET_OF_MARK2(const struct ofpact_set_of_mark *ofp,
++              enum ofp_version ofp_version, struct ofpbuf *out)
++{
++    struct nx_action_set_of_mark *nxa = put_NXAST_SET_OF_MARK2(out);
++
++    nxa->value = htonl(ofp->value);
++    nxa->mask = htonl(ofp->mask);
++}
++
++static char * OVS_WARN_UNUSED_RESULT
++parse_SET_OF_MARK2(char *arg, const struct ofpact_parse_params *pp)
++{
++    struct ofpact_set_of_mark *ofp;
++    char *mask = NULL;
++    char *error = NULL;
++
++    ofp = ofpact_put_SET_OF_MARK2(pp->ofpacts);
++
++    mask = strchr(arg, '/');
++    if (mask) {
++
++        *mask = '\0';
++        error = str_to_u32(mask + 1, &ofp->mask);
++        if (error) {
++            return error;
++        }
++    } else {
++        ofp->mask = OVS_BE32_MAX;
++    }
++
++    return str_to_u32(arg, &ofp->value);
++}
++
++static void
++format_SET_OF_MARK2(const struct ofpact_set_of_mark *a,
++                       const struct ofpact_format_params *fp)
++{
++    ds_put_format(fp->s, "%sset_of_mark2:%s%#"PRIx32,
++                  colors.param, colors.end, a->value);
++    if (a->mask != OVS_BE32_MAX) {
++        ds_put_format(fp->s, "/%#"PRIx32, a->mask);
++    }
++}
++
++static enum ofperr
++check_SET_OF_MARK2(const struct ofpact_set_of_mark *a,
++             const struct ofpact_check_params *cp)
++{
++    return 0;
++}
++
++/* Action structure for NXAST_RAW_SKIP_ACC */
++#pragma pack(push,1)
++struct nx_action_skip_acc {
++    ovs_be16 type;         /* OFPAT_VENDOR. */
++    ovs_be16 len;          /* Total size. */
++    ovs_be32 vendor;       /* INANGO_VENDOR_ID. */
++    ovs_be16 subtype;      /* SKIP_ACC. */
++
++    ovs_be32 number_of_packets;
++    uint8_t pad[2];
++};
++#pragma pack(pop)
++OFP_ASSERT(sizeof(struct nx_action_skip_acc) == 16);
++
++static enum ofperr
++decode_NXAST_RAW_SKIP_ACC(const struct nx_action_skip_acc *nad,
++                                  enum ofp_version ofp_version OVS_UNUSED,
++                                  struct ofpbuf *ofpacts)
++{
++    struct ofpact_skip_acc *skip_acc;
++
++    if (!is_all_zeros(nad->pad, sizeof(nad->pad))) {
++        return OFPERR_NXBRC_MUST_BE_ZERO;
++    }
++
++    skip_acc = ofpact_put_SKIP_ACC(ofpacts);
++    skip_acc->ofpact.raw = NXAST_RAW_SKIP_ACC;
++    skip_acc->number_of_packets = ntohl(nad->number_of_packets);
++
++    return 0;
++}
++
++static void
++encode_SKIP_ACC(const struct ofpact_skip_acc *ofp,
++              enum ofp_version ofp_version, struct ofpbuf *out)
++{
++    struct nx_action_skip_acc *nxa = put_NXAST_SKIP_ACC(out);
++
++    nxa->number_of_packets = htonl(ofp->number_of_packets);
++}
++
++static char * OVS_WARN_UNUSED_RESULT
++parse_SKIP_ACC(char *arg, const struct ofpact_parse_params *pp)
++{
++    struct ofpact_skip_acc *ofp;
++    char *err;
++    ofp = ofpact_put_SKIP_ACC(pp->ofpacts);
++    err = str_to_u32(arg, &ofp->number_of_packets);
++    if (ofp->number_of_packets == 0) {
++        return xasprintf("Invalid input for skip_acc action, packets must be greater than zero");
++    }
++    return err;
++}
++
++static void
++format_SKIP_ACC(const struct ofpact_skip_acc *a,
++                       const struct ofpact_format_params *fp)
++{
++    ds_put_format(fp->s, "%sskip_acc:%s%u",
++                  colors.param, colors.end, a->number_of_packets);
++}
++
++static enum ofperr
++check_SKIP_ACC(const struct ofpact_skip_acc *a,
++             const struct ofpact_check_params *cp)
++{
++    return 0;
++}
++
+ static enum ofperr
+ decode_OFPAT_RAW_SET_TP_DST(ovs_be16 port,
+                             enum ofp_version ofp_version OVS_UNUSED,
+@@ -7840,6 +8083,9 @@ action_set_classify(const struct ofpact *a)
+     case OFPACT_SET_TUNNEL:
+     case OFPACT_SET_VLAN_PCP:
+     case OFPACT_SET_VLAN_VID:
++    case OFPACT_SET_OF_MARK1:
++    case OFPACT_SET_OF_MARK2:
++    case OFPACT_SKIP_ACC:
+         return ACTION_SLOT_SET_OR_MOVE;
+ 
+     case OFPACT_BUNDLE:
+@@ -8071,6 +8317,9 @@ ovs_instruction_type_from_ofpact_type(enum ofpact_type type,
+     case OFPACT_DECAP:
+     case OFPACT_DEC_NSH_TTL:
+     case OFPACT_CHECK_PKT_LARGER:
++    case OFPACT_SET_OF_MARK1:
++    case OFPACT_SET_OF_MARK2:
++    case OFPACT_SKIP_ACC:
+     default:
+         return OVSINST_OFPIT11_APPLY_ACTIONS;
+     }
+@@ -8982,6 +9231,9 @@ ofpact_outputs_to_port(const struct ofpact *ofpact, ofp_port_t port)
+     case OFPACT_DECAP:
+     case OFPACT_DEC_NSH_TTL:
+     case OFPACT_CHECK_PKT_LARGER:
++    case OFPACT_SET_OF_MARK1:
++    case OFPACT_SET_OF_MARK2:
++    case OFPACT_SKIP_ACC:
+     default:
+         return false;
+     }
+@@ -9479,7 +9731,8 @@ ofpact_decode_raw(enum ofp_version ofp_version,
+     if (oah->type == htons(OFPAT_VENDOR)) {
+         /* Get vendor. */
+         hdrs.vendor = ntohl(oah->vendor);
+-        if (hdrs.vendor == NX_VENDOR_ID || hdrs.vendor == ONF_VENDOR_ID) {
++        if (hdrs.vendor == NX_VENDOR_ID || hdrs.vendor == ONF_VENDOR_ID ||
++                hdrs.vendor == INANGO_VENDOR_ID) {
+             /* Get extension subtype. */
+             const struct ext_action_header *nah;
+ 
+@@ -9605,6 +9858,7 @@ ofpact_put_raw(struct ofpbuf *buf, enum ofp_version ofp_version,
+     case 0:
+         break;
+ 
++    case INANGO_VENDOR_ID:
+     case NX_VENDOR_ID:
+     case ONF_VENDOR_ID: {
+         struct ext_action_header *nah = (struct ext_action_header *) oah;
+diff --git a/ofproto/ofproto-dpif-ipfix.c b/ofproto/ofproto-dpif-ipfix.c
+index 6efa0a537..3e2ab6af5 100644
+--- a/ofproto/ofproto-dpif-ipfix.c
++++ b/ofproto/ofproto-dpif-ipfix.c
+@@ -2994,6 +2994,11 @@ dpif_ipfix_read_actions(const struct flow *flow,
+             ipfix_actions->output_action = true;
+             break;
+ 
++        case OVS_ACTION_ATTR_SET_OF_MARK1:
++        case OVS_ACTION_ATTR_SET_OF_MARK2:
++        case OVS_ACTION_ATTR_SKIP_ACC:
++            break;
++
+         /* OVS_ACTION_ATTR_USERSPACE and OVS_ACTION_ATTR_RECIRC actions can
+          * yield absolutely any kind of behavior. Let's assume that flow drops
+          * the packet if there isn't another clear OVS_ACTION_ATTR_OUTPUT
+diff --git a/ofproto/ofproto-dpif-sflow.c b/ofproto/ofproto-dpif-sflow.c
+index e1336b238..34a32b0bb 100644
+--- a/ofproto/ofproto-dpif-sflow.c
++++ b/ofproto/ofproto-dpif-sflow.c
+@@ -1134,6 +1134,11 @@ dpif_sflow_read_actions(const struct flow *flow,
+              */
+             sflow_actions->out_port = nl_attr_get_odp_port(a);
+             break;
++        
++        case OVS_ACTION_ATTR_SET_OF_MARK1:
++        case OVS_ACTION_ATTR_SET_OF_MARK2:
++        case OVS_ACTION_ATTR_SKIP_ACC:
++            break;
+ 
+         case OVS_ACTION_ATTR_MULTICAST_OUTPUT:
+             sflow_actions->out_port = nl_attr_get_odp_port(a);
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index e2df0942d..ecbd1f831 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -5896,6 +5896,9 @@ reversible_actions(const struct ofpact *ofpacts, size_t ofpacts_len)
+         case OFPACT_WRITE_ACTIONS:
+         case OFPACT_WRITE_METADATA:
+         case OFPACT_CHECK_PKT_LARGER:
++        case OFPACT_SET_OF_MARK1:
++        case OFPACT_SET_OF_MARK2:
++        case OFPACT_SKIP_ACC:
+             break;
+ 
+         case OFPACT_CT:
+@@ -6205,6 +6208,9 @@ freeze_unroll_actions(const struct ofpact *a, const struct ofpact *end,
+         case OFPACT_CT_CLEAR:
+         case OFPACT_NAT:
+         case OFPACT_CHECK_PKT_LARGER:
++        case OFPACT_SET_OF_MARK1:
++        case OFPACT_SET_OF_MARK2:
++        case OFPACT_SKIP_ACC:
+             /* These may not generate PACKET INs. */
+             break;
+ 
+@@ -6806,6 +6812,9 @@ recirc_for_mpls(const struct ofpact *a, struct xlate_ctx *ctx)
+     case OFPACT_SET_ETH_DST:
+     case OFPACT_SET_TUNNEL:
+     case OFPACT_SET_QUEUE:
++    case OFPACT_SET_OF_MARK1:
++    case OFPACT_SET_OF_MARK2:
++    case OFPACT_SKIP_ACC:
+     /* If actions of a group require recirculation that can be detected
+      * when translating them. */
+     case OFPACT_GROUP:
+@@ -6901,6 +6910,32 @@ xlate_ofpact_unroll_xlate(struct xlate_ctx *ctx,
+                  "cookie=%#"PRIx64, a->rule_table_id, a->rule_cookie);
+ }
+ 
++static void compose_set_of_mark1(struct xlate_ctx *ctx, struct ofpact_set_of_mark *op)
++{
++    struct ovs_action_set_of_mark *set_of_mark; 
++    set_of_mark = nl_msg_put_unspec_uninit(ctx->odp_actions,
++               OVS_ACTION_ATTR_SET_OF_MARK1, sizeof *set_of_mark);
++    set_of_mark->value = op->value;
++    set_of_mark->mask = op->mask;
++}
++
++static void compose_set_of_mark2(struct xlate_ctx *ctx, struct ofpact_set_of_mark *op)
++{
++    struct ovs_action_set_of_mark *set_of_mark; 
++    set_of_mark = nl_msg_put_unspec_uninit(ctx->odp_actions,
++               OVS_ACTION_ATTR_SET_OF_MARK2, sizeof *set_of_mark);
++    set_of_mark->value = op->value;
++    set_of_mark->mask = op->mask;
++}
++
++static void compose_skip_acc(struct xlate_ctx *ctx, struct ofpact_skip_acc *op)
++{
++    struct ovs_action_skip_acc *skip_acc;
++    skip_acc = nl_msg_put_unspec_uninit(ctx->odp_actions,
++               OVS_ACTION_ATTR_SKIP_ACC, sizeof *skip_acc);
++    skip_acc->number_of_packets = op->number_of_packets;
++}
++
+ static void
+ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
+                  struct xlate_ctx *ctx, bool is_last_action,
+@@ -7037,6 +7072,14 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
+             flow->dl_dst = ofpact_get_SET_ETH_DST(a)->mac;
+             break;
+ 
++        case OFPACT_SET_OF_MARK1:
++            compose_set_of_mark1(ctx, ofpact_get_SET_OF_MARK1(a));
++            break;
++
++        case OFPACT_SET_OF_MARK2:
++            compose_set_of_mark2(ctx, ofpact_get_SET_OF_MARK2(a));
++            break;
++
+         case OFPACT_SET_IPV4_SRC:
+             if (flow->dl_type == htons(ETH_TYPE_IP)) {
+                 memset(&wc->masks.nw_src, 0xff, sizeof wc->masks.nw_src);
+@@ -7307,6 +7350,10 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
+             compose_ct_clear_action(ctx);
+             break;
+ 
++        case OFPACT_SKIP_ACC:
++            compose_skip_acc(ctx, ofpact_get_SKIP_ACC(a));
++            break;
++
+         case OFPACT_NAT:
+             /* This will be processed by compose_conntrack_action(). */
+             ctx->ct_nat_action = ofpact_get_NAT(a);

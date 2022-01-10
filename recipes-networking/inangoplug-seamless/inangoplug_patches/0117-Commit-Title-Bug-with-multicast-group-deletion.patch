@@ -1,0 +1,43 @@
+From 3515687813ef87eaa6bea3a56bdb0cf67ff20795 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Tue, 28 Dec 2021 20:25:56 +0200
+Subject: [PATCH] Commit Title          : Bug with multicast group deletion
+
+BugID                 : 27068
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Fixed a bug with vswitchd fails during multicast group deletion
+---
+ lib/mcast-snooping.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/lib/mcast-snooping.c b/lib/mcast-snooping.c
+index d447725c1..f2adc1af8 100644
+--- a/lib/mcast-snooping.c
++++ b/lib/mcast-snooping.c
+@@ -30,6 +30,7 @@
+ #include "bitmap.h"
+ #include "byte-order.h"
+ #include "coverage.h"
++#include "dpif-netlink.h"
+ #include "hash.h"
+ #include "openvswitch/list.h"
+ #include "openvswitch/poll-loop.h"
+@@ -441,7 +442,7 @@ mcast_snooping_flush_group(struct mcast_snooping *ms, struct mcast_group *grp)
+     struct mcast_group_bundle *b;
+ 
+     LIST_FOR_EACH_POP (b, bundle_node, &grp->bundle_lru) {
+-        dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan, b->mac);
++        dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan, &b->mac);
+         mcast_snooping_flush_group_bundle(ms, b);
+     }
+ 
+@@ -494,7 +495,7 @@ mcast_snooping_prune_expired(struct mcast_snooping *ms,
+             break;
+         }
+         ovs_list_remove(&b->bundle_node);
+-        dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan, b->mac);
++        dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan, &b->mac);
+         mcast_snooping_flush_group_bundle(ms, b);
+         expired++;
+     }

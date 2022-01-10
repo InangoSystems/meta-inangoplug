@@ -1,0 +1,80 @@
+From ee372e731a9979509c9fb114ab924e91479f03c8 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Tue, 14 Dec 2021 13:20:44 +0500
+Subject: [PATCH] Commit Title: Implement setting of MTU using mtu_request
+ (user space)
+
+BugID: 26837
+Bug Fixed(y/N[blankN]):
+CodeReviewId: 0
+Description:
+- Added setting of vport flags before setting MTU value
+- Implemented netlink mesages to set vport flags
+---
+ lib/dpif-netlink.c | 22 +++++++++++++++++++---
+ lib/netdev.c       |  9 +++++++++
+ 2 files changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index 7d8729cb7..5058f6372 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -4073,12 +4073,24 @@ dpif_netlink_is_internal_device(const char *name)
+     return reply.type == OVS_VPORT_TYPE_INTERNAL;
+ }
+ 
+-int dpif_netlink_vport_set_flags(const char *name, uint32_t flags) {
+-    (void)name;
+-    (void)flags;
++int
++dpif_netlink_vport_set_flags(const char *name, uint32_t flags) {
++    struct dpif_netlink_vport request;
++    int error;
++
++    dpif_netlink_vport_init(&request);
++    request.cmd = OVS_VPORT_CMD_SET_FLAGS;
++    request.name = name;
++    request.flags = flags;
++
++    error = dpif_netlink_vport_transact(&request, NULL, NULL);
++    if (!error) {
++        return -1;
++    }
+ 
+     return 0;
+ }
++
+ /* Parses the contents of 'buf', which contains a "struct ovs_header" followed
+  * by Netlink attributes, into 'vport'.  Returns 0 if successful, otherwise a
+  * positive errno value.
+@@ -4206,6 +4218,10 @@ dpif_netlink_vport_to_ofpbuf(const struct dpif_netlink_vport *vport,
+ 
+         nl_msg_put_unspec(buf, OVS_VPORT_ATTR_MAC, vport->ea, sizeof(vport->ea));
+     }
++
++    if (vport->cmd == OVS_VPORT_CMD_SET_FLAGS || vport->cmd == OVS_VPORT_CMD_DEL_FLAGS) {
++        nl_msg_put_u32(buf, OVS_VPORT_ATTR_FLAGS, vport->flags);
++    }
+ }
+ 
+ /* Clears 'vport' to "empty" values. */
+diff --git a/lib/netdev.c b/lib/netdev.c
+index f95b19af4..3c180b51f 100644
+--- a/lib/netdev.c
++++ b/lib/netdev.c
+@@ -1038,6 +1038,15 @@ netdev_set_mtu(struct netdev *netdev, int mtu)
+ {
+     const struct netdev_class *class = netdev->netdev_class;
+     int error;
++    int dev_mtu;
++    enum ovs_vport_type ovs_type = netdev_to_ovs_vport_type(netdev_get_type(netdev));
++
++    /* Update MTU flags before setting MTU */
++    class->get_mtu(netdev, &dev_mtu);
++    if (ovs_type == OVS_VPORT_TYPE_INTERNAL && dev_mtu != mtu) {
++        dpif_netlink_vport_set_flags(netdev_get_name(netdev),
++            netdev->mtu_user_config ? OVS_VPORT_FLAG_SET_MTU_BY_USER : OVS_VPORT_FLAG_SET_MTU_AUTO);
++    }
+ 
+     error = class->set_mtu ? class->set_mtu(netdev, mtu) : EOPNOTSUPP;
+     if (error && error != EOPNOTSUPP) {
