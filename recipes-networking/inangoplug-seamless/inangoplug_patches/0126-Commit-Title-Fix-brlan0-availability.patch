@@ -1,0 +1,27 @@
+From 1c917b0c5ba26f89093e5cc942782eb79a8bee6e Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Thu, 27 Jan 2022 20:15:30 +0500
+Subject: [PATCH] Commit Title: Fix brlan0 availability
+
+BugID: 27374
+Bug Fixed(y/N[blankN]):
+CodeReviewId: 0
+Description:
+- Added systemd-modules-disabled.service to Before key in Unit section of ovs-vswitchd.service
+---
+ rhel/usr_lib_systemd_system_ovs-vswitchd.service.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in b/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
+index 13e3bfeb3..845a30ddc 100644
+--- a/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
++++ b/rhel/usr_lib_systemd_system_ovs-vswitchd.service.in
+@@ -1,7 +1,7 @@
+ [Unit]
+ Description=Open vSwitch Forwarding Unit
+ After=ovsdb-server.service network-pre.target systemd-udev-settle.service
+-Before=network.target network.service
++Before=network.target network.service systemd-modules-disabled.service
+ Requires=ovsdb-server.service
+ ReloadPropagatedFrom=ovsdb-server.service
+ AssertPathIsReadWrite=/var/run/openvswitch/db.sock

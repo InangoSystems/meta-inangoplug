@@ -1,0 +1,744 @@
+From 64628f3c5b30d902bf5913a2a04a2a10f8ec94a3 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Thu, 6 Jan 2022 16:00:01 +0200
+Subject: [PATCH] Commit Title          : Fix compile time warnings
+
+BugID                 : 27105
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Fixed compile time warnings
+---
+ lib/dpif-netdev.c             |  2 +-
+ lib/dpif-netlink.c            |  4 +--
+ lib/dpif-netlink.h            |  2 +-
+ lib/mac-learning.c            |  1 +
+ lib/mcast-snooping.c          | 21 +++------------
+ lib/mcast-snooping.h          |  5 ++--
+ lib/netdev.c                  |  1 +
+ lib/ofp-actions.c             | 18 ++++++-------
+ lib/process.c                 |  2 +-
+ ofproto/connmgr.c             |  2 +-
+ ofproto/connmgr.h             |  2 +-
+ ofproto/ofproto-dpif-upcall.c |  2 +-
+ ofproto/ofproto-dpif-xlate.c  | 20 ++++++--------
+ ofproto/ofproto.c             | 61 ++++++++++++++++++++++++++++++++++++++++++-
+ ofproto/port-protection.c     |  5 ++--
+ ofproto/port-protection.h     |  2 +-
+ vswitchd/bridge.c             |  3 ++-
+ vswitchd/ovs-brcompatd.c      | 50 ++++++++++++++++-------------------
+ 18 files changed, 122 insertions(+), 81 deletions(-)
+
+diff --git a/lib/dpif-netdev.c b/lib/dpif-netdev.c
+index 202dd4b76..b6df94313 100644
+--- a/lib/dpif-netdev.c
++++ b/lib/dpif-netdev.c
+@@ -1898,7 +1898,7 @@ do_add_port(struct dp_netdev *dp, const char *devname, const char *type,
+ 
+ static int
+ dpif_netdev_port_add(struct dpif *dpif, struct netdev *netdev,
+-                     odp_port_t *port_nop, char *brname)
++                     odp_port_t *port_nop, char *brname OVS_UNUSED)
+ {
+     struct dp_netdev *dp = get_dp_netdev(dpif);
+     char namebuf[NETDEV_VPORT_NAME_BUFSIZE];
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index 5058f6372..89ae752c8 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -4351,7 +4351,7 @@ dpif_netlink_ipv4_send(int dp_ifindex, int ifindex, __be32 ipv4, uint16_t vlan,
+ }
+ 
+ static int
+-dpif_netlink_ipv6_send(int dp_ifindex, int ifindex, __be32 *ipv6, uint16_t vlan, const struct eth_addr *mac, uint8_t cmd)
++dpif_netlink_ipv6_send(int dp_ifindex, int ifindex, const __be32 *ipv6, uint16_t vlan, const struct eth_addr *mac, uint8_t cmd)
+ {
+     struct dpif_netlink_vport request;
+ 
+@@ -4368,7 +4368,7 @@ dpif_netlink_ipv6_send(int dp_ifindex, int ifindex, __be32 *ipv6, uint16_t vlan,
+ }
+ 
+ int
+-dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan, const struct eth_addr *mac)
++dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, const struct in6_addr *addr, uint16_t vlan, const struct eth_addr *mac)
+ {
+     int error;
+     struct dpif_netlink *dpif = dpif_netlink_cast(dpif_);
+diff --git a/lib/dpif-netlink.h b/lib/dpif-netlink.h
+index 053f7f0d7..009290c89 100644
+--- a/lib/dpif-netlink.h
++++ b/lib/dpif-netlink.h
+@@ -66,7 +66,7 @@ int dpif_netlink_vport_get(const char *name, struct dpif_netlink_vport *reply,
+ int dpif_netlink_rtm_newneigh(int ifindex, const struct eth_addr src_mac);
+ int dpif_netlink_rtm_delneigh(int ifindex, const struct eth_addr src_mac);
+ 
+-int dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan, const struct eth_addr *mac);
++int dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, const struct in6_addr *addr, uint16_t vlan, const struct eth_addr *mac);
+ int dpif_netlink_rtm_del_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan, const struct eth_addr *mac);
+ 
+ bool dpif_netlink_is_internal_device(const char *name);
+diff --git a/lib/mac-learning.c b/lib/mac-learning.c
+index 0e05df4da..077033039 100644
+--- a/lib/mac-learning.c
++++ b/lib/mac-learning.c
+@@ -22,6 +22,7 @@
+ 
+ #include "bitmap.h"
+ #include "coverage.h"
++#include "dpif-netlink.h"
+ #include "hash.h"
+ #include "openvswitch/list.h"
+ #include "openvswitch/poll-loop.h"
+diff --git a/lib/mcast-snooping.c b/lib/mcast-snooping.c
+index f2adc1af8..e23eb825b 100644
+--- a/lib/mcast-snooping.c
++++ b/lib/mcast-snooping.c
+@@ -111,7 +111,7 @@ mcast_snooping_is_membership(ovs_be16 igmp_type)
+ /* Returns the number of seconds since multicast group 'b' was learned in a
+  * port on 'ms'. */
+ int
+-mcast_bundle_age(const struct mcast_snooping *ms,
++mcast_bundle_age(const struct mcast_snooping *ms OVS_UNUSED,
+                  const struct mcast_group_bundle *b)
+ {
+     return time_now() - b->created;
+@@ -399,14 +399,6 @@ mcast_group_has_bundles(struct mcast_group *grp)
+     return !ovs_list_is_empty(&grp->bundle_lru);
+ }
+ 
+-/* Return true if multicast group bundle has source addresses defined.
+- * Return false if there is no source addresses. */
+-static bool
+-mcast_group_bundle_has_src_addrs(struct mcast_group_bundle *gb)
+-{
+-    return !ovs_list_is_empty(&gb->src_addrs);
+-}
+-
+ /* Flush out mcast group bundle */
+ static void
+ mcast_snooping_flush_group_bundle(struct mcast_snooping *ms OVS_UNUSED,
+@@ -632,20 +624,15 @@ mcast_snooping_add_report(struct mcast_snooping *ms,
+ struct in6_addr *
+ mcast_snooping_get_mld_grp(const struct dp_packet *p)
+ {
+-    const struct in6_addr *addr;
++    struct in6_addr *addr;
+     size_t offset;
+     const struct mld_header *mld;
+-    const struct mld2_record *record;
+-    int count = 0;
+-    int ngrp;
+-    bool ret;
+ 
+     offset = (char *) dp_packet_l4(p) - (char *) dp_packet_data(p);
+     mld = dp_packet_at(p, offset, MLD_HEADER_LEN);
+     if (!mld) {
+         return NULL;
+     }
+-    ngrp = ntohs(mld->ngrp);
+     offset += MLD_HEADER_LEN;
+     addr = dp_packet_at(p, offset, sizeof(struct in6_addr));
+     return addr;
+@@ -1165,13 +1152,13 @@ mcast_snooping_flush_bundle(struct mcast_snooping *ms, void *port, const struct
+     ovs_rwlock_unlock(&ms->rwlock);
+ }
+ 
+-int mcast_external_igmp_handler_enabled() {
++int mcast_external_igmp_handler_enabled(void) {
+     int enabled;
+     atomic_read_relaxed(&enable_external_igmp_handler, &enabled);
+     return enabled;
+ }
+ 
+-int mcast_external_mld_handler_enabled() {
++int mcast_external_mld_handler_enabled(void) {
+     int enabled;
+     atomic_read_relaxed(&enable_external_mld_handler, &enabled);
+     return enabled;
+diff --git a/lib/mcast-snooping.h b/lib/mcast-snooping.h
+index d6bcbadda..18327a3b2 100644
+--- a/lib/mcast-snooping.h
++++ b/lib/mcast-snooping.h
+@@ -258,14 +258,15 @@ bool mcast_snooping_add_mrouter_ex(struct mcast_snooping *ms, uint16_t vlan,
+     OVS_REQ_WRLOCK(ms->rwlock);
+ bool mcast_snooping_is_query(ovs_be16 igmp_type);
+ bool mcast_snooping_is_membership(ovs_be16 igmp_type);
++struct in6_addr *mcast_snooping_get_mld_grp(const struct dp_packet *p);
+ 
+ /* Flush. */
+ void mcast_snooping_mdb_flush(struct mcast_snooping *ms);
+ void mcast_snooping_flush(struct mcast_snooping *ms);
+ void mcast_snooping_flush_bundle(struct mcast_snooping *ms, void *port, const struct eth_addr *mac);
+ 
+-int mcast_external_igmp_handler_enabled();
+-int mcast_external_mld_handler_enabled();
++int mcast_external_igmp_handler_enabled(void);
++int mcast_external_mld_handler_enabled(void);
+ int mcast_external_igmp_handler_enable(int enable);
+ int mcast_external_mld_handler_enable(int enable);
+ 
+diff --git a/lib/netdev.c b/lib/netdev.c
+index 3c180b51f..407037ed8 100644
+--- a/lib/netdev.c
++++ b/lib/netdev.c
+@@ -34,6 +34,7 @@
+ #include "cmap.h"
+ #include "coverage.h"
+ #include "dpif.h"
++#include "dpif-netlink.h"
+ #include "dp-packet.h"
+ #include "openvswitch/dynamic-string.h"
+ #include "fatal-signal.h"
+diff --git a/lib/ofp-actions.c b/lib/ofp-actions.c
+index 02fd6561e..dbfa62204 100644
+--- a/lib/ofp-actions.c
++++ b/lib/ofp-actions.c
+@@ -2360,7 +2360,7 @@ decode_NXAST_RAW_SET_OF_MARK1(const struct nx_action_set_of_mark *nad,
+ 
+ static void
+ encode_SET_OF_MARK1(const struct ofpact_set_of_mark *ofp,
+-              enum ofp_version ofp_version, struct ofpbuf *out)
++              enum ofp_version ofp_version OVS_UNUSED, struct ofpbuf *out)
+ {
+     struct nx_action_set_of_mark *nxa = put_NXAST_SET_OF_MARK1(out);
+ 
+@@ -2404,8 +2404,8 @@ format_SET_OF_MARK1(const struct ofpact_set_of_mark *a,
+ }
+ 
+ static enum ofperr
+-check_SET_OF_MARK1(const struct ofpact_set_of_mark *a,
+-             const struct ofpact_check_params *cp)
++check_SET_OF_MARK1(const struct ofpact_set_of_mark *a OVS_UNUSED,
++             const struct ofpact_check_params *cp OVS_UNUSED)
+ {
+     return 0;
+ }
+@@ -2432,7 +2432,7 @@ decode_NXAST_RAW_SET_OF_MARK2(const struct nx_action_set_of_mark *nad,
+ 
+ static void
+ encode_SET_OF_MARK2(const struct ofpact_set_of_mark *ofp,
+-              enum ofp_version ofp_version, struct ofpbuf *out)
++              enum ofp_version ofp_version OVS_UNUSED, struct ofpbuf *out)
+ {
+     struct nx_action_set_of_mark *nxa = put_NXAST_SET_OF_MARK2(out);
+ 
+@@ -2476,8 +2476,8 @@ format_SET_OF_MARK2(const struct ofpact_set_of_mark *a,
+ }
+ 
+ static enum ofperr
+-check_SET_OF_MARK2(const struct ofpact_set_of_mark *a,
+-             const struct ofpact_check_params *cp)
++check_SET_OF_MARK2(const struct ofpact_set_of_mark *a OVS_UNUSED,
++             const struct ofpact_check_params *cp OVS_UNUSED)
+ {
+     return 0;
+ }
+@@ -2516,7 +2516,7 @@ decode_NXAST_RAW_SKIP_ACC(const struct nx_action_skip_acc *nad,
+ 
+ static void
+ encode_SKIP_ACC(const struct ofpact_skip_acc *ofp,
+-              enum ofp_version ofp_version, struct ofpbuf *out)
++              enum ofp_version ofp_version OVS_UNUSED, struct ofpbuf *out)
+ {
+     struct nx_action_skip_acc *nxa = put_NXAST_SKIP_ACC(out);
+ 
+@@ -2545,8 +2545,8 @@ format_SKIP_ACC(const struct ofpact_skip_acc *a,
+ }
+ 
+ static enum ofperr
+-check_SKIP_ACC(const struct ofpact_skip_acc *a,
+-             const struct ofpact_check_params *cp)
++check_SKIP_ACC(const struct ofpact_skip_acc *a OVS_UNUSED,
++             const struct ofpact_check_params *cp OVS_UNUSED)
+ {
+     return 0;
+ }
+diff --git a/lib/process.c b/lib/process.c
+index 474a8156e..b7005deab 100644
+--- a/lib/process.c
++++ b/lib/process.c
+@@ -672,7 +672,7 @@ stream_read(struct stream *s)
+             }
+         } else if (s->log.length > s->max_size) {
+             VLOG_WARN("subprocess output overflowed %lu-byte buffer",
+-                      s->max_size);
++                      (unsigned long)s->max_size);
+             break;
+         }
+     }
+diff --git a/ofproto/connmgr.c b/ofproto/connmgr.c
+index 1e95e07cb..635b43a1d 100644
+--- a/ofproto/connmgr.c
++++ b/ofproto/connmgr.c
+@@ -344,7 +344,7 @@ connmgr_destroy(struct connmgr *mgr)
+ }
+ 
+ void
+-connmgr_port_protection_reconfigure(struct connmgr *mgr, bool enable_port_protection, char* port_list)
++connmgr_port_protection_reconfigure(struct connmgr *mgr, bool enable_port_protection, const char *port_list)
+ {
+ 
+     if(enable_port_protection) {
+diff --git a/ofproto/connmgr.h b/ofproto/connmgr.h
+index 6c0ff4175..1ddd8187a 100644
+--- a/ofproto/connmgr.h
++++ b/ofproto/connmgr.h
+@@ -163,7 +163,7 @@ void connmgr_set_in_band_queue(struct connmgr *, int queue_id);
+ bool connmgr_has_in_band(struct connmgr *);
+ 
+ /* port protection configuration */
+-void connmgr_port_protection_reconfigure(struct connmgr *mgr, bool enable_port_protection, char* port_list);
++void connmgr_port_protection_reconfigure(struct connmgr *mgr, bool enable_port_protection, const char *port_list);
+ 
+ /* Fail-open and in-band implementation. */
+ void connmgr_flushed(struct connmgr *);
+diff --git a/ofproto/ofproto-dpif-upcall.c b/ofproto/ofproto-dpif-upcall.c
+index 29347c330..aa90104d6 100644
+--- a/ofproto/ofproto-dpif-upcall.c
++++ b/ofproto/ofproto-dpif-upcall.c
+@@ -3711,7 +3711,7 @@ create_ukey_from_of_rule(struct ofproto_dpif *ofproto, struct udpif *udpif, stru
+     ukey = ukey_create__(keybuf.data, keybuf.size, maskbuf.data, maskbuf.size,
+                          true, &ufid, PMD_ID_NULL, &odp_actions, 0, 0, m.flow.recirc_id, NULL, UNKNOWN_FLOW_TYPE);
+ 
+-    result = revalidate_ukey(udpif, ukey, &stats, &odp_actions, udpif->reval_seq, &recircs, false);
++    result = revalidate_ukey(udpif, ukey, &stats, &odp_actions, seq_read(udpif->reval_seq), &recircs, false);
+     if (result == UKEY_DELETE)
+     {
+         ukey_delete__(ukey);
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index ecbd1f831..015ecec23 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2795,7 +2795,6 @@ static void
+ mcast_output_finish(struct xlate_ctx *ctx, struct mcast_output *out,
+                     struct xbundle *in_xbundle, struct xvlan *xvlan)
+ {
+-    struct xlate_in *xin = ctx->xin;
+     if (out->flood) {
+         xlate_normal_flood(ctx, in_xbundle, xvlan);
+     } else {
+@@ -2820,7 +2819,7 @@ mcast_xlate_query_external_handler(struct xlate_ctx *ctx,
+     LIST_FOR_EACH(b, bundle_node, &grp->bundle_lru) {
+             mcast_xbundle = xbundle_lookup(ctx->xcfg, b->port);
+             if (mcast_xbundle && mcast_xbundle != in_xbundle) {
+-                if (! mcast_snooping_mrouter_lookup(ms, xvlan, mcast_xbundle->ofbundle))
++                if (! mcast_snooping_mrouter_lookup(ms, xvlan->v[0].vid, mcast_xbundle->ofbundle))
+                 {
+                     VLOG_INFO("forwarding query to mcast group port");
+                     xlate_report(ctx, OFT_DETAIL, "forwarding query to mcast group port");
+@@ -2850,7 +2849,6 @@ mcast_xlate_igmp_external_handler(struct xlate_ctx *ctx,
+                               struct mcast_output *out)
+     OVS_REQ_RDLOCK(ms->rwlock)
+ {
+-    struct xbundle *xbundle;
+     struct flow *flow = &ctx->xin->flow;
+     if (mcast_snooping_is_membership(flow->tp_src)) {
+         VLOG_INFO("Membership request will handle in external application");
+@@ -2859,7 +2857,7 @@ mcast_xlate_igmp_external_handler(struct xlate_ctx *ctx,
+     } else if ( mcast_snooping_is_query(flow->tp_src)) {
+         ovs_be32 ip4_grp = flow->igmp_group_ip4;
+         struct mcast_group *grp;
+-        grp = mcast_snooping_lookup4(ms, ip4_grp, xvlan);
++        grp = mcast_snooping_lookup4(ms, ip4_grp, xvlan->v[0].vid);
+         mcast_xlate_query_external_handler(ctx,ms,in_xbundle,xvlan,grp,out);
+         return;
+     } else {
+@@ -2875,7 +2873,6 @@ mcast_xlate_mld_external_handler(struct xlate_ctx *ctx,
+                               struct mcast_output *out)
+     OVS_REQ_RDLOCK(ms->rwlock)
+ {
+-    struct xbundle *xbundle;
+     struct flow *flow = &ctx->xin->flow;
+     struct dp_packet *p;
+     struct flow_wildcards *wc = ctx->wc;
+@@ -2888,7 +2885,7 @@ mcast_xlate_mld_external_handler(struct xlate_ctx *ctx,
+         if (!addr) {
+             return;
+         }
+-        grp = mcast_snooping_lookup(ms, addr, xvlan);
++        grp = mcast_snooping_lookup(ms, addr, xvlan->v[0].vid);
+         mcast_xlate_query_external_handler(ctx,ms,in_xbundle,xvlan,grp,out);
+         return;
+     } else {
+@@ -2902,13 +2899,12 @@ static void
+ mcast_xlate_igmp_external_data_handler(struct xlate_ctx *ctx,
+                               struct mcast_snooping *ms OVS_UNUSED,
+                               struct xbundle *in_xbundle,
+-                              struct xvlan *xvlan,
++                              struct xvlan *xvlan OVS_UNUSED,
+                               struct mcast_group *grp,
+                               struct in6_addr *addr,
+                               struct mcast_output *out)
+     OVS_REQ_RDLOCK(ms->rwlock)
+ {
+-    struct flow *flow = &ctx->xin->flow;
+     struct xbundle *mcast_xbundle;
+     struct mcast_group_bundle *b;
+     bool found = false;
+@@ -3299,8 +3295,8 @@ xlate_normal(struct xlate_ctx *ctx)
+         }
+ 
+         if (grp) {
+-            if (flow->dl_type == htons(ETH_TYPE_IP) && mcast_external_igmp_handler_enabled() ||
+-                flow->dl_type == htons(ETH_TYPE_IPV6) && mcast_external_mld_handler_enabled()) {
++            if ((flow->dl_type == htons(ETH_TYPE_IP) && mcast_external_igmp_handler_enabled()) ||
++                (flow->dl_type == htons(ETH_TYPE_IPV6) && mcast_external_mld_handler_enabled())) {
+                 mcast_xlate_igmp_external_data_handler(ctx, ms, in_xbundle, &xvlan, grp, &addr, &out);
+             } else {
+                 xlate_normal_mcast_send_group(ctx, ms, grp, in_xbundle, &out);
+@@ -3309,8 +3305,8 @@ xlate_normal(struct xlate_ctx *ctx)
+                                                  &out);
+             }
+         } else {
+-            if (!(flow->dl_type == htons(ETH_TYPE_IP) && mcast_external_igmp_handler_enabled() ||
+-                flow->dl_type == htons(ETH_TYPE_IPV6) && mcast_external_mld_handler_enabled())) {
++            if (!((flow->dl_type == htons(ETH_TYPE_IP) && mcast_external_igmp_handler_enabled()) ||
++                (flow->dl_type == htons(ETH_TYPE_IPV6) && mcast_external_mld_handler_enabled()))) {
+                 if (mcast_snooping_flood_unreg(ms)) {
+                     xlate_report(ctx, OFT_DETAIL,
+                                  "unregistered multicast, flooding");
+diff --git a/ofproto/ofproto.c b/ofproto/ofproto.c
+index efc3e1629..0dbec6172 100644
+--- a/ofproto/ofproto.c
++++ b/ofproto/ofproto.c
+@@ -9114,6 +9114,7 @@ is_exact_match(struct rule *rule, const struct rule_actions *actions)
+     ovs_be16         dl_type = OVS_BE16_MAX;
+     int              result;
+     const ofp_port_t any_port_mask = u16_to_ofp(UINT16_MAX);
++    struct rule_actions *acts;
+ 
+     /* Veify flow from rule */
+ 
+@@ -9200,7 +9201,9 @@ is_exact_match(struct rule *rule, const struct rule_actions *actions)
+ 
+     result = false; /* no valid output found */
+ 
+-    OFPACT_FOR_EACH (a, actions->ofpacts, actions->ofpacts_len) {
++    acts = (struct rule_actions *)actions;
++
++    OFPACT_FOR_EACH (a, acts->ofpacts, acts->ofpacts_len) {
+         switch (a->type) {
+         case OFPACT_OUTPUT:
+             {
+@@ -9217,6 +9220,62 @@ is_exact_match(struct rule *rule, const struct rule_actions *actions)
+         case OFPACT_LEARN:
+         case OFPACT_METER:
+             return false;
++        case OFPACT_BUNDLE:
++        case OFPACT_CHECK_PKT_LARGER:
++        case OFPACT_CLEAR_ACTIONS:
++        case OFPACT_CLONE:
++        case OFPACT_CONJUNCTION:
++        case OFPACT_CT:
++        case OFPACT_CT_CLEAR:
++        case OFPACT_DEBUG_RECIRC:
++        case OFPACT_DEBUG_SLOW:
++        case OFPACT_DEC_MPLS_TTL:
++        case OFPACT_DEC_NSH_TTL:
++        case OFPACT_DEC_TTL:
++        case OFPACT_DECAP:
++        case OFPACT_ENCAP:
++        case OFPACT_ENQUEUE:
++        case OFPACT_EXIT:
++        case OFPACT_FIN_TIMEOUT:
++        case OFPACT_GOTO_TABLE:
++        case OFPACT_MULTIPATH:
++        case OFPACT_NAT:
++        case OFPACT_NOTE:
++        case OFPACT_OUTPUT_REG:
++        case OFPACT_OUTPUT_TRUNC:
++        case OFPACT_POP_MPLS:
++        case OFPACT_POP_QUEUE:
++        case OFPACT_PUSH_MPLS:
++        case OFPACT_PUSH_VLAN:
++        case OFPACT_REG_MOVE:
++        case OFPACT_SAMPLE:
++        case OFPACT_SET_ETH_DST:
++        case OFPACT_SET_ETH_SRC:
++        case OFPACT_SET_FIELD:
++        case OFPACT_SET_IP_DSCP:
++        case OFPACT_SET_IP_ECN:
++        case OFPACT_SET_IP_TTL:
++        case OFPACT_SET_IPV4_DST:
++        case OFPACT_SET_IPV4_SRC:
++        case OFPACT_SET_L4_DST_PORT:
++        case OFPACT_SET_L4_SRC_PORT:
++        case OFPACT_SET_MPLS_LABEL:
++        case OFPACT_SET_MPLS_TC:
++        case OFPACT_SET_MPLS_TTL:
++        case OFPACT_SET_OF_MARK1:
++        case OFPACT_SET_OF_MARK2:
++        case OFPACT_SET_QUEUE:
++        case OFPACT_SET_TUNNEL:
++        case OFPACT_SET_VLAN_PCP:
++        case OFPACT_SET_VLAN_VID:
++        case OFPACT_SKIP_ACC:
++        case OFPACT_STACK_POP:
++        case OFPACT_STACK_PUSH:
++        case OFPACT_STRIP_VLAN:
++        case OFPACT_UNROLL_XLATE:
++        case OFPACT_WRITE_ACTIONS:
++        case OFPACT_WRITE_METADATA:
++            break;
+         default:
+             break;
+         }
+diff --git a/ofproto/port-protection.c b/ofproto/port-protection.c
+index 0322a4398..52d6f3f35 100644
+--- a/ofproto/port-protection.c
++++ b/ofproto/port-protection.c
+@@ -41,6 +41,7 @@
+ #include "openflow/openflow.h"
+ #include "packets.h"
+ #include "openvswitch/poll-loop.h"
++#include "socket-util.h"
+ #include "timeval.h"
+ #include "openvswitch/vlog.h"
+ #include "fail-open.h"
+@@ -91,7 +92,7 @@ struct p_protect_info {
+     struct hmap rules;          /* Contains "struct p_protect_rule"s. */
+ };
+ 
+-int parse_port_protection(struct p_protect_info *prtc, const char *target) {
++static int parse_port_protection(struct p_protect_info *prtc, const char *target) {
+     struct port_info *port_info;
+     char *tmp, *target_list, *context;
+     int n_ports = 0;
+@@ -226,7 +227,7 @@ update_rules(struct p_protect_info *prtc)
+  * means that the caller can destroy 'p_protect_info' without leaving extra flows
+  * hanging around in the flow table. */
+ bool
+-port_protection_run(struct p_protect_info *prtc, bool enable_port_protection, char* port_list)
++port_protection_run(struct p_protect_info *prtc, bool enable_port_protection, const char *port_list)
+ {
+     uint64_t ofpacts_stub[128 / 8];
+     struct ofpbuf ofpacts;
+diff --git a/ofproto/port-protection.h b/ofproto/port-protection.h
+index 75d789de2..4c6b47fc0 100644
+--- a/ofproto/port-protection.h
++++ b/ofproto/port-protection.h
+@@ -37,7 +37,7 @@ struct ofproto;
+ int port_protection_create(struct ofproto *, struct p_protect_info **);
+ void port_protection_destroy(struct p_protect_info *);
+ 
+-bool port_protection_run(struct p_protect_info *p_protect_info, bool enable_port_protection, char* port_list);
++bool port_protection_run(struct p_protect_info *p_protect_info, bool enable_port_protection, const char *port_list);
+ void port_protection_wait(struct p_protect_info *);
+ 
+ int port_protection_count_rules(const struct p_protect_info *p_protect_info);
+diff --git a/vswitchd/bridge.c b/vswitchd/bridge.c
+index 0ca478862..9a5ce1094 100644
+--- a/vswitchd/bridge.c
++++ b/vswitchd/bridge.c
+@@ -3905,7 +3905,7 @@ static void
+ bridge_configure_port_protection(struct bridge *br)
+ {
+         bool enable_port_protection;
+-    char* list_port_protection;
++    const char *list_port_protection;
+ 
+     enable_port_protection = smap_get_bool(&br->cfg->other_config, "enable-port-protection",
+                                        false);
+@@ -3915,6 +3915,7 @@ bridge_configure_port_protection(struct bridge *br)
+     connmgr_port_protection_reconfigure(br->ofproto->connmgr, enable_port_protection, list_port_protection);
+ }
+ 
++static void
+ bridge_configure_remotes(struct bridge *br,
+                          const struct sockaddr_in *managers, size_t n_managers)
+ {
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index e9890c5f7..c47798fd7 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -21,6 +21,7 @@
+ #include <config.h>
+ 
+ #include <asm/param.h>
++#include <ctype.h>
+ #include <errno.h>
+ #include <getopt.h>
+ #include <inttypes.h>
+@@ -117,9 +118,11 @@ static struct nl_sock *brc_sock;
+ /* The Generic Netlink family number used for bridge compatibility. */
+ static int brc_family;
+ 
++#ifdef HAVE_GENL_MULTICAST_GROUP_WITH_ID
+ static const struct nl_policy brc_multicast_policy[] = {
+     [BRC_GENL_A_MC_GROUP] = {.type = NL_A_U32 }
+ };
++#endif
+ 
+ static char *
+ capture_vsctl_valist(const char *arg0, va_list args, int *exit_code)
+@@ -263,7 +266,7 @@ lookup_brc_multicast_group(int *multicast_group)
+ static int
+ brc_open(struct nl_sock **sock)
+ {
+-    int multicast_group = 0;
++    unsigned int multicast_group = 0;
+     int retval;
+ 
+     retval = nl_lookup_genl_family(BRC_GENL_FAMILY_NAME, &brc_family);
+@@ -292,10 +295,6 @@ brc_open(struct nl_sock **sock)
+     return retval;
+ }
+ 
+-static const struct nl_policy brc_dp_policy[] = {
+-    [BRC_GENL_A_DP_NAME] = { .type = NL_A_STRING },
+-};
+-
+ static int
+ parse_command(struct ofpbuf *buffer, uint32_t *seq, const char **br_name,
+               const char **port_name, uint64_t *count, uint64_t *skip, uint64_t *ulong_param)
+@@ -339,7 +338,7 @@ parse_command(struct ofpbuf *buffer, uint32_t *seq, const char **br_name,
+ }
+ 
+ /* seamless-ovs { */
+-static const char *
++static char *
+ ipaddrs_to_string(ipaddr_t *addrs, uint32_t naddrs)
+ {
+     if (!naddrs)
+@@ -422,7 +421,7 @@ parse_command_mg(struct ofpbuf *buffer, uint32_t *seq, const char **br_name,
+     }
+ 
+     if (gaddr) {
+-        *gaddr = nl_attr_get_unspec(attrs[BRC_GENL_A_MG_GADDR], sizeof(ipaddr_t));
++        *gaddr = (ipaddr_t *)nl_attr_get_unspec(attrs[BRC_GENL_A_MG_GADDR], sizeof(ipaddr_t));
+         VLOG_DBG("parse_command_mg: got gaddr");
+     }
+ 
+@@ -441,7 +440,7 @@ parse_command_mg(struct ofpbuf *buffer, uint32_t *seq, const char **br_name,
+         VLOG_DBG("parse_command_mg: got nsrc = %u", *nsrc);
+ 
+         if (saddrs && *nsrc && attrs[BRC_GENL_A_MG_SADDR]) {
+-            *saddrs = nl_attr_get_unspec(attrs[BRC_GENL_A_MG_SADDR], *nsrc * sizeof(ipaddr_t));
++            *saddrs = (ipaddr_t *)nl_attr_get_unspec(attrs[BRC_GENL_A_MG_SADDR], *nsrc * sizeof(ipaddr_t));
+             VLOG_DBG("parse_command_mg: got saddrs");
+         }
+     }
+@@ -574,11 +573,6 @@ handle_bridge_cmd(struct ofpbuf *buffer, bool add)
+     return error;
+ }
+ 
+-static const struct nl_policy brc_port_policy[] = {
+-    [BRC_GENL_A_DP_NAME] = { .type = NL_A_STRING },
+-    [BRC_GENL_A_PORT_NAME] = { .type = NL_A_STRING },
+-};
+-
+ static int
+ handle_port_cmd(struct ofpbuf *buffer, bool add)
+ {
+@@ -1052,7 +1046,7 @@ handle_get_bridge_exists(struct ofpbuf *buffer)
+ {
+     const char *br_name;
+     uint32_t seq;
+-    int error, size;
++    int error;
+     struct ofpbuf *reply;
+     int exit_code = 1;
+ 
+@@ -1080,8 +1074,8 @@ static int
+ handle_set_ulong_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+ {
+     const char *br_name;
+-    const char *str_other_config;
+-    const char *str_param;
++    char *str_other_config;
++    char *str_param;
+     uint64_t param;
+     uint32_t seq;
+     int error;
+@@ -1110,8 +1104,8 @@ static int
+ handle_set_ulong_val_port_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+ {
+     const char *pr_name;
+-    const char *str_other_config;
+-    const char *str_param;
++    char *str_other_config;
++    char *str_param;
+     uint64_t param;
+     uint32_t seq;
+     int error;
+@@ -1140,8 +1134,8 @@ static int
+ handle_set_ulong_val_interface_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+ {
+     const char *pr_name;
+-    const char *str_key_value;
+-    const char *str_param;
++    char *str_key_value;
++    char *str_param;
+     uint64_t param;
+     uint32_t seq;
+     int error;
+@@ -1170,7 +1164,7 @@ static int
+ handle_set_boolean_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+ {
+     const char *br_name;
+-    const char *str_key_value;
++    char *str_key_value;
+     uint64_t param;
+     uint32_t seq;
+     int error;
+@@ -1197,7 +1191,7 @@ static int
+ handle_set_boolean_val_port_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+ {
+     const char *pr_name;
+-    const char *str_key_value;
++    char *str_key_value;
+     uint64_t param;
+     uint32_t seq;
+     int error;
+@@ -1224,7 +1218,7 @@ static int
+ handle_set_mc_router_port_cmd(struct ofpbuf *buffer)
+ {
+     const char *br_name, *p_name;
+-    const char *str_key_value_type, *str_key_value_expires;
++    char *str_key_value_type, *str_key_value_expires;
+     uint64_t ip_type, expires;
+     uint32_t seq;
+     int error;
+@@ -1354,7 +1348,7 @@ handle_get_ulong_val_port_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+     output = capture_vsctl(vsctl_program, VSCTL_OPTIONS, "get", "Port", br_name, sub_cmd, (char *) NULL);
+  
+     if (!output) {
+-        VLOG_ERR("handle_get_ulong_val_port_cmd %s\n", output);
++        VLOG_ERR("handle_get_ulong_val_port_cmd has no output\n");
+         result = 0;
+         goto send_reply;
+     }
+@@ -1418,7 +1412,7 @@ handle_get_ulong_val_iface_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+     output = capture_vsctl(vsctl_program, VSCTL_OPTIONS, "get", "Interface", br_name, sub_cmd, (char *) NULL);
+ 
+     if (!output) {
+-        VLOG_ERR("handle_get_ulong_val_port_cmd %s\n", output);
++        VLOG_ERR("handle_get_ulong_val_port_cmd has no output\n");
+         result = 0;
+         goto send_reply;
+     }
+@@ -1445,7 +1439,7 @@ send_reply:
+ static int
+ handle_set_mc_snooping_flag_cmd(struct ofpbuf *buffer)
+ {
+-    const char *str_key_value_type, *str_key_value_snooping;
++    char *str_key_value_type, *str_key_value_snooping;
+     uint64_t ip_type, br_snooping;
+     uint32_t seq;
+     int error;
+@@ -1471,14 +1465,14 @@ handle_set_mc_snooping_flag_cmd(struct ofpbuf *buffer)
+ 
+ static void set_bridge_parameter(const char *br_name, const char *param, unsigned long value)
+ {
+-    const char *str_key_value = xasprintf("%s=%lu", param, value);
++    char *str_key_value = xasprintf("%s=%lu", param, value);
+     run_vsctl(vsctl_program, VSCTL_OPTIONS, "--", "set", "Bridge", br_name, str_key_value, (char *) NULL);
+     free(str_key_value);
+ }
+ 
+ static void set_port_parameter(const char *pr_name, const char *param, unsigned long value)
+ {
+-    const char *str_key_value = xasprintf("%s=%lu", param, value);
++    char *str_key_value = xasprintf("%s=%lu", param, value);
+     run_vsctl(vsctl_program, VSCTL_OPTIONS, "--", "set", "Port", pr_name, str_key_value, (char *) NULL);
+     free(str_key_value);
+ }

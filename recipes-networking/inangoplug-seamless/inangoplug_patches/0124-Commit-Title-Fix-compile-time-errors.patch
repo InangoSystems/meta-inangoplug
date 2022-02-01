@@ -1,0 +1,72 @@
+From 443077fdb441ef29a0bdfa1ec0106353d3948c80 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Mon, 17 Jan 2022 13:02:32 +0200
+Subject: [PATCH] Commit Title          : Fix compile time errors
+
+BugID                 : 27240
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Fixed compile time errors
+---
+ vswitchd/ovs-brcompatd.c | 20 ++++++++++----------
+ 1 file changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index c47798fd7..cfa012016 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -1083,8 +1083,8 @@ handle_set_ulong_val_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+     error = parse_command(buffer, &seq, &br_name, NULL, NULL, NULL, &param);
+ 
+     if (!error) {
+-        str_other_config = xasprintf("other_config:%s=%llu", sub_cmd, param);
+-        str_param        = xasprintf("%llu", param);
++        str_other_config = xasprintf("other_config:%s=%"PRIu64, sub_cmd, param);
++        str_param        = xasprintf("%"PRIu64, param);
+ 
+         if (!run_vsctl(vsctl_program, VSCTL_OPTIONS,
+                        "--", "set", "Bridge", br_name, str_other_config,
+@@ -1113,8 +1113,8 @@ handle_set_ulong_val_port_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+     error = parse_command(buffer, &seq, &pr_name, NULL, NULL, NULL, &param);
+ 
+     if (!error) {
+-        str_other_config = xasprintf("other_config:%s=%llu", sub_cmd, param);
+-        str_param        = xasprintf("%llu", param);
++        str_other_config = xasprintf("other_config:%s=%"PRIu64, sub_cmd, param);
++        str_param        = xasprintf("%"PRIu64, param);
+ 
+         if (!run_vsctl(vsctl_program, VSCTL_OPTIONS,
+                        "--", "set", "Port", pr_name, str_other_config,
+@@ -1143,8 +1143,8 @@ handle_set_ulong_val_interface_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+     error = parse_command(buffer, &seq, &pr_name, NULL, NULL, NULL, &param);
+ 
+     if (!error) {
+-        str_key_value = xasprintf("%s=%llu", sub_cmd, param);
+-        str_param     = xasprintf("%llu", param);
++        str_key_value = xasprintf("%s=%"PRIu64, sub_cmd, param);
++        str_param     = xasprintf("%"PRIu64, param);
+ 
+         if (!run_vsctl(vsctl_program, VSCTL_OPTIONS,
+                        "--", "set", "Interface", pr_name, str_key_value,
+@@ -1226,8 +1226,8 @@ handle_set_mc_router_port_cmd(struct ofpbuf *buffer)
+     error = parse_command(buffer, &seq, &br_name, &p_name, &expires, NULL, &ip_type);
+ 
+     if (!error) {
+-        str_key_value_type = xasprintf("%llu", ip_type);
+-        str_key_value_expires = xasprintf("%llu", expires);
++        str_key_value_type = xasprintf("%"PRIu64, ip_type);
++        str_key_value_expires = xasprintf("%"PRIu64, expires);
+ 
+         if (!run_vsctl(appctl_program,
+                        "--", "mdb/set-mrouter-port", br_name, p_name, str_key_value_type,
+@@ -1447,8 +1447,8 @@ handle_set_mc_snooping_flag_cmd(struct ofpbuf *buffer)
+     error = parse_command(buffer, &seq, NULL, NULL, &br_snooping, NULL, &ip_type);
+ 
+     if (!error) {
+-        str_key_value_type = xasprintf("%llu", ip_type);
+-        str_key_value_snooping = xasprintf("%llu", br_snooping);
++        str_key_value_type = xasprintf("%"PRIu64, ip_type);
++        str_key_value_snooping = xasprintf("%"PRIu64, br_snooping);
+ 
+         if (!run_vsctl(appctl_program,
+                        "--", "mdb/mc-snooping-flag", str_key_value_type,

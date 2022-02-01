@@ -122,5 +122,9 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0120-Commit-Title-Implement-setting-of-MTU-using-mtu_request-user-space.patch \
     file://0121-Commit-Title-Intercept-MTU-assignment-and-provision-it-to-openvswitch.patch \
     file://0122-Integrate-support-for-DISH-service-in-master.patch \
+    file://0123-Commit-Title-Fix-compile-time-warnings.patch \
+    file://0124-Commit-Title-Fix-compile-time-errors.patch \
+    file://0125-Commit-Title-Fix-AM-session-not-deleted-when-flow-is-modified.patch \
+    file://0126-Commit-Title-Fix-brlan0-availability.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

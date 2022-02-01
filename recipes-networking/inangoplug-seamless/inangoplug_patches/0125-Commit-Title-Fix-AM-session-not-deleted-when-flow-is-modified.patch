@@ -1,0 +1,117 @@
+From ec7438e2f8577fbd8ccf7fc446838dfffa1258f0 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Tue, 11 Jan 2022 21:27:51 +0500
+Subject: [PATCH] Commit Title: Fix AM session not deleted when flow is
+ modified
+
+BugID: 27143
+Bug Fixed(y/N[blankN]):
+CodeReviewId: 0
+Description:
+- Added proper handling of session translation errors to am_mod_session()
+- Added is_proactive flag to struct sw_flow
+---
+ datapath/am_pp.c | 39 +++++++++++++++++++++++++++------------
+ datapath/flow.h  |  1 +
+ 2 files changed, 28 insertions(+), 12 deletions(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index a6994f07b..5ffd6c668 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -107,6 +107,7 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 		return -EINVAL;
+ 
+ 	flow->acl_state = NOT_ACCELERATE;
++	flow->is_proactive = 0;
+ 	err = translate_to_am_session(dp, flow, &new_session);
+ 	if (err)
+ 		return err;
+@@ -122,8 +123,10 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 	else
+ 		err = PP_AM_UNSUPPORTED_PARAM;
+ 
+-	if (err == PP_AM_OK)
++	if (err == PP_AM_OK) {
+ 		flow->acl_state = ACCELERATED;
++		flow->is_proactive = proactive_flag;
++	}
+ 	else if (err == PP_AM_UNSUPPORTED_PARAM)
+ 		flow->acl_state = UNSUPPORTED;
+ 
+@@ -138,40 +141,52 @@ int am_mod_session(struct datapath *dp, struct sw_flow *flow, struct sw_flow_act
+ 	struct pm_am_session *new_session = NULL;
+ 	struct pm_am_session *old_session = NULL;
+ 	int err;
++	int old_err;
+ 
+ 	if (!dp || !flow)
+ 		return -EINVAL;
+ 
+ 	if (flow->acl_state == NOT_ACCELERATE || flow->acl_state == UNSUPPORTED)
+-		// TODO neer to understand proactive flag
++		// TODO need to understand proactive flag
+ 		return am_create_session(dp, flow, false);
+ 
+ 	new_session = (struct pm_am_session *)kmalloc(sizeof(struct pm_am_session), GFP_KERNEL);
+ 	memset(new_session, 0, sizeof(struct pm_am_session));
+ 	err = translate_to_am_session(dp, flow, new_session);
+-	if (err)
+-		goto out;
++	if (err) {
++		printk(KERN_INFO "am_mod_session: failed to translate to AM session: pp_am_id=%u\n", flow->pp_am_id);
++	}
+ 
+ 	old_session = (struct pm_am_session *)kmalloc(sizeof(*old_session), GFP_KERNEL);
+ 	memset(old_session, 0, sizeof(struct pm_am_session));
+-	err = translate_to_am_session_old_acts(dp, flow, old_session, old_acts);
+-	if (err)
+-		goto out;
++	old_err = translate_to_am_session_old_acts(dp, flow, old_session, old_acts);
++	if (old_err) {
++		printk(KERN_INFO "am_mod_session: failed to translate to AM session old acts: pp_am_id=%u\n", flow->pp_am_id);
++		err = old_err;
++	}
+ 
+-	if (check_acceleration_possibility(dp, flow))
++	if (err && flow->is_proactive) {
++		printk(KERN_INFO "am_mod_session: flow is proactive and we failed to translate session: pp_am_id=%u\n", flow->pp_am_id);
++		err = PP_AM_UNSUPPORTED_PARAM;
++	}
++	else if (check_acceleration_possibility(dp, flow)) {
+ 		err = pp_am_modify_session(old_session, new_session, &flow->pp_am_id);
+-	else
++	}
++	else {
+ 		err = PP_AM_UNSUPPORTED_PARAM;
++	}
+ 
+-	if (err == PP_AM_OK)
++	if (err == PP_AM_OK) {
+ 		flow->acl_state = ACCELERATED;
++	}
+ 	else if (err == PP_AM_UNSUPPORTED_PARAM) {
+ 		am_remove_session(flow);
+ 		flow->acl_state = UNSUPPORTED;
+-	} else
++	}
++	else {
+ 		flow->acl_state = NOT_ACCELERATE;
++	}
+ 
+-out:
+ 	if (new_session)
+ 		kfree(new_session);
+ 	if (old_session)
+diff --git a/datapath/flow.h b/datapath/flow.h
+index b190cf48f..7bf3999be 100644
+--- a/datapath/flow.h
++++ b/datapath/flow.h
+@@ -247,6 +247,7 @@ struct sw_flow {
+ 	struct sw_flow_actions __rcu *sf_acts;
+ 	u32 flow_type;
+ 	u8 local;
++	int is_proactive;
+ 	struct sw_flow_stats __rcu *stats[]; /* One for each CPU.  First one
+ 					   * is allocated at flow creation time,
+ 					   * the rest are allocated on demand
