@@ -126,5 +126,6 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0124-Commit-Title-Fix-compile-time-errors.patch \
     file://0125-Commit-Title-Fix-AM-session-not-deleted-when-flow-is-modified.patch \
     file://0126-Commit-Title-Fix-brlan0-availability.patch \
+    file://0127-Commit-Title-fix-reboot-on-toggle-router-mode.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"
