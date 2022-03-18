@@ -1,0 +1,165 @@
+From 2b4527b4d3b181e0c5fd5440fa3a8b6e6da03da5 Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Wed, 16 Feb 2022 12:40:45 +0500
+Subject: [PATCH] br_compat enable
+
+---
+ datapath/brcompat_main.c | 60 ++++++++++++++++++++++++------------------------
+ 1 file changed, 30 insertions(+), 30 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 6a96fc491..d6b74e6a6 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -1124,17 +1124,17 @@ error:
+ 
+ static int brc_br_bridge_setup(struct vport *vport, int add)
+ {
+-	// if (!vport)
+-	// 	return -EINVAL;
+-
+-	// if (add)
+-	// 	return br_compat_bridge_create(vport->dev, &vport->brcompat_data);
+-	// else
+-	// {
+-	// 	br_compat_multicast_dev_del(vport->brcompat_data);
+-	// 	vport->brcompat_data = NULL;
+-	// 	return 0;
+-	// }
++	if (!vport)
++		return -EINVAL;
++
++	if (add)
++		return br_compat_bridge_create(vport->dev, &vport->brcompat_data);
++	else
++	{
++		br_compat_multicast_dev_del(vport->brcompat_data);
++		vport->brcompat_data = NULL;
++		return 0;
++	}
+ 
+ 	return -EOPNOTSUPP;
+ }
+@@ -1150,13 +1150,13 @@ static int brc_br_port_setup(struct vport *br_vport, struct vport *vport, int ad
+ 			return -EINVAL;
+ 		
+ 
+-		// return br_compat_bridge_port_create(br_vport->brcompat_data, vport->dev, &vport->brcompat_data);
++		return br_compat_bridge_port_create(br_vport->brcompat_data, vport->dev, &vport->brcompat_data);
+ 	}
+ 	else
+ 	{
+-		// br_compat_multicast_disable_port(vport->brcompat_data);
+-		// br_compat_multicast_del_port(vport->brcompat_data);
+-		// vport->brcompat_data = NULL;
++		br_compat_multicast_disable_port(vport->brcompat_data);
++		br_compat_multicast_del_port(vport->brcompat_data);
++		vport->brcompat_data = NULL;
+ 		return 0;
+ 	}
+ 
+@@ -1178,7 +1178,7 @@ static int brc_br_port_set_param(struct vport *vport, struct net_device *dev, st
+ 		if (err)
+ 			return err;
+ 
+-		// err = br_compat_set_port_flag(vport->brcompat_data, val, BR_MULTICAST_FAST_LEAVE);
++		err = br_compat_set_port_flag(vport->brcompat_data, val, BR_MULTICAST_FAST_LEAVE);
+ 		if (err)
+ 			return err;
+ 	}
+@@ -1278,7 +1278,7 @@ static int brc_br_changelink(struct vport *vport, struct nlattr *tb[], struct nl
+ 	if (data[IFLA_BR_MCAST_QUERIER]) {
+ 		u8 val = nla_get_u8(data[IFLA_BR_MCAST_QUERIER]);
+ 
+-		// br_compat_multicast_set_querier(brcompat_data, val);
++		br_compat_multicast_set_querier(brcompat_data, val);
+ 	}
+ 
+ 	if (data[IFLA_BR_MCAST_SNOOPING]) {
+@@ -1286,56 +1286,56 @@ static int brc_br_changelink(struct vport *vport, struct nlattr *tb[], struct nl
+ 
+ 		brc_set_ulong_val_cmd(vport->dev, BRC_GENL_C_SET_BRIDGE_MULTICAST_SNOOPING, val);
+ 
+-		// br_compat_multicast_toggle(brcompat_data, val);
++		br_compat_multicast_toggle(brcompat_data, val);
+ 	}
+ 
+ 	if (data[IFLA_BR_MCAST_IGMP_VERSION]) {
+ 		u8 val = nla_get_u8(data[IFLA_BR_MCAST_IGMP_VERSION]);
+ 
+-		// br_compat_multicast_set_igmp_version(brcompat_data, val);
++		br_compat_multicast_set_igmp_version(brcompat_data, val);
+ 	}
+ 
+ 	if (data[IFLA_BR_MCAST_QUERY_USE_IFADDR]) {
+ 		u8 val = nla_get_u8(data[IFLA_BR_MCAST_QUERY_USE_IFADDR]);
+ 
+-		// br_compat_multicast_set_query_use_ifaddr(brcompat_data, val);
++		br_compat_multicast_set_query_use_ifaddr(brcompat_data, val);
+ 	}
+ 
+ 	if (data[IFLA_BR_MCAST_LAST_MEMBER_CNT]) {
+ 		u32 val = nla_get_u32(data[IFLA_BR_MCAST_LAST_MEMBER_CNT]);
+ 
+-		// br_compat_multicast_set_last_member_cnt(brcompat_data, val);
++		br_compat_multicast_set_last_member_cnt(brcompat_data, val);
+ 	}
+ 
+ 	if (data[IFLA_BR_MCAST_LAST_MEMBER_INTVL]) {
+ 		u64 val = nla_get_u64(data[IFLA_BR_MCAST_LAST_MEMBER_INTVL]);
+ 
+-		// br_compat_multicast_set_last_member_intvl(brcompat_data, val);
++		br_compat_multicast_set_last_member_intvl(brcompat_data, val);
+ 	}
+ 
+ 	if (data[IFLA_BR_MCAST_MEMBERSHIP_INTVL]) {
+ 		u64 val = nla_get_u64(data[IFLA_BR_MCAST_MEMBERSHIP_INTVL]);
+ 
+-		// br_compat_multicast_set_membership_intvl(brcompat_data, val);
++		br_compat_multicast_set_membership_intvl(brcompat_data, val);
+ 	}
+ 
+ 	if (data[IFLA_BR_MCAST_QUERY_INTVL]) {
+ 		u64 val = nla_get_u64(data[IFLA_BR_MCAST_QUERY_INTVL]);
+ 
+-		// br_compat_multicast_set_query_intvl(brcompat_data, val);
++		br_compat_multicast_set_query_intvl(brcompat_data, val);
+ 	}
+ 
+ 	if (data[IFLA_BR_MCAST_QUERY_RESPONSE_INTVL]) {
+ 		u64 val = nla_get_u64(data[IFLA_BR_MCAST_QUERY_RESPONSE_INTVL]);
+ 
+-		// br_compat_multicast_set_query_response_intvl(brcompat_data, val);
++		br_compat_multicast_set_query_response_intvl(brcompat_data, val);
+ 	}
+ 
+ #if IS_ENABLED(CONFIG_IPV6)
+ 	if (data[IFLA_BR_MCAST_MLD_VERSION]) {
+ 		u8 val = nla_get_u8(data[IFLA_BR_MCAST_MLD_VERSION]);
+ 
+-		// br_compat_multicast_set_mld_version(brcompat_data, val);
++		br_compat_multicast_set_mld_version(brcompat_data, val);
+ 	}
+ #endif
+ 
+@@ -1379,16 +1379,16 @@ static int brc_br_setlink(struct vport *vport, struct net_device *dev, struct nl
+ 
+ static int brc_br_fill_info(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev)
+ {
+-	// if (vport->brcompat_data)
+-	// 	return br_compat_multicast_fill_info(vport->brcompat_data, skb, br_dev);
++	if (vport->brcompat_data)
++		return br_compat_multicast_fill_info(vport->brcompat_data, skb, br_dev);
+ 
+ 	return 0;
+ }
+ 
+ static int brc_br_port_fill_slave_info(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev, const struct net_device *dev)
+ {
+-	// if (vport->brcompat_data)
+-	// 	return br_compat_multicast_fill_slave_info(vport->brcompat_data, skb, br_dev, dev);
++	if (vport->brcompat_data)
++		return br_compat_multicast_fill_slave_info(vport->brcompat_data, skb, br_dev, dev);
+ 
+ 	return 0;
+ }

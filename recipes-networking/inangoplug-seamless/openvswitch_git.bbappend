@@ -11,14 +11,13 @@ RDEPENDS_${PN}_remove = "\
     ${@ 'sed' if d.getVar('BUILD_TYPE', True) == 'RDKB-OS' else ''} \
     perl perl-module-strict \
 "
-RDEPENDS_${PN} += " ${PN}-brcompat ${PN}-testcontroller "
+RDEPENDS_${PN} += "${PN}-testcontroller "
 RDEPENDS_${PN}-switch_remove = "procps"
 
 FILESEXTRAPATHS_prepend := "${THISDIR}/inangoplug_files:${THISDIR}/inangoplug_patches:"
 
 SRCREV = "71d553b995d0bd527d3ab1e9fbaf5a2ae34de2f3"
 SRC_URI_append = " \
-    file://ovs-brcompatd.service \
     file://openvswitch.conf \
     file://generate_hw_id.sh \
     "
@@ -26,21 +25,23 @@ SRC_URI_append = " \
 PACKAGECONFIG_remove = "libcap-ng"
 PACKAGECONFIG += "pp-offload ssl"
 PACKAGECONFIG[pp-offload] = "--enable-pp-offload, --disable-pp-offload,,"
-EXTRA_OECONF_class-target += "--with-linux=${STAGING_KERNEL_BUILDDIR} \
-                              --with-linux-source=${STAGING_KERNEL_DIR} \
-                              KARCH=x86 \
-                              --with-dbdir=/var/run/openvswitch \
+EXTRA_OECONF_class-target += "--with-dbdir=/var/run/openvswitch \
                               --enable-shared=yes \
                               --enable-static=no \
+                              --disable-brcompat \
                              "
 
-SYSTEMD_SERVICE_${PN}-switch += "ovs-brcompatd.service"
+# EXTRA_OECONF_class-target = " \
+#     ${@bb.utils.contains('DISTRO_FEATURES', 'inangoplug_ovs_in_tree', '--disable-kernelmod', '', d)} \
+#                  "
+
+
+
 
 do_install_append_class-target() {
     oe_runmake modules_install INSTALL_MOD_PATH=${D}
 
     install -d ${D}/${systemd_unitdir}/system/
-    install -m 644 ${WORKDIR}/ovs-brcompatd.service ${D}/${systemd_unitdir}/system/
 
     # Remove unneeded files
     rm -rf ${D}/usr/share/openvswitch/scripts/ovn-ctl
@@ -132,7 +133,7 @@ python __anonymous() {
     pn_switch_var = "FILES_" + d.getVar("PN", True) + "-switch"
     systemd_service_var = "SYSTEMD_SERVICE_" + d.getVar("PN", True) + "-switch"
     d.setVar(pn_switch_var, d.getVar("PN_NEEDED", True))
-    d.setVar(systemd_service_var, "ovsdb-server.service ovs-vswitchd.service openvswitch.service ovs-brcompatd.service")
+    d.setVar(systemd_service_var, "ovsdb-server.service ovs-vswitchd.service openvswitch.service")
 }
 
 PN_NEEDED =  "\

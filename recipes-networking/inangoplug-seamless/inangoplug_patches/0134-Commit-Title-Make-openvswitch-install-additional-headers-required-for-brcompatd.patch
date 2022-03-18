@@ -1,0 +1,76 @@
+From 8a37dba0bd981046c347e97963e7984720446729 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Fri, 25 Feb 2022 16:53:52 +0500
+Subject: [PATCH] Commit Title          : Make openvswitch install additional
+ headers required for brcompatd
+
+BugID                 : 27730
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- Added additional headers from lib/ and include/ directories to be installed by openvswitch
+---
+ include/automake.mk |  3 +++
+ lib/automake.mk     | 35 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 38 insertions(+)
+
+diff --git a/include/automake.mk b/include/automake.mk
+index e982da87d..a4bbf7f54 100644
+--- a/include/automake.mk
++++ b/include/automake.mk
+@@ -11,6 +11,9 @@ include/odp-netlink-macros.h: include/odp-netlink.h \
+ EXTRA_DIST += build-aux/extract-odp-netlink-h build-aux/extract-odp-netlink-macros-h
+ CLEANFILES += include/odp-netlink.h include/odp-netlink-macros.h
+ 
++odp_includedir = $(includedir)
++odp_include_HEADERS = include/odp-netlink.h
++
+ include include/openflow/automake.mk
+ include include/openvswitch/automake.mk
+ include include/sparse/automake.mk
+diff --git a/lib/automake.mk b/lib/automake.mk
+index 95925b57c..983e34435 100644
+--- a/lib/automake.mk
++++ b/lib/automake.mk
+@@ -5,6 +5,41 @@
+ # notice and this notice are preserved.  This file is offered as-is,
+ # without warranty of any kind.
+ 
++lib_libopenvswitchincludedir = $(includedir)/openvswitch/lib
++lib_libopenvswitchinclude_HEADERS = \
++	lib/bitmap.h \
++	lib/byte-order.h \
++	lib/command-line.h \
++	lib/compiler.h \
++	lib/coverage.h \
++	lib/daemon.h \
++	lib/dirs.h \
++	lib/fatal-signal.h \
++	lib/flow.h \
++	lib/hash.h \
++	lib/netdev.h \
++	lib/netlink.h \
++	lib/netlink-notifier.h \
++	lib/netlink-protocol.h \
++	lib/netlink-socket.h \
++	lib/ovs-atomic.h \
++	lib/ovs-atomic-c11.h \
++	lib/ovs-thread.h \
++	lib/packets.h \
++	lib/process.h \
++	lib/random.h \
++	lib/rtnetlink.h \
++	lib/signals.h \
++	lib/sset.h \
++	lib/stdio.h \
++	lib/string.h \
++	lib/svec.h \
++	lib/timeval.h \
++	lib/tun-metadata.h \
++	lib/unaligned.h \
++	lib/unixctl.h \
++	lib/util.h
++
+ lib_LTLIBRARIES += lib/libopenvswitch.la
+ 
+ lib_libopenvswitch_la_LIBADD = $(SSL_LIBS)

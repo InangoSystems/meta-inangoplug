@@ -19,7 +19,6 @@ RDEPENDS_${PN} += "util-linux-uuidgen util-linux-libuuid coreutils \
 RDEPENDS_${PN}-testcontroller = "${PN} ${PN}-pki"
 RDEPENDS_${PN}-switch = "${PN} openssl procps util-linux-uuidgen"
 RDEPENDS_${PN}-pki = "${PN}"
-RDEPENDS_${PN}-brcompat = "${PN} ${PN}-switch"
 
 # Some installers will fail because of an install order based on
 # rdeps.  E.g. ovs-pki calls sed in the postinstall.  sed may be
@@ -46,7 +45,7 @@ CONFIGUREOPT_DEPTRACK = ""
 # EXTRA_OECONF = "--with-linux=${STAGING_KERNEL_DIR} KARCH=${TARGET_ARCH}"
 
 ALLOW_EMPTY_${PN}-pki = "1"
-PACKAGES =+ "${PN}-testcontroller ${PN}-switch ${PN}-brcompat ${PN}-pki"
+PACKAGES =+ "${PN}-testcontroller ${PN}-switch ${PN}-pki"
 
 FILES_${PN}-testcontroller = "\
 	${sysconfdir}/init.d/openvswitch-testcontroller \
@@ -54,8 +53,6 @@ FILES_${PN}-testcontroller = "\
 	${sysconfdir}/openvswitch-testcontroller \
 	${bindir}/ovs-testcontroller \
 	"
-
-FILES_${PN}-brcompat = "${sbindir}/ovs-brcompatd"
 
 FILES_${PN}-switch = "\
 	${sysconfdir}/init.d/openvswitch-switch \

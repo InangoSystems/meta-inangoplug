@@ -1,0 +1,130 @@
+From 9e1d6c6c226d2a9e877b8f03daffed359344c0a4 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Thu, 24 Feb 2022 02:24:39 +0200
+Subject: [PATCH] Commit Title          : Apply Inangoplug patches to in-tree
+ kernel module
+
+BugID                 : 27439
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Removed temp compile flags in datapath/linux/KBuild.in
+---
+ datapath/brcompat_main.c      | 12 +++++++-----
+ datapath/datapath.c           |  4 ++++
+ datapath/datapath.h           |  4 ++++
+ datapath/linux/Kbuild.in      |  3 +--
+ datapath/vport-internal_dev.c |  4 ++++
+ 5 files changed, 20 insertions(+), 7 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index be2ea5e91..02f9cd319 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -1242,12 +1242,13 @@ static int brc_br_port_set_param(struct vport *vport, struct net_device *dev, st
+ }
+ 
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4,13,0)
+-static int brc_br_port_slave_changelink(struct net_device *brdev,
++static int brc_br_port_slave_changelink(struct vport *vport,
++				    struct net_device *brdev,
+ 				    struct net_device *dev,
+ 				    struct nlattr *tb[],
+ 				    struct nlattr *data[])
+ {
+-	return brc_br_port_set_param(NULL, dev, data);
++	return brc_br_port_set_param(vport, dev, data);
+ }
+ static int br_validate(struct nlattr *tb[], struct nlattr *data[])
+ {
+@@ -1279,13 +1280,14 @@ static int br_port_slave_changelink(struct net_device *brdev, struct net_device
+ 	return br_compat_link_ops.slave_changelink(brdev, dev, tb, data);
+ }
+ #else
+-static int brc_br_port_slave_changelink(struct net_device *brdev,
++static int brc_br_port_slave_changelink(struct vport *vport,
++				    struct net_device *brdev,
+ 				    struct net_device *dev,
+ 				    struct nlattr *tb[],
+ 				    struct nlattr *data[],
+ 				    struct netlink_ext_ack *extack)
+ {
+-	return brc_br_port_set_param(NULL, dev, data);
++	return brc_br_port_set_param(vport, dev, data);
+ }
+ static int br_validate(struct nlattr *tb[], struct nlattr *data[],
+ 		       struct netlink_ext_ack *extack)
+@@ -1609,7 +1611,7 @@ static int __init brc_init(void)
+ 	ovs_dp_br_changelink_hook = brc_br_changelink;
+ 
+ 	/* Set the openvswitch br_port_slave_changelink handler */
+-	// ovs_dp_br_port_slave_changelink_hook = brc_br_port_slave_changelink;
++	ovs_dp_br_port_slave_changelink_hook = brc_br_port_slave_changelink;
+ 
+ 	/* Set the openvswitch br_fill_info handler */
+ 	ovs_dp_br_fill_info_hook = brc_br_fill_info;
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 2c3ac63f0..83f105ce4 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -88,7 +88,11 @@ EXPORT_SYMBOL(ovs_dp_add_del_port_hook);
+ int (*ovs_dp_br_changelink_hook)(struct vport *vport, struct nlattr *tb[], struct nlattr *data[]);
+ EXPORT_SYMBOL(ovs_dp_br_changelink_hook);
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(4,13,0)
+ int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[]);
++#else
++int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[], struct netlink_ext_ack *extack);
++#endif
+ EXPORT_SYMBOL(ovs_dp_br_port_slave_changelink_hook);
+ 
+ int (*ovs_dp_br_fill_info_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev);
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index b831d164f..26d6ecba0 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -272,7 +272,11 @@ extern int (*ovs_dp_mac_addr_hook)(struct net_device *dev, void *p);
+ extern int (*ovs_dp_mtu_hook)(struct net_device *dev, int mtu);
+ extern int (*ovs_dp_add_del_port_hook)(struct net_device *br_dev, struct net_device *p_dev, int add);
+ extern int (*ovs_dp_br_changelink_hook)(struct vport *vport, struct nlattr *tb[], struct nlattr *data[]);
++#if LINUX_VERSION_CODE < KERNEL_VERSION(4,13,0)
+ extern int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[]);
++#else
++extern int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[], struct netlink_ext_ack *extack);
++#endif
+ extern int (*ovs_dp_br_fill_info_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev);
+ extern int (*ovs_dp_br_port_fill_slave_info_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev, const struct net_device *dev);
+ extern int (*ovs_dp_br_setlink_hook)(struct vport *vport, struct net_device *dev, struct nlmsghdr *nlh, u16 flags);
+diff --git a/datapath/linux/Kbuild.in b/datapath/linux/Kbuild.in
+index f4a57708b..4e7a9c91e 100644
+--- a/datapath/linux/Kbuild.in
++++ b/datapath/linux/Kbuild.in
+@@ -17,12 +17,11 @@ ccflags-y += -I$(srcdir)/compat
+ ccflags-y += -g
+ ccflags-y += -include $(builddir)/kcompat.h
+ ccflags-y += -I$(PKG_CONFIG_SYSROOT_DIR)/$(includedir)/
+-ccflags-y += -Wno-error -Wno-error=incompatible-pointer-types -Wno-return-type -Wno-implicit-fallthrough -Wno-unused-function
+ 
+ # These include directories have to go before -I$(KSRC)/include.
+ # NOSTDINC_FLAGS just happens to be a variable that goes in the
+ # right place, even though it's conceptually incorrect.
+-NOSTDINC_FLAGS += -Wno-error -Wno-error=return-type -Wno-implicit-fallthrough -Wno-error=incompatible-pointer-types -I$(top_srcdir)/include -I$(KSRC)/net/openvswitch
++NOSTDINC_FLAGS += -I$(top_srcdir)/include -I$(KSRC)/net/openvswitch
+ 
+ obj-m := $(subst _,-,$(patsubst %,%.o,$(build_modules)))
+ 
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index 6a4d323d6..5727dd318 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -294,7 +294,11 @@ static int br_port_slave_changelink(struct net_device *br_dev, struct net_device
+ 		return -EINVAL;
+ 
+ 	if (ovs_dp_br_port_slave_changelink_hook) {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(4,13,0)
+ 		return ovs_dp_br_port_slave_changelink_hook(vport, br_dev, dev, tb, data);
++#else
++		return ovs_dp_br_port_slave_changelink_hook(vport, br_dev, dev, tb, data, NULL);
++#endif
+ 	}
+ 	return -EOPNOTSUPP;
+ }

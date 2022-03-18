@@ -1,0 +1,42 @@
+From 1c197fc8294295950bd1b1eef300fd1e438eebb9 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Tue, 22 Feb 2022 17:39:26 +0200
+Subject: [PATCH] Commit Title : Fix the bug with brcompat
+
+BugID                 : 27693
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Fixed the bug which causes "brcompat: timed out
+waiting for userspace" message
+---
+ datapath/brcompat_main.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 9a1ed1ef8..be2ea5e91 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -1095,6 +1095,9 @@ static struct genl_ops brc_genl_ops[] = {
+ 	  .flags = GENL_ADMIN_PERM, /* Requires CAP_NET_ADMIN privelege. */
+ 	  .policy = brc_genl_policy,
+ 	  .doit = brc_genl_dp_result,
++#ifdef HAVE_GENL_VALIDATE_FLAGS
++	  .validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
++#endif
+ 	},
+ };
+ 
+@@ -1158,8 +1161,13 @@ static struct sk_buff *brc_send_command(struct net *net,
+ 
+ 	/* Re-parse message.  Can't fail, since it parsed correctly once
+ 	 * already. */
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(5,1,21)
+ 	error = genlmsg_parse(nlmsg_hdr(reply), &brc_genl_family,
+ 			    attrs, BRC_GENL_A_MAX, brc_genl_policy, NULL);
++#else
++	error = genlmsg_parse_deprecated(nlmsg_hdr(reply), &brc_genl_family,
++			    attrs, BRC_GENL_A_MAX, brc_genl_policy, NULL);
++#endif
+ 	WARN_ON(error);
+ 
+ 	return reply;

@@ -18,6 +18,7 @@ RDEPENDS_${PN}_append_puma7arm = " \
 
 RDEPENDS_${PN}_append_puma7 = " \
     openvswitch \
+    ovs-brcompat \
     inangoplug-rsc-proxy \
     inangoplug-chandler \
     inangoplug-pp-acceleration-mod \

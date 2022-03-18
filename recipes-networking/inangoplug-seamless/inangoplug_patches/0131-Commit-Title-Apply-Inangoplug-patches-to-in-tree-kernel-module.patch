@@ -1,0 +1,104 @@
+From 03860e0bab974dc0a0ae6ce9864499a7c7ff5f32 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Wed, 16 Feb 2022 13:32:28 +0000
+Subject: [PATCH] Commit Title          : Apply Inangoplug patches to in-tree
+ kernel module
+
+BugID                 : 27439
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Fixed some issues in brcompat
+---
+ datapath/brcompat_main.c | 38 ++++++++++++++++++++++++++------------
+ 1 file changed, 26 insertions(+), 12 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 185b1af85..9a1ed1ef8 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -910,6 +910,9 @@ static int brc_dev_sysfs(struct net_device *dev, unsigned long *ul_value, int cm
+ 		{
+ 			switch(cmd)
+ 			{
++				case IFLA_BR_AGEING_TIME:
++					*ul_value = BRC_DEFAULT_MAC_AGING_TIME;
++					break;
+ 				case IFLA_BR_FORWARD_DELAY:
+ 					*ul_value = BRC_STP_DEFAULT_FWD_DELAY;
+ 					break;
+@@ -919,16 +922,14 @@ static int brc_dev_sysfs(struct net_device *dev, unsigned long *ul_value, int cm
+ 				case IFLA_BR_MAX_AGE:
+ 					*ul_value = BRC_STP_DEFAULT_MAX_AGE;
+ 					break;
++				case IFLA_BR_MCAST_SNOOPING:
++					return brc_get_ulong_val_cmd(dev, BRC_GENL_C_GET_BRIDGE_MULTICAST_SNOOPING, ul_value);
+ 				case IFLA_BR_PRIORITY:
+ 					*ul_value = BRC_STP_DEFAULT_BRIDGE_PRIORITY;
+ 					break;
+-				case BRC_GENL_C_GET_BRIDGE_ROOT_ID:
+ 				case IFLA_BR_STP_STATE:
+-				case IFLA_BR_AGEING_TIME:
+-					*ul_value = BRC_DEFAULT_MAC_AGING_TIME;
++					*ul_value = 0;
+ 					break;
+-				case IFLA_BR_MCAST_SNOOPING:
+-					return brc_get_ulong_val_cmd(dev, BRC_GENL_C_GET_BRIDGE_MULTICAST_SNOOPING, ul_value);
+ 				default:
+ 					return brc_get_ulong_val_cmd(dev, cmd, ul_value);
+ 			}
+@@ -940,11 +941,14 @@ static int brc_dev_sysfs(struct net_device *dev, unsigned long *ul_value, int cm
+ 				case IFLA_BRPORT_COST:
+ 					*ul_value = BRC_STP_PATH_COST;
+ 					break;
+-				case IFLA_BRPORT_STATE:
+-					*ul_value = 0;
++				case IFLA_BRPORT_FAST_LEAVE:
++					err = -EOPNOTSUPP;
+ 					break;
+ 				case IFLA_BRPORT_NO:
+ 					return brc_get_ulong_val_cmd(dev, BRC_GENL_C_GET_PORT_PORT_NO, ul_value);
++				case IFLA_BRPORT_STATE:
++					*ul_value = 0;
++					break;
+ 				default:
+ 					return brc_get_ulong_val_cmd(dev, cmd, ul_value);
+ 			}
+@@ -956,15 +960,19 @@ static int brc_dev_sysfs(struct net_device *dev, unsigned long *ul_value, int cm
+ 		{
+ 			switch (cmd)
+ 			{
++				case IFLA_BR_AGEING_TIME:
++					return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_AGEING_TIME, *ul_value);
+ 				case IFLA_BR_FORWARD_DELAY:
+ 				case IFLA_BR_HELLO_TIME:
+ 				case IFLA_BR_MAX_AGE:
+-				case IFLA_BR_PRIORITY:
+-				case IFLA_BR_STP_STATE:
+-				case IFLA_BR_AGEING_TIME:
+-					return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_AGEING_TIME, *ul_value);
++					err = -EOPNOTSUPP;
++					break;
+ 				case IFLA_BR_MCAST_SNOOPING:
+ 					return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_BRIDGE_MULTICAST_SNOOPING, *ul_value);
++				case IFLA_BR_PRIORITY:
++				case IFLA_BR_STP_STATE:
++					err = -EOPNOTSUPP;
++					break;
+ 				default:
+ 					return brc_set_ulong_val_cmd(dev, cmd, *ul_value);
+ 			}
+@@ -974,7 +982,13 @@ static int brc_dev_sysfs(struct net_device *dev, unsigned long *ul_value, int cm
+ 			switch (cmd)
+ 			{
+ 				case IFLA_BRPORT_COST:
+-					err = EOPNOTSUPP;
++					err = -EOPNOTSUPP;
++					break;
++				case IFLA_BRPORT_FAST_LEAVE:
++					return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_PORT_MC_SNOOPING_FLOOD_REPORTS, !*ul_value);
++				case IFLA_BRPORT_NO:
++				case IFLA_BRPORT_STATE:
++					err = -EOPNOTSUPP;
+ 					break;
+ 				default:
+ 					return brc_set_ulong_val_cmd(dev, cmd, *ul_value);

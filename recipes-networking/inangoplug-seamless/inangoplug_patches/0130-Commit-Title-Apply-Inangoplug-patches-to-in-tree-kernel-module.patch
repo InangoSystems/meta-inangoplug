@@ -1,0 +1,140 @@
+From d16c019bae10a790a5dbf56fc56dd7db0345da64 Mon Sep 17 00:00:00 2001
+From: Kyrylo Mushta <k.mushta@inango-systems.com>
+Date: Tue, 15 Feb 2022 19:25:34 +0200
+Subject: [PATCH] Commit Title          : Apply Inangoplug patches to in-tree
+ kernel module
+
+BugID                 : 27439
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Made in-tree OVS partially work
+---
+ datapath/brcompat_main.c | 111 ++++++++++++++++++++++++++++++-----------------
+ 1 file changed, 72 insertions(+), 39 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index d6b74e6a6..185b1af85 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -905,49 +905,82 @@ static int brc_dev_sysfs(struct net_device *dev, unsigned long *ul_value, int cm
+ 	int err = 0;
+ 
+ 	if (oper == GET_PARAMETER)
+-		switch(cmd){
+-			case BRC_GENL_C_GET_BRIDGE_FORWARD_DELAY:
+-				*ul_value = BRC_STP_DEFAULT_FWD_DELAY;
+-				break;
+-			case BRC_GENL_C_GET_BRIDGE_HELLO_TIME:
+-				*ul_value = BRC_STP_DEFAULT_HELLO_TIME;
+-				break;
+-			case BRC_GENL_C_GET_BRIDGE_MAX_AGE: 
+-				*ul_value = BRC_STP_DEFAULT_MAX_AGE;
+-				break;
+-			/*start*/
+-			case BRC_GENL_C_GET_BRIDGE_PRIORITY:
+-				*ul_value = BRC_STP_DEFAULT_BRIDGE_PRIORITY;
+-				break;
+-			case BRC_GENL_C_GET_PORT_PATH_COST:
+-				*ul_value = BRC_STP_PATH_COST;
+-				break;
+-			case BRC_GENL_C_GET_BRIDGE_ROOT_ID: 
+-			case BRC_GENL_C_GET_BRIDGE_STP_STATE:
+-			case BRC_GENL_C_GET_PORT_STATE:
+-				*ul_value = 0;
+-				break;
+-			case BRC_GENL_C_GET_AGEING_TIME:
+-				*ul_value = BRC_DEFAULT_MAC_AGING_TIME;
+-				break;
+-			default:
+-				return brc_get_ulong_val_cmd(dev, cmd, ul_value);
++	{
++		if (netif_is_ovs_master(dev))
++		{
++			switch(cmd)
++			{
++				case IFLA_BR_FORWARD_DELAY:
++					*ul_value = BRC_STP_DEFAULT_FWD_DELAY;
++					break;
++				case IFLA_BR_HELLO_TIME:
++					*ul_value = BRC_STP_DEFAULT_HELLO_TIME;
++					break;
++				case IFLA_BR_MAX_AGE:
++					*ul_value = BRC_STP_DEFAULT_MAX_AGE;
++					break;
++				case IFLA_BR_PRIORITY:
++					*ul_value = BRC_STP_DEFAULT_BRIDGE_PRIORITY;
++					break;
++				case BRC_GENL_C_GET_BRIDGE_ROOT_ID:
++				case IFLA_BR_STP_STATE:
++				case IFLA_BR_AGEING_TIME:
++					*ul_value = BRC_DEFAULT_MAC_AGING_TIME;
++					break;
++				case IFLA_BR_MCAST_SNOOPING:
++					return brc_get_ulong_val_cmd(dev, BRC_GENL_C_GET_BRIDGE_MULTICAST_SNOOPING, ul_value);
++				default:
++					return brc_get_ulong_val_cmd(dev, cmd, ul_value);
++			}
+ 		}
++		else if (netif_is_ovs_port(dev))
++		{
++			switch(cmd)
++			{
++				case IFLA_BRPORT_COST:
++					*ul_value = BRC_STP_PATH_COST;
++					break;
++				case IFLA_BRPORT_STATE:
++					*ul_value = 0;
++					break;
++				case IFLA_BRPORT_NO:
++					return brc_get_ulong_val_cmd(dev, BRC_GENL_C_GET_PORT_PORT_NO, ul_value);
++				default:
++					return brc_get_ulong_val_cmd(dev, cmd, ul_value);
++			}
++		}
++	}
+ 	else if (oper == SET_PARAMETER)
+-		switch (cmd)
++	{
++		if (netif_is_ovs_master(dev))
++		{
++			switch (cmd)
++			{
++				case IFLA_BR_FORWARD_DELAY:
++				case IFLA_BR_HELLO_TIME:
++				case IFLA_BR_MAX_AGE:
++				case IFLA_BR_PRIORITY:
++				case IFLA_BR_STP_STATE:
++				case IFLA_BR_AGEING_TIME:
++					return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_AGEING_TIME, *ul_value);
++				case IFLA_BR_MCAST_SNOOPING:
++					return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_BRIDGE_MULTICAST_SNOOPING, *ul_value);
++				default:
++					return brc_set_ulong_val_cmd(dev, cmd, *ul_value);
++			}
++		}
++		else if (netif_is_ovs_port(dev))
+ 		{
+-			case BRC_GENL_C_SET_BRIDGE_FORWARD_DELAY:
+-			case BRC_GENL_C_SET_BRIDGE_HELLO_TIME:
+-			case BRC_GENL_C_SET_BRIDGE_MAX_AGE:
+-			case BRC_GENL_C_SET_BRIDGE_PRIORITY:
+-			case BRC_GENL_C_SET_BRIDGE_STP_STATE:
+-			case BRC_GENL_C_SET_PORT_PATH_COST:
+-			 err = EOPNOTSUPP;
+-			 break;
+-			default:
+-				return brc_set_ulong_val_cmd(dev, cmd, *ul_value);
+-				break;
++			switch (cmd)
++			{
++				case IFLA_BRPORT_COST:
++					err = EOPNOTSUPP;
++					break;
++				default:
++					return brc_set_ulong_val_cmd(dev, cmd, *ul_value);
++			}
+ 		}
++	}
+ 	else
+ 		err = -1;
+ 

@@ -126,6 +126,14 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0124-Commit-Title-Fix-compile-time-errors.patch \
     file://0125-Commit-Title-Fix-AM-session-not-deleted-when-flow-is-modified.patch \
     file://0126-Commit-Title-Fix-brlan0-availability.patch \
-    file://0127-Commit-Title-fix-reboot-on-toggle-router-mode.patch \
+    file://0127-Upgrade-brcompat-to-5.15-kernel.patch \
+    file://0128-ioctl-fixes.patch \
+    file://0129-br_compat-enable.patch \
+    file://0130-Commit-Title-Apply-Inangoplug-patches-to-in-tree-kernel-module.patch \
+    file://0131-Commit-Title-Apply-Inangoplug-patches-to-in-tree-kernel-module.patch \
+    file://0132-Commit-Title-Fix-the-bug-with-brcompat.patch \
+    file://0133-Commit-Title-Apply-Inangoplug-patches-to-in-tree-kernel-module.patch \
+    file://0134-Commit-Title-Make-openvswitch-install-additional-headers-required-for-brcompatd.patch \
+    file://0135-Commit-Title-Remove-brcompat-from-scripts.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

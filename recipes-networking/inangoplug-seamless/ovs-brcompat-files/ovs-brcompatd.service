@@ -12,11 +12,8 @@ Restart=always
 EnvironmentFile=/etc/openvswitch/default.conf
 EnvironmentFile=-/nvram/openvswitch.conf
 EnvironmentFile=-/run/openvswitch/useropts
-ExecStart=/usr/share/openvswitch/scripts/ovs-ctl \
-          --no-ovs-vswitchd --no-ovsdb-server --no-monitor --system-id=random \
-          ${OVSUSER} \
-          start $OPTIONS
-ExecStop=/usr/share/openvswitch/scripts/ovs-ctl --no-ovs-vswitchd --no-ovsdb-server stop
-ExecReload=/usr/share/openvswitch/scripts/ovs-ctl --no-ovs-vswitchd --no-ovsdb-server \
-           ${OVSUSER} \
-           --no-monitor restart $OPTIONS
+ExecStart=/usr/share/openvswitch/scripts/ovs-brcompat-ctl \
+          ${OVSUSER} --no-monitor start $OPTIONS
+ExecStop=/usr/share/openvswitch/scripts/ovs-brcompat-ctl stop
+ExecReload=/usr/share/openvswitch/scripts/ovs-brcompat-ctl \
+          ${OVSUSER} --no-monitor restart $OPTIONS
