@@ -1,0 +1,162 @@
+From 47e8b8c926229a7bfe38a4b6eb166bc3dd372c64 Mon Sep 17 00:00:00 2001
+From: Georgii Okhokhonin <g.okhokhonin@inango-systems.com>
+Date: Thu, 31 Mar 2022 15:35:56 +0500
+Subject: [PATCH] Commit Title: Support bridge getlink event
+
+BugID: 27783
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description: Add ndo_bridge_getlink to internal_dev_netdev_ops
+---
+ datapath/brcompat_main.c      | 65 +++++++++++++++++++++++++++++++++++++++++++
+ datapath/datapath.c           |  3 ++
+ datapath/datapath.h           |  1 +
+ datapath/vport-internal_dev.c | 19 ++++++++++++-
+ 4 files changed, 87 insertions(+), 1 deletion(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 7859b2194..3170d05e9 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -1297,6 +1297,68 @@ static int brc_br_fill_info(struct vport *vport, struct sk_buff *skb, const stru
+ 	return 0;
+ }
+ 
++static int brc_br_fill_ifinfo(struct vport *vport, struct sk_buff *skb, const struct net_device *dev, u32 pid, u32 seq, int event, unsigned int flags)
++{
++	int ret = 0;
++	u8 operstate;
++	struct ifinfomsg *hdr;
++	struct nlmsghdr *nlh;
++	struct net_device *upper_dev;
++
++	if (!skb || !dev)
++		return -EINVAL;
++
++	if (vport) {
++		upper_dev = netdev_master_upper_dev_get((struct net_device *) dev);
++	} else {
++		upper_dev = (struct net_device *) dev;
++	}
++
++
++	nlh = nlmsg_put(skb, pid, seq, event, sizeof(*hdr), flags);
++	if (nlh == NULL)
++		return -EMSGSIZE;
++
++	hdr = nlmsg_data(nlh);
++	hdr->ifi_family = AF_BRIDGE;
++	hdr->__ifi_pad = 0;
++	hdr->ifi_type = dev->type;
++	hdr->ifi_index = dev->ifindex;
++	hdr->ifi_flags = dev_get_flags(dev);
++	hdr->ifi_change = 0;
++
++
++	operstate = netif_running(dev) ? dev->operstate : IF_OPER_DOWN;
++	if (nla_put_string(skb, IFLA_IFNAME, dev->name) ||
++		nla_put_u32(skb, IFLA_MASTER, upper_dev->ifindex) ||
++		nla_put_u32(skb, IFLA_MTU, dev->mtu) ||
++		nla_put_u8(skb, IFLA_OPERSTATE, operstate) ||
++		(dev->addr_len &&
++		nla_put(skb, IFLA_ADDRESS, dev->addr_len, dev->dev_addr)) ||
++		(dev->ifindex != dev_get_iflink(dev) &&
++		nla_put_u32(skb, IFLA_LINK, dev_get_iflink(dev)))) {
++			ret = -EMSGSIZE;
++			goto nla_put_failure;
++	}
++
++	if (event == RTM_NEWLINK && vport) {
++		struct nlattr *nest
++			= nla_nest_start(skb, IFLA_PROTINFO | NLA_F_NESTED);
++
++		if (nest == NULL || (br_compat_multicast_fill_slave_info(vport->brcompat_data, skb, upper_dev, dev) < 0))
++			goto nla_put_failure;
++		nla_nest_end(skb, nest);
++	}
++
++
++	nlmsg_end(skb, nlh);
++	return 0;
++
++nla_put_failure:
++	nlmsg_cancel(skb, nlh);
++	return ret;
++}
++
+ static int brc_br_port_fill_slave_info(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev, const struct net_device *dev)
+ {
+ 	if (vport->brcompat_data)
+@@ -1498,6 +1560,9 @@ static int __init brc_init(void)
+ 	/* Set the openvswitch br_fill_info handler */
+ 	ovs_dp_br_fill_info_hook = brc_br_fill_info;
+ 
++	/* Set the openvswitch br_fill_info handler */
++	ovs_dp_br_fill_ifinfo_hook = brc_br_fill_ifinfo;
++
+ 	/* Set the openvswitch br_port_fill_slave_info handler */
+ 	ovs_dp_br_port_fill_slave_info_hook = brc_br_port_fill_slave_info;
+ 
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index c4762629e..c90e17be3 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -94,6 +94,9 @@ EXPORT_SYMBOL(ovs_dp_br_port_slave_changelink_hook);
+ int (*ovs_dp_br_fill_info_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev);
+ EXPORT_SYMBOL(ovs_dp_br_fill_info_hook);
+ 
++int (*ovs_dp_br_fill_ifinfo_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *dev, u32 pid, u32 seq, int event, unsigned int flags);
++EXPORT_SYMBOL(ovs_dp_br_fill_ifinfo_hook);
++
+ int (*ovs_dp_br_port_fill_slave_info_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev, const struct net_device *dev);
+ EXPORT_SYMBOL(ovs_dp_br_port_fill_slave_info_hook);
+ 
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index b831d164f..da85f5888 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -274,6 +274,7 @@ extern int (*ovs_dp_add_del_port_hook)(struct net_device *br_dev, struct net_dev
+ extern int (*ovs_dp_br_changelink_hook)(struct vport *vport, struct nlattr *tb[], struct nlattr *data[]);
+ extern int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[]);
+ extern int (*ovs_dp_br_fill_info_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev);
++extern int (*ovs_dp_br_fill_ifinfo_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *dev, u32 pid, u32 seq, int event, unsigned int flags);
+ extern int (*ovs_dp_br_port_fill_slave_info_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev, const struct net_device *dev);
+ extern int (*ovs_dp_br_setlink_hook)(struct vport *vport, struct net_device *dev, struct nlmsghdr *nlh, u16 flags);
+ extern int (*ovs_dp_br_bridge_setup)(struct vport *vport, int add);
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index 6a4d323d6..9792b1429 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -258,6 +258,22 @@ static int br_setlink(struct net_device *dev, struct nlmsghdr *nlh, u16 flags)
+ 	return -EOPNOTSUPP;
+ }
+ 
++
++static int br_getlink(struct sk_buff *skb, u32 pid, u32 seq,
++               struct net_device *dev, u32 filter_mask, int nlflags)
++{
++	struct vport *vport;
++
++	vport = ovs_netdev_get_vport(dev);
++	if (!vport)
++		return 0;
++
++	if (ovs_dp_br_fill_ifinfo_hook) {
++		return ovs_dp_br_fill_ifinfo_hook(vport, skb, dev, pid, seq, RTM_NEWLINK, nlflags);
++	}
++	return -EOPNOTSUPP;
++}
++
+ static const struct net_device_ops internal_dev_netdev_ops = {
+ 	.ndo_open = internal_dev_open,
+ 	.ndo_stop = internal_dev_stop,
+@@ -268,7 +284,8 @@ static const struct net_device_ops internal_dev_netdev_ops = {
+ 	.ndo_get_stats64 = (void *)internal_get_stats,
+ 	.ndo_add_slave = internal_add_slave,
+ 	.ndo_del_slave = internal_del_slave,
+-	.ndo_bridge_setlink	 = br_setlink,
++	.ndo_bridge_setlink = br_setlink,
++	.ndo_bridge_getlink = br_getlink,
+ };
+ 
+ static int br_changelink(struct net_device *br_dev, struct nlattr *tb[], struct nlattr *data[])

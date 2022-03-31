@@ -1,0 +1,298 @@
+From 805eadeb36788337473d40b4f6f28cf369ec543b Mon Sep 17 00:00:00 2001
+From: Oleksandr Shaporov <o.shaporov@inango-systems.com>
+Date: Wed, 23 Feb 2022 18:34:34 +0200
+Subject: [PATCH] Commit Title: support new netlink events
+
+BugID: 27532, 27738
+Bug Fixed(y/N[blankN]):
+CodeReviewId: 0
+Description:
+- Implemented netlink for "ip link add <bridge> type bridge"
+- Implemented netlink for "ip link del <bridge>"
+- Fixed bug with brcompat_data removal bridge with "UP" status
+- Fixed bug with running dhclient
+---
+ datapath/brcompat_main.c      | 51 ++++++++++++++++++++++++++---------------
+ datapath/datapath.c           |  3 +++
+ datapath/datapath.h           |  1 +
+ datapath/vport-internal_dev.c | 53 ++++++++++++++++++++++++++++++++++++++-----
+ 4 files changed, 84 insertions(+), 24 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 3170d05e9..0a93e3029 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -178,19 +178,14 @@ static int brc_send_simple_command(struct net *net, struct sk_buff *request)
+ 	return -error;
+ }
+ 
+-static int brc_add_del_bridge(struct net *net, char __user *uname, int add)
++static int brc_add_del_bridge(struct net *net, char *name, int add)
+ {
+ 	struct sk_buff *request;
+-	char name[IFNAMSIZ];
+ 	int result;
+ 
+ 	if (!capable(CAP_NET_ADMIN))
+ 		return -EPERM;
+ 
+-	if (copy_from_user(name, uname, IFNAMSIZ))
+-		return -EFAULT;
+-
+-	name[IFNAMSIZ - 1] = 0;
+ 	request = brc_make_request(add, name, NULL);
+ 	if (!request)
+ 		return -ENOMEM;
+@@ -198,7 +193,6 @@ static int brc_add_del_bridge(struct net *net, char __user *uname, int add)
+ 	if (!brc_net)
+ 		brc_net = net;
+ #endif
+-
+ 	/* if (add == BRC_GENL_C_DP_ADD) */
+ 	mutex_lock(&brc_addbr_lock);
+ 
+@@ -217,6 +211,24 @@ static int brc_add_del_bridge(struct net *net, char __user *uname, int add)
+ 	return result;
+ }
+ 
++static int brc_add_del_bridge_netlink(struct net *net, char *name, int add)
++{
++	int err;
++	rtnl_unlock();
++	err = brc_add_del_bridge(net, name, add);
++	rtnl_lock();
++	return err;
++}
++
++static int brc_add_del_bridge_ioctl(struct net *net, char __user *uname, int add)
++{
++	char name[IFNAMSIZ];
++	if (copy_from_user(name, uname, IFNAMSIZ))
++		return -EFAULT;
++	name[IFNAMSIZ - 1] = 0;
++	return brc_add_del_bridge(net, name, add);
++}
++
+ static int brc_get_indices(struct net *net,
+ 			   int op, const char *br_name,
+ 			   int __user *uindices, int n)
+@@ -335,7 +347,7 @@ static int old_deviceless(struct net *net, void __user *uarg)
+ 	case BRCTL_ADD_BRIDGE:
+ 	{
+ 		if (check_bridge_list((char __user *)args[1]))
+-			return brc_add_del_bridge(net, (void __user *)args[1], BRC_GENL_C_DP_ADD);
++			return brc_add_del_bridge_ioctl(net, (void __user *)args[1], BRC_GENL_C_DP_ADD);
+ 		else
+ 			return bridge_ioctl_hook(net, SIOCSIFBR, uarg);
+ 	}
+@@ -345,7 +357,7 @@ static int old_deviceless(struct net *net, void __user *uarg)
+ 		brc_get_ulong_val_cmd_with_net(net, (char __user *)args[1], BRC_GENL_C_GET_BRIDGE_EXISTS, &br_exist_exit_code);
+ 
+ 		if (check_bridge_list((char __user *)args[1]) || br_exist_exit_code == 0)
+-			return brc_add_del_bridge(net, (void __user *)args[1], BRC_GENL_C_DP_DEL);
++			return brc_add_del_bridge_ioctl(net, (void __user *)args[1], BRC_GENL_C_DP_DEL);
+ 		else
+ 			return bridge_ioctl_hook(net, SIOCSIFBR, uarg);
+ 	}
+@@ -372,14 +384,14 @@ brc_ioctl_deviceless_stub(struct net *net, unsigned int cmd, void __user *uarg)
+ 	case SIOCBRADDBR:
+ 	{
+ 		if (check_bridge_list((char __user *)uarg))
+-			return brc_add_del_bridge(net, uarg, BRC_GENL_C_DP_ADD);
++			return brc_add_del_bridge_ioctl(net, uarg, BRC_GENL_C_DP_ADD);
+ 		else
+ 			return bridge_ioctl_hook(net, cmd, uarg);
+ 	}
+ 	case SIOCBRDELBR:
+ 	{
+ 		if (check_bridge_list((char __user *)uarg))
+-			return brc_add_del_bridge(net, uarg, BRC_GENL_C_DP_DEL);
++			return brc_add_del_bridge_ioctl(net, uarg, BRC_GENL_C_DP_DEL);
+ 		else
+ 			return bridge_ioctl_hook(net, cmd, uarg);
+ 	}
+@@ -1432,10 +1444,9 @@ nla_put_failure:
+ 
+ void br_dev_setup(struct net_device *dev)
+ {
+-	if (dev->priv_flags & IFF_OPENVSWITCH) {
+-		if (br_ovs_link_ops->setup)
+-			br_ovs_link_ops->setup(dev);
+-	} else
++	if (br_ovs_link_ops->setup)
++		br_ovs_link_ops->setup(dev);
++	else
+ 		br_compat_link_ops.setup(dev);
+ }
+ 
+@@ -1446,9 +1457,7 @@ static int br_validate(struct nlattr *tb[], struct nlattr *data[])
+ 
+ static int br_dev_newlink(struct net *src_net, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[])
+ {
+-	if (dev->priv_flags & IFF_OPENVSWITCH)
+-		return br_ovs_link_ops->newlink ? br_ovs_link_ops->newlink(src_net, dev, tb, data) : -EOPNOTSUPP;
+-	return br_compat_link_ops.newlink(src_net, dev, tb, data);
++	return br_ovs_link_ops->newlink ? br_ovs_link_ops->newlink(src_net, dev, tb, data) : -EOPNOTSUPP;
+ }
+ 
+ static int br_changelink(struct net_device *brdev, struct nlattr *tb[], struct nlattr *data[])
+@@ -1554,6 +1563,9 @@ static int __init brc_init(void)
+ 	/* Set the openvswitch br_changelink handler */
+ 	ovs_dp_br_changelink_hook = brc_br_changelink;
+ 
++	/* Set the openvswitch brc_add_del_bridge handler */
++	ovs_dp_br_brc_add_del_bridge_netlink_hook = brc_add_del_bridge_netlink;
++
+ 	/* Set the openvswitch br_port_slave_changelink handler */
+ 	ovs_dp_br_port_slave_changelink_hook = brc_br_port_slave_changelink;
+ 
+@@ -1648,6 +1660,9 @@ static void brc_cleanup(void)
+ 	/* Unregister br_changelink hooks */
+ 	ovs_dp_br_changelink_hook = NULL;
+ 
++	/* Unregister br_brc_add_del_bridge hooks */
++	ovs_dp_br_brc_add_del_bridge_netlink_hook = NULL;
++
+ 	/* Unregister br_port_slave_changelink hooks */
+ 	ovs_dp_br_port_slave_changelink_hook = NULL;
+ 
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index c90e17be3..3d23748bc 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -88,6 +88,9 @@ EXPORT_SYMBOL(ovs_dp_add_del_port_hook);
+ int (*ovs_dp_br_changelink_hook)(struct vport *vport, struct nlattr *tb[], struct nlattr *data[]);
+ EXPORT_SYMBOL(ovs_dp_br_changelink_hook);
+ 
++int (*ovs_dp_br_brc_add_del_bridge_netlink_hook)(struct net *net, char *name, int add);
++EXPORT_SYMBOL(ovs_dp_br_brc_add_del_bridge_netlink_hook);
++
+ int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[]);
+ EXPORT_SYMBOL(ovs_dp_br_port_slave_changelink_hook);
+ 
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index da85f5888..6aba7b456 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -272,6 +272,7 @@ extern int (*ovs_dp_mac_addr_hook)(struct net_device *dev, void *p);
+ extern int (*ovs_dp_mtu_hook)(struct net_device *dev, int mtu);
+ extern int (*ovs_dp_add_del_port_hook)(struct net_device *br_dev, struct net_device *p_dev, int add);
+ extern int (*ovs_dp_br_changelink_hook)(struct vport *vport, struct nlattr *tb[], struct nlattr *data[]);
++extern int (*ovs_dp_br_brc_add_del_bridge_netlink_hook)(struct net *net, char *name, int add);
+ extern int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[]);
+ extern int (*ovs_dp_br_fill_info_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev);
+ extern int (*ovs_dp_br_fill_ifinfo_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *dev, u32 pid, u32 seq, int event, unsigned int flags);
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index 9792b1429..3ef9da160 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -31,6 +31,10 @@
+ #include "vport-internal_dev.h"
+ #include "vport-netdev.h"
+ #include <net/br_compat.h>
++#include "openvswitch/brcompat-netlink.h"
++
++static DEFINE_MUTEX(brc_netdevice);
++static struct net_device * netlink_dev;
+ 
+ struct internal_dev {
+ 	struct vport *vport;
+@@ -38,6 +42,8 @@ struct internal_dev {
+ 
+ static struct vport_ops ovs_internal_vport_ops;
+ 
++static void do_setup(struct net_device *netdev);
++
+ static struct internal_dev *internal_dev_priv(struct net_device *netdev)
+ {
+ 	return netdev_priv(netdev);
+@@ -74,7 +80,7 @@ static int internal_dev_open(struct net_device *netdev)
+ 	vport = ovs_internal_dev_get_vport(netdev);
+ 
+ 	netif_start_queue(netdev);
+-	if (vport)
++	if (vport && vport->brcompat_data)
+ 		br_compat_multicast_open(vport->brcompat_data);
+ 	
+ 	return 0;
+@@ -84,8 +90,7 @@ static int internal_dev_stop(struct net_device *netdev)
+ {
+ 	struct vport *vport;
+ 	vport = ovs_internal_dev_get_vport(netdev);
+-
+-	if (vport)
++	if (vport && vport->brcompat_data)
+ 		br_compat_multicast_stop(vport->brcompat_data);
+ 
+ 	netif_stop_queue(netdev);
+@@ -288,6 +293,20 @@ static const struct net_device_ops internal_dev_netdev_ops = {
+ 	.ndo_bridge_getlink = br_getlink,
+ };
+ 
++static int br_newlink(struct net *src_net, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[])
++{
++	int err;
++	mutex_lock(&brc_netdevice);
++	netlink_dev = dev;
++	if (ovs_dp_br_brc_add_del_bridge_netlink_hook)
++		err = ovs_dp_br_brc_add_del_bridge_netlink_hook(src_net, dev->name, BRC_GENL_C_DP_ADD);
++	else
++		err = -EOPNOTSUPP;
++	netlink_dev = NULL;
++	mutex_unlock(&brc_netdevice);
++	return err;
++}
++
+ static int br_changelink(struct net_device *br_dev, struct nlattr *tb[], struct nlattr *data[])
+ {
+ 	struct vport *vport;
+@@ -302,6 +321,20 @@ static int br_changelink(struct net_device *br_dev, struct nlattr *tb[], struct
+ 	return -EOPNOTSUPP;
+ }
+ 
++
++static void br_dellink(struct net_device *dev, struct list_head *head)
++{
++	struct vport *vport;
++
++	vport = ovs_internal_dev_get_vport(dev);
++	if (!vport)
++		return;
++
++	if (ovs_dp_br_brc_add_del_bridge_netlink_hook)
++		ovs_dp_br_brc_add_del_bridge_netlink_hook(dev_net(dev), dev->name, BRC_GENL_C_DP_DEL);
++
++}
++
+ static int br_port_slave_changelink(struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[])
+ {
+ 	struct vport *vport;
+@@ -346,7 +379,10 @@ static int br_port_fill_slave_info(struct sk_buff *skb, const struct net_device
+ 
+ static struct rtnl_link_ops internal_dev_link_ops __read_mostly = {
+ 	.kind = "openvswitch",
++	.setup = do_setup,
++	.newlink = br_newlink,
+ 	.changelink = br_changelink,
++	.dellink = br_dellink,
+ 	.slave_changelink = br_port_slave_changelink,
+ 	.fill_info = br_fill_info,
+ 	.fill_slave_info = br_port_fill_slave_info,
+@@ -405,9 +441,14 @@ static struct vport *internal_dev_create(const struct vport_parms *parms)
+ 		err = PTR_ERR(vport);
+ 		goto error;
+ 	}
+-
+-	vport->dev = alloc_netdev(sizeof(struct internal_dev),
+-				  parms->name, NET_NAME_USER, do_setup);
++	/* OVSP_LOCAL is a datapath internal vport.
++	 * net_device data should be allocated if the first device is created via netlink
++	 */
++	if (netlink_dev && (vport->port_no != OVSP_LOCAL))
++		vport->dev = netlink_dev;
++	else
++		vport->dev = alloc_netdev(sizeof(struct internal_dev),
++					  parms->name, NET_NAME_USER, do_setup);
+ 	if (!vport->dev) {
+ 		err = -ENOMEM;
+ 		goto error_free_vport;
