@@ -1,0 +1,105 @@
+From 8911882172c5684d47d751151476babe59c1d832 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Tue, 29 Mar 2022 20:50:27 +0500
+Subject: [PATCH] Commit Title: Add handling of hairpin mode for ports in
+ openvswitch
+
+BugID                 : 28150
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Added check for hairpin mode for ports when handling traffic
+---
+ ofproto/ofproto-dpif-xlate.c | 31 ++++++++++++++++++++-----------
+ 1 file changed, 20 insertions(+), 11 deletions(-)
+
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 13f56f2cb..10949f9ad 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2820,7 +2820,8 @@ mcast_xlate_query_external_handler(struct xlate_ctx *ctx,
+     struct xbundle *mcast_xbundle;
+     LIST_FOR_EACH(b, bundle_node, &grp->bundle_lru) {
+             mcast_xbundle = xbundle_lookup(ctx->xcfg, b->port);
+-            if (mcast_xbundle && mcast_xbundle != in_xbundle) {
++            if (mcast_xbundle
++                && (mcast_xbundle != in_xbundle || mcast_xbundle->hairpin_mode)) {
+                 if (! mcast_snooping_mrouter_lookup(ms, xvlan->v[0].vid, mcast_xbundle->ofbundle))
+                 {
+                     VLOG_INFO("forwarding query to mcast group port");
+@@ -2929,7 +2930,9 @@ mcast_xlate_igmp_external_data_handler(struct xlate_ctx *ctx,
+         } else if (!found) {
+             forward = b->filter_mode == IGMPV3_MODE_IS_EXCLUDE ? true : false;
+         }
+-        if (forward && mcast_xbundle && mcast_xbundle != in_xbundle) {
++        if (forward
++            && mcast_xbundle
++            && (mcast_xbundle != in_xbundle || mcast_xbundle->hairpin_mode)) {
+             xlate_report(ctx, OFT_DETAIL, "forwarding to mcast group port");
+             mcast_output_add(out, mcast_xbundle, NULL);
+         } else if (!forward) {
+@@ -2961,7 +2964,8 @@ xlate_normal_mcast_send_group(struct xlate_ctx *ctx,
+ 
+     LIST_FOR_EACH(b, bundle_node, &grp->bundle_lru) {
+         mcast_xbundle = xbundle_lookup(ctx->xcfg, b->port);
+-        if (mcast_xbundle && mcast_xbundle != in_xbundle) {
++        if (mcast_xbundle
++            && (mcast_xbundle != in_xbundle || mcast_xbundle->hairpin_mode)) {
+             xlate_report(ctx, OFT_DETAIL, "forwarding to mcast group port");
+             // TODO
+             mcast_output_add(out, mcast_xbundle, b);
+@@ -2989,7 +2993,8 @@ xlate_normal_mcast_send_mrouters(struct xlate_ctx *ctx,
+ 
+     LIST_FOR_EACH(mrouter, mrouter_node, &ms->mrouter_lru) {
+         mcast_xbundle = xbundle_lookup(ctx->xcfg, mrouter->port);
+-        if (mcast_xbundle && mcast_xbundle != in_xbundle
++        if (mcast_xbundle
++            && (mcast_xbundle != in_xbundle || mcast_xbundle->hairpin_mode)
+             && mrouter->vlan == xvlan->v[0].vid) {
+             xlate_report(ctx, OFT_DETAIL, "forwarding to mcast router port");
+             mcast_output_add(out, mcast_xbundle, NULL);
+@@ -3019,7 +3024,8 @@ xlate_normal_mcast_send_fports(struct xlate_ctx *ctx,
+ 
+     LIST_FOR_EACH(fport, node, &ms->fport_list) {
+         mcast_xbundle = xbundle_lookup(ctx->xcfg, fport->port);
+-        if (mcast_xbundle && mcast_xbundle != in_xbundle) {
++        if (mcast_xbundle
++            && (mcast_xbundle != in_xbundle || mcast_xbundle->hairpin_mode)) {
+             xlate_report(ctx, OFT_DETAIL, "forwarding to mcast flood port");
+             mcast_output_add(out, mcast_xbundle, NULL);
+         } else if (!mcast_xbundle) {
+@@ -3046,8 +3052,9 @@ xlate_normal_mcast_send_rports(struct xlate_ctx *ctx,
+     LIST_FOR_EACH(rport, node, &ms->rport_list) {
+         mcast_xbundle = xbundle_lookup(ctx->xcfg, rport->port);
+         if (mcast_xbundle
+-            && mcast_xbundle != in_xbundle
+-            && mcast_xbundle->ofbundle != in_xbundle->ofbundle) {
++            && ((mcast_xbundle != in_xbundle
++                 && mcast_xbundle->ofbundle != in_xbundle->ofbundle)
++                || mcast_xbundle->hairpin_mode)) {
+             xlate_report(ctx, OFT_DETAIL,
+                          "forwarding report to mcast flagged port");
+             mcast_output_add(out, mcast_xbundle, NULL);
+@@ -3068,8 +3075,9 @@ xlate_normal_flood(struct xlate_ctx *ctx, struct xbundle *in_xbundle,
+     struct xbundle *xbundle;
+ 
+     LIST_FOR_EACH (xbundle, list_node, &ctx->xbridge->xbundles) {
+-        if (xbundle != in_xbundle
+-            && xbundle->ofbundle != in_xbundle->ofbundle
++        if (((xbundle != in_xbundle
++              && xbundle->ofbundle != in_xbundle->ofbundle)
++             || xbundle->hairpin_mode)
+             && xbundle_includes_vlan(xbundle, xvlan)
+             && xbundle->floodable
+             && !xbundle_mirror_out(ctx->xbridge, xbundle)) {
+@@ -3352,8 +3360,9 @@ xlate_normal(struct xlate_ctx *ctx)
+             }
+ 
+             if (mac_xbundle
+-                && mac_xbundle != in_xbundle
+-                && mac_xbundle->ofbundle != in_xbundle->ofbundle) {
++                && ((mac_xbundle != in_xbundle
++                     && mac_xbundle->ofbundle != in_xbundle->ofbundle)
++                    || mac_xbundle->hairpin_mode)) {
+                 xlate_report(ctx, OFT_DETAIL, "forwarding to learned port");
+                 xin->flow_type = UNICAST_FLOW_TYPE;
+                 output_normal(ctx, mac_xbundle, &xvlan, NULL);

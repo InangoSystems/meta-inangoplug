@@ -135,5 +135,7 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0133-Commit-Title-Apply-Inangoplug-patches-to-in-tree-kernel-module.patch \
     file://0134-Commit-Title-Make-openvswitch-install-additional-headers-required-for-brcompatd.patch \
     file://0135-Commit-Title-Remove-brcompat-from-scripts.patch \
+    file://0136-Commit-Title-Add-Hairpin-configuration-to-ports.patch \
+    file://0137-Commit-Title-Add-handling-of-hairpin-mode-for-ports-in-openvswitch.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

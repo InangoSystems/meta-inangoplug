@@ -1,0 +1,157 @@
+From 1fc28165820a5bb2f4891ac96ec60ad7e00dde65 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Fri, 25 Mar 2022 19:35:08 +0500
+Subject: [PATCH] Commit Title: Add Hairpin configuration to ports
+
+BugID                 : 28125
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Added configurable hairpin_mode field to port
+---
+ ofproto/ofproto-dpif-xlate.c | 12 +++++++-----
+ ofproto/ofproto-dpif-xlate.h |  2 +-
+ ofproto/ofproto-dpif.c       |  9 +++++++--
+ ofproto/ofproto.h            |  2 ++
+ vswitchd/bridge.c            |  4 ++++
+ 5 files changed, 21 insertions(+), 8 deletions(-)
+
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 015ecec23..13f56f2cb 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -153,6 +153,7 @@ struct xbundle {
+                                    /* Use 802.1p tag for frames in VLAN 0? */
+     bool floodable;                /* No port has OFPUTIL_PC_NO_FLOOD set? */
+     bool protected;                /* Protected port mode */
++    bool hairpin_mode;             /* Hairpin mode */
+ };
+ 
+ struct xport {
+@@ -615,7 +616,7 @@ static void xlate_xbundle_set(struct xbundle *xbundle,
+                               unsigned long *trunks, unsigned long *cvlans,
+                               enum port_priority_tags_mode,
+                               const struct bond *bond, const struct lacp *lacp,
+-                              bool floodable, bool protected);
++                              bool floodable, bool protected, bool hairpin_mode);
+ static void xlate_xport_set(struct xport *xport, odp_port_t odp_port,
+                             const struct netdev *netdev, const struct cfm *cfm,
+                             const struct bfd *bfd, const struct lldp *lldp,
+@@ -1010,7 +1011,7 @@ xlate_xbundle_set(struct xbundle *xbundle,
+                   int vlan, unsigned long *trunks, unsigned long *cvlans,
+                   enum port_priority_tags_mode use_priority_tags,
+                   const struct bond *bond, const struct lacp *lacp,
+-                  bool floodable, bool protected)
++                  bool floodable, bool protected, bool hairpin_mode)
+ {
+     ovs_assert(xbundle->xbridge);
+ 
+@@ -1022,6 +1023,7 @@ xlate_xbundle_set(struct xbundle *xbundle,
+     xbundle->use_priority_tags = use_priority_tags;
+     xbundle->floodable = floodable;
+     xbundle->protected = protected;
++    xbundle->hairpin_mode = hairpin_mode;
+ 
+     if (xbundle->bond != bond) {
+         bond_unref(xbundle->bond);
+@@ -1117,7 +1119,7 @@ xlate_xbundle_copy(struct xbridge *xbridge, struct xbundle *xbundle)
+     xlate_xbundle_set(new_xbundle, xbundle->vlan_mode, xbundle->qinq_ethtype,
+                       xbundle->vlan, xbundle->trunks, xbundle->cvlans,
+                       xbundle->use_priority_tags, xbundle->bond, xbundle->lacp,
+-                      xbundle->floodable, xbundle->protected);
++                      xbundle->floodable, xbundle->protected, xbundle->hairpin_mode);
+     LIST_FOR_EACH (xport, bundle_node, &xbundle->xports) {
+         xlate_xport_copy(xbridge, new_xbundle, xport);
+     }
+@@ -1327,7 +1329,7 @@ xlate_bundle_set(struct ofproto_dpif *ofproto, struct ofbundle *ofbundle,
+                  unsigned long *trunks, unsigned long *cvlans,
+                  enum port_priority_tags_mode use_priority_tags,
+                  const struct bond *bond, const struct lacp *lacp,
+-                 bool floodable, bool protected)
++                 bool floodable, bool protected, bool hairpin_mode)
+ {
+     struct xbundle *xbundle;
+ 
+@@ -1346,7 +1348,7 @@ xlate_bundle_set(struct ofproto_dpif *ofproto, struct ofbundle *ofbundle,
+     xbundle->name = xstrdup(name);
+ 
+     xlate_xbundle_set(xbundle, vlan_mode, qinq_ethtype, vlan, trunks, cvlans,
+-                      use_priority_tags, bond, lacp, floodable, protected);
++                      use_priority_tags, bond, lacp, floodable, protected, hairpin_mode);
+ }
+ 
+ static void
+diff --git a/ofproto/ofproto-dpif-xlate.h b/ofproto/ofproto-dpif-xlate.h
+index 6af62c705..91d35db64 100644
+--- a/ofproto/ofproto-dpif-xlate.h
++++ b/ofproto/ofproto-dpif-xlate.h
+@@ -186,7 +186,7 @@ void xlate_bundle_set(struct ofproto_dpif *, struct ofbundle *,
+                       unsigned long *trunks, unsigned long *cvlans,
+                       enum port_priority_tags_mode,
+                       const struct bond *, const struct lacp *,
+-                      bool floodable, bool protected);
++                      bool floodable, bool protected, bool hairpin_mode);
+ void xlate_bundle_remove(struct ofbundle *);
+ 
+ void xlate_ofport_set(struct ofproto_dpif *, struct ofbundle *,
+diff --git a/ofproto/ofproto-dpif.c b/ofproto/ofproto-dpif.c
+index 8a72ca682..3a34e07cb 100644
+--- a/ofproto/ofproto-dpif.c
++++ b/ofproto/ofproto-dpif.c
+@@ -112,7 +112,9 @@ struct ofbundle {
+     bool protected;             /* Protected port mode */
+ 
+     /* Status. */
+-    bool floodable;          /* True if no port has OFPUTIL_PC_NO_FLOOD set. */
++    bool floodable;             /* True if no port has OFPUTIL_PC_NO_FLOOD set. */
++
++    bool hairpin_mode;          /* True if hairpin mode is on */
+ };
+ 
+ static void bundle_remove(struct ofport *);
+@@ -498,7 +500,8 @@ type_run(const char *type)
+                                  bundle->vlan, bundle->trunks, bundle->cvlans,
+                                  bundle->use_priority_tags,
+                                  bundle->bond, bundle->lacp,
+-                                 bundle->floodable, bundle->protected);
++                                 bundle->floodable, bundle->protected,
++                                 bundle->hairpin_mode);
+             }
+ 
+             HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
+@@ -3270,6 +3273,8 @@ bundle_set(struct ofproto *ofproto_, void *aux,
+         bundle->lacp = NULL;
+     }
+ 
++    bundle->hairpin_mode = s->hairpin_mode;
++
+     /* Update set of ports. */
+     ok = true;
+     for (i = 0; i < s->n_slaves; i++) {
+diff --git a/ofproto/ofproto.h b/ofproto/ofproto.h
+index bac4a1c21..1bcf4aa0b 100644
+--- a/ofproto/ofproto.h
++++ b/ofproto/ofproto.h
+@@ -457,6 +457,8 @@ struct ofproto_bundle_settings {
+     struct lacp_slave_settings *lacp_slaves; /* Array of n_slaves elements. */
+ 
+     bool protected;             /* Protected port mode */
++
++    bool hairpin_mode;          /* Hairpin mode */
+ };
+ 
+ int ofproto_bundle_register(struct ofproto *, void *aux,
+diff --git a/vswitchd/bridge.c b/vswitchd/bridge.c
+index 9a5ce1094..14ee6ea5e 100644
+--- a/vswitchd/bridge.c
++++ b/vswitchd/bridge.c
+@@ -1301,6 +1301,10 @@ port_configure(struct port *port)
+     /* Protected port mode */
+     s.protected = cfg->protected_;
+ 
++    /* Hairpin mode */
++    const char *hp = smap_get_def(&cfg->other_config, "hairpin-mode", "");
++    s.hairpin_mode = (strcmp(hp, "true") == 0);
++
+     /* Register. */
+     ofproto_bundle_register(port->bridge->ofproto, port, &s);
+ 
