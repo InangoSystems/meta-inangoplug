@@ -1,0 +1,39 @@
+From 17bb3baf250d1f8928335c75139d86b5337db4cb Mon Sep 17 00:00:00 2001
+From: Oleksandr Shaporov <o.shaporov@inango-systems.com>
+Date: Wed, 13 Apr 2022 18:08:23 +0300
+Subject: [PATCH] Commit Title: Validate bridge name before creating/deleting
+ via netlinks
+
+BugID: 28263
+Bug Fixed(y/N[blankN]):
+CodeReviewId: 0
+Description: checked bridge name before doing setup
+---
+ datapath/brcompat_main.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 0a93e3029..7c907e741 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -1444,7 +1444,7 @@ nla_put_failure:
+ 
+ void br_dev_setup(struct net_device *dev)
+ {
+-	if (br_ovs_link_ops->setup)
++	if (check_bridge_list(dev->name) && br_ovs_link_ops->setup)
+ 		br_ovs_link_ops->setup(dev);
+ 	else
+ 		br_compat_link_ops.setup(dev);
+@@ -1457,7 +1457,10 @@ static int br_validate(struct nlattr *tb[], struct nlattr *data[])
+ 
+ static int br_dev_newlink(struct net *src_net, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[])
+ {
+-	return br_ovs_link_ops->newlink ? br_ovs_link_ops->newlink(src_net, dev, tb, data) : -EOPNOTSUPP;
++	if (dev->priv_flags & IFF_OPENVSWITCH)
++		return br_ovs_link_ops->newlink ? br_ovs_link_ops->newlink(src_net, dev, tb, data) : -EOPNOTSUPP;
++	else
++		return br_compat_link_ops.newlink(src_net, dev, tb, data);
+ }
+ 
+ static int br_changelink(struct net_device *brdev, struct nlattr *tb[], struct nlattr *data[])

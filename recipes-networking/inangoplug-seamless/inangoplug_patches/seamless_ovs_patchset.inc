@@ -130,5 +130,8 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0128-Commit-Title-Fix-destructor-for-internal-interface-in-OVS-datapath.patch \
     file://0129-Commit-Title-Support-bridge-getlink-event.patch \
     file://0130-Commit-Title-support-new-netlink-events.patch \
+    file://0131-Commit-Title-Validate-bridge-name-before-creating-deleting-via-netlinks.patch \
+    file://0132-Commit-Title-Support-hairpin-mode-for-ports.patch \
+    file://0133-Commit-Title-mcast_helper-hairpin-mode-integration.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

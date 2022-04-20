@@ -1,0 +1,361 @@
+From e9539f1ed94f9fee31bc93d7ed2c48a21d423ea4 Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Fri, 15 Apr 2022 20:28:15 +0500
+Subject: [PATCH] Commit Title: Support hairpin mode for ports
+
+BugID                 : 28375
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description:
+- Added hairpin mode support for ports when handling traffic
+- Added configuration of hairpin mode via ovsdb, sysfs and netlinks
+---
+ datapath/brcompat_main.c               | 18 ++++++++++++++
+ datapath/dp_sysfs_if.c                 | 25 ++++++++++++++++++++
+ include/openvswitch/brcompat-netlink.h |  1 +
+ ofproto/ofproto-dpif-xlate.c           | 43 +++++++++++++++++++++-------------
+ ofproto/ofproto-dpif-xlate.h           |  2 +-
+ ofproto/ofproto-dpif.c                 |  7 +++++-
+ ofproto/ofproto.h                      |  2 ++
+ vswitchd/bridge.c                      |  4 ++++
+ vswitchd/ovs-brcompatd.c               |  4 ++++
+ 9 files changed, 88 insertions(+), 18 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 7c907e741..def3b274f 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -41,6 +41,7 @@
+ #include "datapath.h"
+ #include "openvswitch/brcompat-netlink.h"
+ #include "vport-internal_dev.h"
++#include "vport-netdev.h"
+ 
+ #define BRIDGE_LIST_MAX 16
+ 
+@@ -1245,6 +1246,7 @@ static int brc_br_port_set_param(struct vport *vport, struct net_device *dev, st
+ 		return 0;
+ 
+ 	dev_hold(dev);
++
+ 	if (data[IFLA_BRPORT_FAST_LEAVE]) {
+ 		val = nla_get_u8(data[IFLA_BRPORT_FAST_LEAVE]);
+ 
+@@ -1260,6 +1262,22 @@ static int brc_br_port_set_param(struct vport *vport, struct net_device *dev, st
+ 		err = br_compat_set_port_flag(vport->brcompat_data, val, BR_MULTICAST_FAST_LEAVE);
+ 	}
+ 
++	if (data[IFLA_BRPORT_MODE]) {
++		val = nla_get_u8(data[IFLA_BRPORT_MODE]);
++
++		err = brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_PORT_HAIRPIN_MODE, val);
++		if (err)
++			goto err;
++
++		if (unlikely((dev->priv_flags & IFF_OVS_DATAPATH) == 0)) {
++			err = -ENODEV;
++			goto err;
++		}
++
++		err = br_compat_set_port_flag(vport->brcompat_data, val, BR_HAIRPIN_MODE);
++	}
++
++
+ err:
+ 	dev_put(dev);
+ 	return err;
+diff --git a/datapath/dp_sysfs_if.c b/datapath/dp_sysfs_if.c
+index 0e149937f..81d6251fe 100644
+--- a/datapath/dp_sysfs_if.c
++++ b/datapath/dp_sysfs_if.c
+@@ -191,6 +191,30 @@ static ssize_t store_fastleave(struct vport *p, unsigned long v)
+ }
+ static BRPORT_ATTR(fastleave, S_IRUGO | S_IWUSR, show_fastleave, store_fastleave);
+ 
++static ssize_t show_hairpin_mode(struct vport *p, char *buf)
++{
++	unsigned long flag = 0;
++
++	br_compat_get_port_flag(p->brcompat_data, &flag, BR_HAIRPIN_MODE);
++	return sprintf(buf, "%lu\n", flag);
++}
++static ssize_t store_hairpin_mode(struct vport *p, unsigned long v)
++{
++	struct net_device *dev = p->dev;
++
++	v = !!v;
++
++	dev_hold(dev);
++	ovs_dp_sysfs_hook(dev, &v, BRC_GENL_C_SET_PORT_HAIRPIN_MODE, SET_PARAMETER);
++	if (likely(dev->priv_flags & IFF_OVS_DATAPATH)) {
++		br_compat_set_port_flag(p->brcompat_data, v, BR_HAIRPIN_MODE);
++	}
++	dev_put(dev);
++
++	return 0;
++}
++static BRPORT_ATTR(hairpin_mode, S_IRUGO | S_IWUSR, show_hairpin_mode, store_hairpin_mode);
++
+ static struct brport_attribute *brport_attrs[] = {
+ 	&brport_attr_path_cost,
+ 	&brport_attr_priority,
+@@ -207,6 +231,7 @@ static struct brport_attribute *brport_attrs[] = {
+ 	&brport_attr_forward_delay_timer,
+ 	&brport_attr_hold_timer,
+ 	&brport_attr_fastleave,
++	&brport_attr_hairpin_mode,
+ 	NULL
+ };
+ 
+diff --git a/include/openvswitch/brcompat-netlink.h b/include/openvswitch/brcompat-netlink.h
+index ebc8eaa46..2790e7dbf 100644
+--- a/include/openvswitch/brcompat-netlink.h
++++ b/include/openvswitch/brcompat-netlink.h
+@@ -144,6 +144,7 @@ enum brc_genl_command {
+     BRC_GENL_C_SET_MAC_ADDR, /* K: Set MAC address. */
+     BRC_GENL_C_SET_MTU, /* K: Set MTU. */
+     BRC_GENL_C_SET_PORT_MC_SNOOPING_FLOOD_REPORTS, /* K: Set the port multicast snooping flood reports */
++    BRC_GENL_C_SET_PORT_HAIRPIN_MODE,   /* K: Set hairpin mode for the port */
+ 
+     __BRC_GENL_C_MAX,
+     BRC_GENL_C_MAX = __BRC_GENL_C_MAX - 1
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 015ecec23..10949f9ad 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -153,6 +153,7 @@ struct xbundle {
+                                    /* Use 802.1p tag for frames in VLAN 0? */
+     bool floodable;                /* No port has OFPUTIL_PC_NO_FLOOD set? */
+     bool protected;                /* Protected port mode */
++    bool hairpin_mode;             /* Hairpin mode */
+ };
+ 
+ struct xport {
+@@ -615,7 +616,7 @@ static void xlate_xbundle_set(struct xbundle *xbundle,
+                               unsigned long *trunks, unsigned long *cvlans,
+                               enum port_priority_tags_mode,
+                               const struct bond *bond, const struct lacp *lacp,
+-                              bool floodable, bool protected);
++                              bool floodable, bool protected, bool hairpin_mode);
+ static void xlate_xport_set(struct xport *xport, odp_port_t odp_port,
+                             const struct netdev *netdev, const struct cfm *cfm,
+                             const struct bfd *bfd, const struct lldp *lldp,
+@@ -1010,7 +1011,7 @@ xlate_xbundle_set(struct xbundle *xbundle,
+                   int vlan, unsigned long *trunks, unsigned long *cvlans,
+                   enum port_priority_tags_mode use_priority_tags,
+                   const struct bond *bond, const struct lacp *lacp,
+-                  bool floodable, bool protected)
++                  bool floodable, bool protected, bool hairpin_mode)
+ {
+     ovs_assert(xbundle->xbridge);
+ 
+@@ -1022,6 +1023,7 @@ xlate_xbundle_set(struct xbundle *xbundle,
+     xbundle->use_priority_tags = use_priority_tags;
+     xbundle->floodable = floodable;
+     xbundle->protected = protected;
++    xbundle->hairpin_mode = hairpin_mode;
+ 
+     if (xbundle->bond != bond) {
+         bond_unref(xbundle->bond);
+@@ -1117,7 +1119,7 @@ xlate_xbundle_copy(struct xbridge *xbridge, struct xbundle *xbundle)
+     xlate_xbundle_set(new_xbundle, xbundle->vlan_mode, xbundle->qinq_ethtype,
+                       xbundle->vlan, xbundle->trunks, xbundle->cvlans,
+                       xbundle->use_priority_tags, xbundle->bond, xbundle->lacp,
+-                      xbundle->floodable, xbundle->protected);
++                      xbundle->floodable, xbundle->protected, xbundle->hairpin_mode);
+     LIST_FOR_EACH (xport, bundle_node, &xbundle->xports) {
+         xlate_xport_copy(xbridge, new_xbundle, xport);
+     }
+@@ -1327,7 +1329,7 @@ xlate_bundle_set(struct ofproto_dpif *ofproto, struct ofbundle *ofbundle,
+                  unsigned long *trunks, unsigned long *cvlans,
+                  enum port_priority_tags_mode use_priority_tags,
+                  const struct bond *bond, const struct lacp *lacp,
+-                 bool floodable, bool protected)
++                 bool floodable, bool protected, bool hairpin_mode)
+ {
+     struct xbundle *xbundle;
+ 
+@@ -1346,7 +1348,7 @@ xlate_bundle_set(struct ofproto_dpif *ofproto, struct ofbundle *ofbundle,
+     xbundle->name = xstrdup(name);
+ 
+     xlate_xbundle_set(xbundle, vlan_mode, qinq_ethtype, vlan, trunks, cvlans,
+-                      use_priority_tags, bond, lacp, floodable, protected);
++                      use_priority_tags, bond, lacp, floodable, protected, hairpin_mode);
+ }
+ 
+ static void
+@@ -2818,7 +2820,8 @@ mcast_xlate_query_external_handler(struct xlate_ctx *ctx,
+     struct xbundle *mcast_xbundle;
+     LIST_FOR_EACH(b, bundle_node, &grp->bundle_lru) {
+             mcast_xbundle = xbundle_lookup(ctx->xcfg, b->port);
+-            if (mcast_xbundle && mcast_xbundle != in_xbundle) {
++            if (mcast_xbundle
++                && (mcast_xbundle != in_xbundle || mcast_xbundle->hairpin_mode)) {
+                 if (! mcast_snooping_mrouter_lookup(ms, xvlan->v[0].vid, mcast_xbundle->ofbundle))
+                 {
+                     VLOG_INFO("forwarding query to mcast group port");
+@@ -2927,7 +2930,9 @@ mcast_xlate_igmp_external_data_handler(struct xlate_ctx *ctx,
+         } else if (!found) {
+             forward = b->filter_mode == IGMPV3_MODE_IS_EXCLUDE ? true : false;
+         }
+-        if (forward && mcast_xbundle && mcast_xbundle != in_xbundle) {
++        if (forward
++            && mcast_xbundle
++            && (mcast_xbundle != in_xbundle || mcast_xbundle->hairpin_mode)) {
+             xlate_report(ctx, OFT_DETAIL, "forwarding to mcast group port");
+             mcast_output_add(out, mcast_xbundle, NULL);
+         } else if (!forward) {
+@@ -2959,7 +2964,8 @@ xlate_normal_mcast_send_group(struct xlate_ctx *ctx,
+ 
+     LIST_FOR_EACH(b, bundle_node, &grp->bundle_lru) {
+         mcast_xbundle = xbundle_lookup(ctx->xcfg, b->port);
+-        if (mcast_xbundle && mcast_xbundle != in_xbundle) {
++        if (mcast_xbundle
++            && (mcast_xbundle != in_xbundle || mcast_xbundle->hairpin_mode)) {
+             xlate_report(ctx, OFT_DETAIL, "forwarding to mcast group port");
+             // TODO
+             mcast_output_add(out, mcast_xbundle, b);
+@@ -2987,7 +2993,8 @@ xlate_normal_mcast_send_mrouters(struct xlate_ctx *ctx,
+ 
+     LIST_FOR_EACH(mrouter, mrouter_node, &ms->mrouter_lru) {
+         mcast_xbundle = xbundle_lookup(ctx->xcfg, mrouter->port);
+-        if (mcast_xbundle && mcast_xbundle != in_xbundle
++        if (mcast_xbundle
++            && (mcast_xbundle != in_xbundle || mcast_xbundle->hairpin_mode)
+             && mrouter->vlan == xvlan->v[0].vid) {
+             xlate_report(ctx, OFT_DETAIL, "forwarding to mcast router port");
+             mcast_output_add(out, mcast_xbundle, NULL);
+@@ -3017,7 +3024,8 @@ xlate_normal_mcast_send_fports(struct xlate_ctx *ctx,
+ 
+     LIST_FOR_EACH(fport, node, &ms->fport_list) {
+         mcast_xbundle = xbundle_lookup(ctx->xcfg, fport->port);
+-        if (mcast_xbundle && mcast_xbundle != in_xbundle) {
++        if (mcast_xbundle
++            && (mcast_xbundle != in_xbundle || mcast_xbundle->hairpin_mode)) {
+             xlate_report(ctx, OFT_DETAIL, "forwarding to mcast flood port");
+             mcast_output_add(out, mcast_xbundle, NULL);
+         } else if (!mcast_xbundle) {
+@@ -3044,8 +3052,9 @@ xlate_normal_mcast_send_rports(struct xlate_ctx *ctx,
+     LIST_FOR_EACH(rport, node, &ms->rport_list) {
+         mcast_xbundle = xbundle_lookup(ctx->xcfg, rport->port);
+         if (mcast_xbundle
+-            && mcast_xbundle != in_xbundle
+-            && mcast_xbundle->ofbundle != in_xbundle->ofbundle) {
++            && ((mcast_xbundle != in_xbundle
++                 && mcast_xbundle->ofbundle != in_xbundle->ofbundle)
++                || mcast_xbundle->hairpin_mode)) {
+             xlate_report(ctx, OFT_DETAIL,
+                          "forwarding report to mcast flagged port");
+             mcast_output_add(out, mcast_xbundle, NULL);
+@@ -3066,8 +3075,9 @@ xlate_normal_flood(struct xlate_ctx *ctx, struct xbundle *in_xbundle,
+     struct xbundle *xbundle;
+ 
+     LIST_FOR_EACH (xbundle, list_node, &ctx->xbridge->xbundles) {
+-        if (xbundle != in_xbundle
+-            && xbundle->ofbundle != in_xbundle->ofbundle
++        if (((xbundle != in_xbundle
++              && xbundle->ofbundle != in_xbundle->ofbundle)
++             || xbundle->hairpin_mode)
+             && xbundle_includes_vlan(xbundle, xvlan)
+             && xbundle->floodable
+             && !xbundle_mirror_out(ctx->xbridge, xbundle)) {
+@@ -3350,8 +3360,9 @@ xlate_normal(struct xlate_ctx *ctx)
+             }
+ 
+             if (mac_xbundle
+-                && mac_xbundle != in_xbundle
+-                && mac_xbundle->ofbundle != in_xbundle->ofbundle) {
++                && ((mac_xbundle != in_xbundle
++                     && mac_xbundle->ofbundle != in_xbundle->ofbundle)
++                    || mac_xbundle->hairpin_mode)) {
+                 xlate_report(ctx, OFT_DETAIL, "forwarding to learned port");
+                 xin->flow_type = UNICAST_FLOW_TYPE;
+                 output_normal(ctx, mac_xbundle, &xvlan, NULL);
+diff --git a/ofproto/ofproto-dpif-xlate.h b/ofproto/ofproto-dpif-xlate.h
+index 6af62c705..91d35db64 100644
+--- a/ofproto/ofproto-dpif-xlate.h
++++ b/ofproto/ofproto-dpif-xlate.h
+@@ -186,7 +186,7 @@ void xlate_bundle_set(struct ofproto_dpif *, struct ofbundle *,
+                       unsigned long *trunks, unsigned long *cvlans,
+                       enum port_priority_tags_mode,
+                       const struct bond *, const struct lacp *,
+-                      bool floodable, bool protected);
++                      bool floodable, bool protected, bool hairpin_mode);
+ void xlate_bundle_remove(struct ofbundle *);
+ 
+ void xlate_ofport_set(struct ofproto_dpif *, struct ofbundle *,
+diff --git a/ofproto/ofproto-dpif.c b/ofproto/ofproto-dpif.c
+index 8a72ca682..6415e9c0f 100644
+--- a/ofproto/ofproto-dpif.c
++++ b/ofproto/ofproto-dpif.c
+@@ -113,6 +113,8 @@ struct ofbundle {
+ 
+     /* Status. */
+     bool floodable;          /* True if no port has OFPUTIL_PC_NO_FLOOD set. */
++
++    bool hairpin_mode;          /* True if hairpin mode is on */
+ };
+ 
+ static void bundle_remove(struct ofport *);
+@@ -498,7 +500,8 @@ type_run(const char *type)
+                                  bundle->vlan, bundle->trunks, bundle->cvlans,
+                                  bundle->use_priority_tags,
+                                  bundle->bond, bundle->lacp,
+-                                 bundle->floodable, bundle->protected);
++                                 bundle->floodable, bundle->protected,
++                                 bundle->hairpin_mode);
+             }
+ 
+             HMAP_FOR_EACH (ofport, up.hmap_node, &ofproto->up.ports) {
+@@ -3270,6 +3273,8 @@ bundle_set(struct ofproto *ofproto_, void *aux,
+         bundle->lacp = NULL;
+     }
+ 
++    bundle->hairpin_mode = s->hairpin_mode;
++
+     /* Update set of ports. */
+     ok = true;
+     for (i = 0; i < s->n_slaves; i++) {
+diff --git a/ofproto/ofproto.h b/ofproto/ofproto.h
+index bac4a1c21..1bcf4aa0b 100644
+--- a/ofproto/ofproto.h
++++ b/ofproto/ofproto.h
+@@ -457,6 +457,8 @@ struct ofproto_bundle_settings {
+     struct lacp_slave_settings *lacp_slaves; /* Array of n_slaves elements. */
+ 
+     bool protected;             /* Protected port mode */
++
++    bool hairpin_mode;          /* Hairpin mode */
+ };
+ 
+ int ofproto_bundle_register(struct ofproto *, void *aux,
+diff --git a/vswitchd/bridge.c b/vswitchd/bridge.c
+index 9a5ce1094..14ee6ea5e 100644
+--- a/vswitchd/bridge.c
++++ b/vswitchd/bridge.c
+@@ -1301,6 +1301,10 @@ port_configure(struct port *port)
+     /* Protected port mode */
+     s.protected = cfg->protected_;
+ 
++    /* Hairpin mode */
++    const char *hp = smap_get_def(&cfg->other_config, "hairpin-mode", "");
++    s.hairpin_mode = (strcmp(hp, "true") == 0);
++
+     /* Register. */
+     ofproto_bundle_register(port->bridge->ofproto, port, &s);
+ 
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index cfa012016..c6edd29d1 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -1701,6 +1701,10 @@ brc_recv_update(void)
+     case BRC_GENL_C_SET_MTU:
+         handle_set_ulong_val_interface_cmd(&buffer, "mtu_request");
+         break;
++
++    case BRC_GENL_C_SET_PORT_HAIRPIN_MODE:
++        handle_set_boolean_val_port_cmd(&buffer, "other-config:hairpin-mode");
++        break;
+     /* } seamless-ovs */
+ 
+     default:

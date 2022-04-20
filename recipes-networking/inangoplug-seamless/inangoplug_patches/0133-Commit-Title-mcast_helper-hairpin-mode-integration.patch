@@ -1,0 +1,39 @@
+From 7b95d35d15600a04d47d455c27e1b63df99a0f4b Mon Sep 17 00:00:00 2001
+From: Petr Bernatskii <p.bernatskii@inango-systems.com>
+Date: Tue, 19 Apr 2022 23:18:39 +0500
+Subject: [PATCH] Commit Title: mcast_helper hairpin mode integration
+
+BugId                 : 28382
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Added passing of port flags to learning hook in case of ovs ports
+---
+ datapath/brcompat_main.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index def3b274f..a04d9f0b4 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -639,6 +639,12 @@ nla_put_failure:
+ 	return -ENOMEM;
+ }
+ 
++static struct net_bridge_port * brc_port_get_rcu(const struct net_device *dev)
++{
++	struct vport* ret = (struct vport *) rcu_dereference(dev->rx_handler_data);
++	return (struct net_bridge_port *) ret->brcompat_data;
++}
++
+ static int brc_set_ulong_val_cmd(struct net_device *dev, int oper, unsigned long param)
+ {
+ 	struct sk_buff *request;
+@@ -1617,6 +1623,8 @@ static int __init brc_init(void)
+ 
+ 	ovs_get_fdb_entries = brc_get_fdb_entries;
+ 
++	ovs_port_get_rcu = brc_port_get_rcu;
++
+ 	rtnl_lock();
+ 
+ 	br_link_ops = (struct rtnl_link_ops *)rtnl_link_ops_get("bridge");
