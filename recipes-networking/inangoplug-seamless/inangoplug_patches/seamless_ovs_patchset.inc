@@ -133,5 +133,6 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0131-Commit-Title-Validate-bridge-name-before-creating-deleting-via-netlinks.patch \
     file://0132-Commit-Title-Support-hairpin-mode-for-ports.patch \
     file://0133-Commit-Title-mcast_helper-hairpin-mode-integration.patch \
+    file://0134-Commit-Title-RDKB-OS_OVS-GW-and-WIFI-commands-cause-ATOM-to-stuck.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"
