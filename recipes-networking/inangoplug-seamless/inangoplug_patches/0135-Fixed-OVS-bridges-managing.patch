@@ -1,0 +1,23 @@
+From 138b6de86ff08ff37cf43613b92f266658d5c857 Mon Sep 17 00:00:00 2001
+From: Vadim Galeev <v.galeev@inango-systems.com>
+Date: Thu, 12 May 2022 11:22:07 +0000
+Subject: [PATCH] Fixed OVS bridges managing
+
+BugID: 28505
+---
+ datapath/brcompat_main.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index a04d9f0b4..bf53f8d98 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -1181,7 +1181,7 @@ static int brc_br_changelink(struct vport *vport, struct nlattr *tb[], struct nl
+ 		dev_hold(dev);
+ 		brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_BRIDGE_MULTICAST_SNOOPING, val);
+ 
+-		if (unlikely((dev->priv_flags & IFF_OVS_DATAPATH) == 0)) {
++		if (unlikely((dev->priv_flags & IFF_OPENVSWITCH) == 0)) {
+ 			dev_put(dev);
+ 			return -ENODEV;
+ 		}

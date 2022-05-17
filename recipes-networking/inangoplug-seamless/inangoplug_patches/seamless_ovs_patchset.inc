@@ -134,5 +134,8 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0132-Commit-Title-Support-hairpin-mode-for-ports.patch \
     file://0133-Commit-Title-mcast_helper-hairpin-mode-integration.patch \
     file://0134-Commit-Title-RDKB-OS_OVS-GW-and-WIFI-commands-cause-ATOM-to-stuck.patch \
+    file://0135-Fixed-OVS-bridges-managing.patch \
+    file://0136-Commit-Title-Support-configure-mac-address-via-newlink-operations.patch \
+    file://0137-Commit-Title-Support-configure-mac-address-via-newlink-operations.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

@@ -1,0 +1,65 @@
+From 47e8a715aacba3d751ff72811c46538f176cc5f2 Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Fri, 13 May 2022 17:42:19 +0300
+Subject: [PATCH] Commit Title: Support configure mac address via newlink
+ operations
+
+BugID: 28317
+Bug Fixed(y/N[blankN]): N
+CodeReviewId: 0
+Description:
+- provide mac address into ovs userspace if it set by user
+---
+ datapath/datapath.c           | 2 +-
+ datapath/datapath.h           | 2 +-
+ datapath/vport-internal_dev.c | 4 ++--
+ 3 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 3d23748bc..f4b2d452f 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -88,7 +88,7 @@ EXPORT_SYMBOL(ovs_dp_add_del_port_hook);
+ int (*ovs_dp_br_changelink_hook)(struct vport *vport, struct nlattr *tb[], struct nlattr *data[]);
+ EXPORT_SYMBOL(ovs_dp_br_changelink_hook);
+ 
+-int (*ovs_dp_br_brc_add_del_bridge_netlink_hook)(struct net *net, char *name, int add);
++int (*ovs_dp_br_brc_add_del_bridge_netlink_hook)(struct net *net, struct net_device *dev, int add);
+ EXPORT_SYMBOL(ovs_dp_br_brc_add_del_bridge_netlink_hook);
+ 
+ int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[]);
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index 6aba7b456..01ac3775f 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -272,7 +272,7 @@ extern int (*ovs_dp_mac_addr_hook)(struct net_device *dev, void *p);
+ extern int (*ovs_dp_mtu_hook)(struct net_device *dev, int mtu);
+ extern int (*ovs_dp_add_del_port_hook)(struct net_device *br_dev, struct net_device *p_dev, int add);
+ extern int (*ovs_dp_br_changelink_hook)(struct vport *vport, struct nlattr *tb[], struct nlattr *data[]);
+-extern int (*ovs_dp_br_brc_add_del_bridge_netlink_hook)(struct net *net, char *name, int add);
++extern int (*ovs_dp_br_brc_add_del_bridge_netlink_hook)(struct net *net, struct net_device *dev, int add);
+ extern int (*ovs_dp_br_port_slave_changelink_hook)(struct vport *vport, struct net_device *br_dev, struct net_device *dev, struct nlattr *tb[], struct nlattr *data[]);
+ extern int (*ovs_dp_br_fill_info_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *br_dev);
+ extern int (*ovs_dp_br_fill_ifinfo_hook)(struct vport *vport, struct sk_buff *skb, const struct net_device *dev, u32 pid, u32 seq, int event, unsigned int flags);
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index 435467d5a..3522e9f6f 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -305,7 +305,7 @@ static int br_newlink(struct net *src_net, struct net_device *dev, struct nlattr
+ 	}
+ 
+ 	if (ovs_dp_br_brc_add_del_bridge_netlink_hook)
+-		err = ovs_dp_br_brc_add_del_bridge_netlink_hook(src_net, dev->name, BRC_GENL_C_DP_ADD);
++		err = ovs_dp_br_brc_add_del_bridge_netlink_hook(src_net, dev, BRC_GENL_C_DP_ADD);
+ 	else
+ 		err = -EOPNOTSUPP;
+ out:
+@@ -338,7 +338,7 @@ static void br_dellink(struct net_device *dev, struct list_head *head)
+ 		return;
+ 
+ 	if (ovs_dp_br_brc_add_del_bridge_netlink_hook)
+-		ovs_dp_br_brc_add_del_bridge_netlink_hook(dev_net(dev), dev->name, BRC_GENL_C_DP_DEL);
++		ovs_dp_br_brc_add_del_bridge_netlink_hook(dev_net(dev), dev, BRC_GENL_C_DP_DEL);
+ 
+ }
+ 
