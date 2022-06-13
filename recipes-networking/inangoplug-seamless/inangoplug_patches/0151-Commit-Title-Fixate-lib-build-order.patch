@@ -1,0 +1,97 @@
+From bc8fec5e9530cfbdf3a9568c7b8cc8cea4215d4a Mon Sep 17 00:00:00 2001
+From: Anton Bilohai <a.bilohai@inango-systems.com>
+Date: Thu, 9 Jun 2022 19:34:58 +0300
+Subject: [PATCH] Commit Title: Fixate lib build order
+
+BugID: 27194
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description:
+    - Currently native pkg build fails due to linking error. There was
+    introduced dependency between libs, native package builds them in
+    wrong order.
+    - Fix order of libs in lib_LTLIBRARIES var to guarantee required lib
+    build order. Build order of other lib is not important
+---
+ Makefile.am         | 5 ++++-
+ lib/automake.mk     | 8 +++-----
+ ofproto/automake.mk | 5 ++---
+ 3 files changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/Makefile.am b/Makefile.am
+index b279303d1..ce017b226 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -5,6 +5,8 @@
+ # notice and this notice are preserved.  This file is offered as-is,
+ # without warranty of any kind.
+ 
++# Includes Inango Systems Ltd’s changes/modifications dated: 2022.
++# Changed/modified portions - Copyright (c) 2022 , Inango Systems Ltd.
+ AUTOMAKE_OPTIONS = foreign subdir-objects
+ ACLOCAL_AMFLAGS = -I m4
+ SUBDIRS = datapath
+@@ -111,7 +113,8 @@ MAN_FRAGMENTS =
+ MAN_ROOTS =
+ noinst_DATA =
+ noinst_HEADERS =
+-lib_LTLIBRARIES =
++# Move libs define here to make libs build in this order. Due to changes, libopenvswitch depends on libofproto
++lib_LTLIBRARIES = lib/libsflow.la ofproto/libofproto.la lib/libopenvswitch.la
+ noinst_LTLIBRARIES =
+ noinst_man_MANS =
+ noinst_PROGRAMS =
+diff --git a/lib/automake.mk b/lib/automake.mk
+index 4eae0cefc..32412a48d 100644
+--- a/lib/automake.mk
++++ b/lib/automake.mk
+@@ -5,11 +5,13 @@
+ # notice and this notice are preserved.  This file is offered as-is,
+ # without warranty of any kind.
+ 
+-lib_LTLIBRARIES += lib/libopenvswitch.la
++# Includes Inango Systems Ltd’s changes/modifications dated: 2022.
++# Changed/modified portions - Copyright (c) 2022 , Inango Systems Ltd.
+ 
+ lib_libopenvswitch_la_LIBADD = $(SSL_LIBS)
+ lib_libopenvswitch_la_LIBADD += $(CAPNG_LDADD)
+ lib_libopenvswitch_la_LIBADD += $(LIBBPF_LDADD)
++lib_libopenvswitch_la_LIBADD += ofproto/libofproto.la
+ 
+ if WIN32
+ lib_libopenvswitch_la_LIBADD += ${PTHREAD_LIBS}
+@@ -338,9 +340,6 @@ lib_libopenvswitch_la_SOURCES = \
+ 	lib/lldp/lldpd-structs.c \
+ 	lib/lldp/lldpd-structs.h
+ 
+-lib_libopenvswitch_la_LIBADD += \
+-	ofproto/libofproto.la
+-
+ if WIN32
+ lib_libopenvswitch_la_SOURCES += \
+ 	lib/daemon-windows.c \
+@@ -373,7 +372,6 @@ nodist_lib_libopenvswitch_la_SOURCES = \
+ 	lib/vswitch-idl.h
+ CLEANFILES += $(nodist_lib_libopenvswitch_la_SOURCES)
+ 
+-lib_LTLIBRARIES += lib/libsflow.la
+ lib_libsflow_la_LDFLAGS = \
+         $(OVS_LTINFO) \
+         -Wl,--version-script=$(top_builddir)/lib/libsflow.sym \
+diff --git a/ofproto/automake.mk b/ofproto/automake.mk
+index febd59005..08e59deed 100644
+--- a/ofproto/automake.mk
++++ b/ofproto/automake.mk
+@@ -5,10 +5,9 @@
+ # notice and this notice are preserved.  This file is offered as-is,
+ # without warranty of any kind.
+ 
+-# Includes Inango Systems Ltd’s changes/modifications dated: 2021.
+-# Changed/modified portions - Copyright (c) 2021 , Inango Systems Ltd.
++# Includes Inango Systems Ltd’s changes/modifications dated: 2021, 2022.
++# Changed/modified portions - Copyright (c) 2021, 2022 , Inango Systems Ltd.
+ 
+-lib_LTLIBRARIES += ofproto/libofproto.la
+ ofproto_libofproto_la_LDFLAGS = \
+         $(OVS_LTINFO) \
+         -Wl,--version-script=$(top_builddir)/ofproto/libofproto.sym \

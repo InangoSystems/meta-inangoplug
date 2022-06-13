@@ -1,0 +1,28 @@
+From b94e0a1cd6dfdf19ca17014bf414393972ccec6f Mon Sep 17 00:00:00 2001
+From: Anton Bilohai <a.bilohai@inango-systems.com>
+Date: Mon, 18 Apr 2022 21:39:34 +0300
+Subject: [PATCH] Commit Title: Disable notification to Linux send on MAC
+ learning
+
+BugID: 27194
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description:
+    - Don't notify Linux when new MAC shows up in bridge. Notification
+    was moved to different place (see previous commit)
+---
+ lib/mac-learning.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/lib/mac-learning.c b/lib/mac-learning.c
+index 077033039..6f6891529 100644
+--- a/lib/mac-learning.c
++++ b/lib/mac-learning.c
+@@ -339,7 +339,6 @@ mac_learning_insert(struct mac_learning *ml,
+         e->mlport = NULL;
+         COVERAGE_INC(mac_learning_learned);
+         ml->total_learned++;
+-        dpif_netlink_rtm_newneigh(ml->ifindex, e->mac);
+     } else {
+         ovs_list_remove(&e->lru_node);
+     }

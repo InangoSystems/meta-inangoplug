@@ -73,12 +73,20 @@ do_install_append () {
     echo -n "${CONFIG_INANGO_INANGOPLUG_SC_CERT}" > ${D}${CONFIG_INANGO_INANGOPLUG_SSL_DEFAULT_DIR}/sc-cert.pem
     echo -n "${CONFIG_INANGO_INANGOPLUG_CA_CERT}" > ${D}${CONFIG_INANGO_INANGOPLUG_SSL_DEFAULT_DIR}/cacert.pem
 
+    # Set path for syscfg.db
+    if ${@bb.utils.contains('MXL_BUILD_FLAVOR', 'RDKBCC', 'true', 'false', d)};
+    then
+        sed -i -e 's#@SYSCFG_FILE@#/opt/secure/data/syscfg.db#' ${S}/scripts/run_inangoplug.sh.in
+    else
+        sed -i -e 's#@SYSCFG_FILE@#/nvram/syscfg.db#' ${S}/scripts/run_inangoplug.sh.in
+    fi
+
     install -d ${D}${systemd_unitdir}/system
     install -D -m 0644 ${S}/scripts/CcspInangoplugComponent.service ${D}${systemd_unitdir}/system/CcspInangoplugComponent.service
     install -m 0644 ${S}/scripts/check_inangoplug_enabled.service ${D}${systemd_unitdir}/system/check_inangoplug_enabled.service
     install -m 0644 ${S}/scripts/connect_inangoplug.service ${D}${systemd_unitdir}/system/connect_inangoplug.service
     install -d ${D}${sysconfdir}/scripts
-    install -m 0755 ${S}/scripts/run_inangoplug.sh ${D}${sysconfdir}/scripts/run_inangoplug.sh
+    install -m 0755 ${S}/scripts/run_inangoplug.sh.in ${D}${sysconfdir}/scripts/run_inangoplug.sh
     install -m 0755 ${S}/scripts/connect_inangoplug.sh ${D}${sysconfdir}/scripts/connect_inangoplug.sh
 }
 

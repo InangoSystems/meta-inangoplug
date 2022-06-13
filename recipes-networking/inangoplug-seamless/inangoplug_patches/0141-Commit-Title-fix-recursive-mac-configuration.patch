@@ -1,0 +1,104 @@
+From e88ae3fd43d293da057102f891cd38581d811890 Mon Sep 17 00:00:00 2001
+From: Georgii Okhokhonin <g.okhokhonin@inango-systems.com>
+Date: Mon, 6 Jun 2022 21:52:45 +0300
+Subject: [PATCH] Commit Title: fix recursive mac configuration
+
+BugId: 28984
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description: add flag to avoid extra call to userspace from datapath
+---
+ datapath/linux/compat/include/linux/openvswitch.h |  1 +
+ datapath/vport-internal_dev.c                     | 11 +++++++++--
+ lib/netdev.c                                      |  7 +++++++
+ vswitchd/ovs-brcompatd.c                          |  8 +++++---
+ 4 files changed, 22 insertions(+), 5 deletions(-)
+
+diff --git a/datapath/linux/compat/include/linux/openvswitch.h b/datapath/linux/compat/include/linux/openvswitch.h
+index 8e1fd59a7..94431fe66 100644
+--- a/datapath/linux/compat/include/linux/openvswitch.h
++++ b/datapath/linux/compat/include/linux/openvswitch.h
+@@ -470,6 +470,7 @@ enum ovs_frag_type {
+ /* vport operational flags */
+ #define	OVS_VPORT_FLAG_SET_MTU_BY_USER  (0x01u)
+ #define	OVS_VPORT_FLAG_SET_MTU_AUTO     (0x02u)
++#define	OVS_VPORT_FLAG_SET_MAC		(0x04u)
+ 
+ struct ovs_key_ethernet {
+ 	__u8	 eth_src[ETH_ALEN];
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index 3522e9f6f..44a4baacd 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -160,6 +160,9 @@ static int internal_eth_mac_addr(struct net_device *dev, void *p)
+ {
+ 	int ret;
+ 	unsigned char *sa_data = (unsigned char *)(((struct sockaddr *)p)->sa_data);
++	const uint32_t flags_mask = OVS_VPORT_FLAG_SET_MAC;
++	uint32_t old_flags;
++	struct vport *vport;
+ 
+ 	#define MAC_FMT_       "\"%02x:%02x:%02x:%02x:%02x:%02x\""
+ 	#define MAC_ARG_(X__)  X__[0], X__[1], X__[2], X__[3], X__[4], X__[5]
+@@ -172,12 +175,16 @@ static int internal_eth_mac_addr(struct net_device *dev, void *p)
+ 
+ 		ret = eth_prepare_mac_addr_change(dev, p);
+ 		if (ret < 0) {
+-			
+ 			printk(KERN_WARNING "internal_eth_mac_addr(dev=\"%s\", mac=" MAC_FMT_ "): error: eth_prepare_mac_addr_change() -> %d\n", dev->name, MAC_ARG_(sa_data), ret);
+ 			return ret;
+ 		}
+ 
+-		ret = ovs_dp_mac_addr_hook(dev, p);
++		vport = ovs_internal_dev_get_vport(dev);
++		old_flags = del_vport_flags(vport, flags_mask);
++		if (0 == (old_flags & flags_mask)) {
++			ret = ovs_dp_mac_addr_hook(dev, p);
++		}
++
+ 		if (ret < 0) {
+ 			printk(KERN_WARNING "internal_eth_mac_addr(dev=\"%s\", mac=" MAC_FMT_ "): error: ovs_dp_mac_addr_hook() -> %d\n", dev->name, MAC_ARG_(sa_data), ret);
+ 			return ret;
+diff --git a/lib/netdev.c b/lib/netdev.c
+index dab206811..63e8d81d8 100644
+--- a/lib/netdev.c
++++ b/lib/netdev.c
+@@ -977,6 +977,13 @@ netdev_send_wait(struct netdev *netdev, int qid)
+ int
+ netdev_set_etheraddr(struct netdev *netdev, const struct eth_addr mac)
+ {
++    enum ovs_vport_type ovs_type = netdev_to_ovs_vport_type(netdev_get_type(netdev));
++    struct eth_addr old_mac;
++
++    netdev_get_etheraddr(netdev, &old_mac);
++    if (ovs_type == OVS_VPORT_TYPE_INTERNAL && !eth_addr_equals(old_mac, mac)) {
++        dpif_netlink_vport_set_flags(netdev_get_name(netdev), OVS_VPORT_FLAG_SET_MAC);
++    }
+     return netdev->netdev_class->set_etheraddr(netdev, mac);
+ }
+ 
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 60c057f33..b9a5048df 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -561,15 +561,17 @@ handle_port_cmd(struct ofpbuf *buffer, bool add)
+     const char *br_name, *port_name;
+     uint32_t seq;
+     int error;
++    int vsctl_ok;
+ 
+     error = parse_command(buffer, &seq, &br_name, &port_name, NULL, NULL, NULL, NULL);
+     if (!error) {
+         const char *vsctl_cmd = add ? "add-port" : "del-port";
+         const char *brctl_cmd = add ? "addif" : "delif";
+-        if (!run_vsctl(vsctl_program, VSCTL_OPTIONS,
++        vsctl_ok = run_vsctl(vsctl_program, VSCTL_OPTIONS,
+                        "--", vsctl_cmd, br_name, port_name,
+-                       "--", "comment", "ovs-brcompatd:", brctl_cmd,
+-                       br_name, port_name, (char *) NULL)) {
++                       "--", "comment", "ovs-brcompatd:", brctl_cmd, br_name, port_name,
++                       (char *) NULL);
++        if (!vsctl_ok) {
+             error = EINVAL;
+         }
+         if (add && !error)

@@ -1,0 +1,35 @@
+From 026e0f608194f52d5e6aab00fb8a6c3771dfe47d Mon Sep 17 00:00:00 2001
+From: Anton Bilohai <a.bilohai@inango-systems.com>
+Date: Mon, 11 Apr 2022 18:39:26 +0300
+Subject: [PATCH] Commit Title: Send RNTL notification when port is set
+
+BugID: 27194
+Bug Fixed(y/N[blankN]): n
+CodeReviewId: 0
+Description:
+    - Send NEWNIGH netlink notification to Linux when port is changed in
+    FDB table
+---
+ ofproto/ofproto-dpif-xlate.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 10949f9ad..900d49e6d 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -66,6 +66,7 @@
+ #include "tunnel.h"
+ #include "util.h"
+ #include "uuid.h"
++#include "dpif-netlink.h"
+ 
+ COVERAGE_DEFINE(xlate_actions);
+ COVERAGE_DEFINE(xlate_actions_oversize);
+@@ -2598,6 +2599,7 @@ update_learning_table(const struct xlate_ctx *ctx,
+         xlate_report_debug(ctx, OFT_DETAIL, "learned that "ETH_ADDR_FMT" is "
+                            "on port %s in VLAN %d",
+                            ETH_ADDR_ARGS(dl_src), in_xbundle->name, vlan);
++        dpif_netlink_rtm_newneigh(ctx->xbridge->ml->ifindex, dl_src);
+     }
+ }
+ 

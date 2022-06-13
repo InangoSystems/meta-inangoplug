@@ -1,0 +1,133 @@
+From 7fc1e785f263f7eac119ea9654ab35a0847f8f10 Mon Sep 17 00:00:00 2001
+From: Anton Bilohai <a.bilohai@inango-systems.com>
+Date: Wed, 8 Jun 2022 18:34:55 +0300
+Subject: [PATCH] Commit Title: Formatting
+
+BugID: 27194
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description:
+    - Make changes to follow general indentation
+---
+ datapath/datapath.c | 26 +++++++++++++-------------
+ lib/dpif-netlink.c  |  4 ++--
+ lib/mac-learning.c  |  1 -
+ 3 files changed, 15 insertions(+), 16 deletions(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index d4c310675..8a8187535 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -2088,12 +2088,12 @@ static int ovs_vport_cmd_newneigh(struct sk_buff *skbn, struct genl_info *info)
+     }
+     net = sock_net(skbn->sk);
+ 
+-	rcu_read_lock();
++    rcu_read_lock();
+     input_vport = lookup_vport(net, ovs_header, info->attrs);
+-	rcu_read_unlock();
++    rcu_read_unlock();
+ 
+-	err = PTR_ERR(input_vport);
+-	if (IS_ERR(input_vport))
++    err = PTR_ERR(input_vport);
++    if (IS_ERR(input_vport))
+         return err;
+ 
+     skb = nlmsg_new(rtnl_fdb_nlmsg_size(), GFP_ATOMIC);
+@@ -2113,7 +2113,7 @@ static int ovs_vport_cmd_newneigh(struct sk_buff *skbn, struct genl_info *info)
+ 
+     nlmsg_end(skb, nlh);
+     rtnl_notify(skb, net, 0, RTNLGRP_NEIGH, NULL, GFP_ATOMIC);
+-	dev_put(input_vport->dev);
++    dev_put(input_vport->dev);
+ 
+     return 0;
+ 
+@@ -2121,7 +2121,7 @@ nla_put_failure:
+     nlmsg_cancel(skb, nlh);
+ 
+ error:
+-	dev_put(input_vport->dev);
++    dev_put(input_vport->dev);
+     return -EMSGSIZE;
+ }
+ 
+@@ -2145,12 +2145,12 @@ static int ovs_vport_cmd_delneigh(struct sk_buff *skbn, struct genl_info *info)
+     }
+     net = sock_net(skbn->sk);
+ 
+-	rcu_read_lock();
++    rcu_read_lock();
+     input_vport = lookup_vport(net, ovs_header, a);
+-	rcu_read_unlock();
++    rcu_read_unlock();
+ 
+-	err = PTR_ERR(input_vport);
+-	if (IS_ERR(input_vport))
++    err = PTR_ERR(input_vport);
++    if (IS_ERR(input_vport))
+         return err;
+ 
+     skb = nlmsg_new(rtnl_fdb_nlmsg_size(), GFP_ATOMIC);
+@@ -2170,7 +2170,7 @@ static int ovs_vport_cmd_delneigh(struct sk_buff *skbn, struct genl_info *info)
+ 
+     nlmsg_end(skb, nlh);
+     rtnl_notify(skb, net, 0, RTNLGRP_NEIGH, NULL, GFP_ATOMIC);
+-	dev_put(input_vport->dev);
++    dev_put(input_vport->dev);
+ 
+     return 0;
+ 
+@@ -2178,7 +2178,7 @@ nla_put_failure:
+     nlmsg_cancel(skb, nlh);
+ 
+ error:
+-	dev_put(input_vport->dev);
++    dev_put(input_vport->dev);
+     return -EMSGSIZE;
+ }
+ 
+@@ -3230,7 +3230,7 @@ static int __init dp_init(void)
+ 
+ 	err = dp_register_genl();
+ 	if (err < 0)
+-		goto error_unreg_netdev;
++        goto error_unreg_netdev;
+ 
+ 	pp_am_set_am_id_by_ufid_callback(notify_am_id);
+ 
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index 3ed51b6e9..be964496e 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -4342,7 +4342,7 @@ dpif_netlink_rtm_newneigh(odp_port_t odp_index, int dp_ifindex, const struct eth
+ {
+     int error;
+ 
+-    VLOG_WARN("Sending NEWNEIGH odp: %u, dp_ifindex: %d,MAC:%02x:%02x:%02x:%02x:%02x:%02x \n",
++    VLOG_DBG("Sending NEWNEIGH odp: %u, dp_ifindex: %d,MAC:%02x:%02x:%02x:%02x:%02x:%02x \n",
+             odp_index, dp_ifindex, src_mac.ea[0], src_mac.ea[1],src_mac.ea[2],src_mac.ea[3],src_mac.ea[4],src_mac.ea[5]);
+     error = dpif_netlink_mac_send(odp_index, dp_ifindex, src_mac, OVS_VPORT_CMD_NEWNEIGH);
+ 
+@@ -4358,7 +4358,7 @@ dpif_netlink_rtm_delneigh(odp_port_t odp_index, int dp_ifindex, const struct eth
+ {
+     int error;
+ 
+-    VLOG_WARN("Sending DELNEIGH odp: %u, dp_ifindex: %d, MAC:%02x:%02x:%02x:%02x:%02x:%02x \n",
++    VLOG_DBG("Sending DELNEIGH odp: %u, dp_ifindex: %d, MAC:%02x:%02x:%02x:%02x:%02x:%02x \n",
+             odp_index, dp_ifindex, src_mac.ea[0], src_mac.ea[1],src_mac.ea[2],src_mac.ea[3],src_mac.ea[4],src_mac.ea[5]);
+     error = dpif_netlink_mac_send(odp_index, dp_ifindex, src_mac, OVS_VPORT_CMD_DELNEIGH);
+ 
+diff --git a/lib/mac-learning.c b/lib/mac-learning.c
+index 3d3abe7c0..67a428ad5 100644
+--- a/lib/mac-learning.c
++++ b/lib/mac-learning.c
+@@ -517,7 +517,6 @@ mac_learning_expire(struct mac_learning *ml, struct mac_entry *e)
+ 
+     port = mac_entry_get_port(ml, e);
+     odp_port = ofbundle_to_odp_port(port);
+-
+     ml->need_revalidate = true;
+     dpif_netlink_rtm_delneigh(odp_port, ml->dp_ifindex, e->mac);
+     mac_entry_set_port(ml, e, NULL);

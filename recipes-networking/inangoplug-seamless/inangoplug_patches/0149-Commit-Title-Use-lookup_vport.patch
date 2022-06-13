@@ -1,0 +1,113 @@
+From 126774a337b12fcaf9a9db8d0dd07b55ce7d836f Mon Sep 17 00:00:00 2001
+From: Anton Bilohai <a.bilohai@inango-systems.com>
+Date: Tue, 7 Jun 2022 17:43:00 +0300
+Subject: [PATCH] Commit Title: Use lookup_vport
+
+BugID: 27194
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description:
+    - Currently, we obtain vport by manually caliing 2 different
+    functions.
+    - Use already existing function which provides vport instead of
+    home-coocked way to obtain vport.
+---
+ datapath/datapath.c | 40 ++++++++++++++--------------------------
+ 1 file changed, 14 insertions(+), 26 deletions(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 089c21a86..d4c310675 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -2076,11 +2076,9 @@ static int ovs_vport_cmd_newneigh(struct sk_buff *skbn, struct genl_info *info)
+     struct sk_buff *skb;
+     struct net *net;
+     struct ovs_header *ovs_header = info->userhdr;
+-    u32 port_no;
+     u8 mac_addr[ETH_ALEN];
+-
++    int err;
+     struct vport *input_vport;
+-    struct datapath *dp;
+ 
+     if (a[OVS_VPORT_ATTR_MAC]) {
+         struct nlattr *mac_attr = a[OVS_VPORT_ATTR_MAC];
+@@ -2088,18 +2086,15 @@ static int ovs_vport_cmd_newneigh(struct sk_buff *skbn, struct genl_info *info)
+     } else {
+           goto error;
+     }
+-
+-	port_no = a[OVS_VPORT_ATTR_PORT_NO]
+-		? nla_get_u32(a[OVS_VPORT_ATTR_PORT_NO]) : 0;
+-	if (port_no >= DP_MAX_PORTS)
+-		return -EFBIG;
++    net = sock_net(skbn->sk);
+ 
+ 	rcu_read_lock();
+-	dp = get_dp_rcu(sock_net(skbn->sk), ovs_header->dp_ifindex);
+-	input_vport = ovs_vport_rcu(dp, port_no);
++    input_vport = lookup_vport(net, ovs_header, info->attrs);
+ 	rcu_read_unlock();
+-    printk(KERN_ERR "OVS: NEW_NEIGH port_no: %d, dp_ifindex: %d, if_index: %d (%s)\n",
+-            port_no, ovs_header->dp_ifindex, input_vport->dev->ifindex, input_vport->dev->name);
++
++	err = PTR_ERR(input_vport);
++	if (IS_ERR(input_vport))
++        return err;
+ 
+     skb = nlmsg_new(rtnl_fdb_nlmsg_size(), GFP_ATOMIC);
+     nlh = nlmsg_put(skb, 0, 0,  RTM_NEWNEIGH, sizeof(*ndm), 0);
+@@ -2117,7 +2112,6 @@ static int ovs_vport_cmd_newneigh(struct sk_buff *skbn, struct genl_info *info)
+         goto nla_put_failure;
+ 
+     nlmsg_end(skb, nlh);
+-    net = dev_net(input_vport->dev);
+     rtnl_notify(skb, net, 0, RTNLGRP_NEIGH, NULL, GFP_ATOMIC);
+ 	dev_put(input_vport->dev);
+ 
+@@ -2139,11 +2133,9 @@ static int ovs_vport_cmd_delneigh(struct sk_buff *skbn, struct genl_info *info)
+     struct sk_buff *skb;
+     struct net *net;
+     struct ovs_header *ovs_header = info->userhdr;
+-    u32 port_no;
+     u8 mac_addr[ETH_ALEN];
+-
++    int err;
+     struct vport *input_vport;
+-    struct datapath *dp;
+ 
+     if (a[OVS_VPORT_ATTR_MAC]) {
+         struct nlattr *mac_attr = a[OVS_VPORT_ATTR_MAC];
+@@ -2151,18 +2143,15 @@ static int ovs_vport_cmd_delneigh(struct sk_buff *skbn, struct genl_info *info)
+     } else {
+           goto error;
+     }
+-
+-	port_no = a[OVS_VPORT_ATTR_PORT_NO]
+-		? nla_get_u32(a[OVS_VPORT_ATTR_PORT_NO]) : 0;
+-	if (port_no >= DP_MAX_PORTS)
+-		return -EFBIG;
++    net = sock_net(skbn->sk);
+ 
+ 	rcu_read_lock();
+-	dp = get_dp_rcu(sock_net(skbn->sk), ovs_header->dp_ifindex);
+-	input_vport = ovs_vport_rcu(dp, port_no);
++    input_vport = lookup_vport(net, ovs_header, a);
+ 	rcu_read_unlock();
+-    printk(KERN_ERR "OVS: DEL_NEIGH port_no: %d, dp_ifindex: %d, if_index: %d (%s)\n",
+-            port_no, ovs_header->dp_ifindex, input_vport->dev->ifindex, input_vport->dev->name);
++
++	err = PTR_ERR(input_vport);
++	if (IS_ERR(input_vport))
++        return err;
+ 
+     skb = nlmsg_new(rtnl_fdb_nlmsg_size(), GFP_ATOMIC);
+     nlh = nlmsg_put(skb, 0, 0,  RTM_DELNEIGH, sizeof(*ndm), 0);
+@@ -2180,7 +2169,6 @@ static int ovs_vport_cmd_delneigh(struct sk_buff *skbn, struct genl_info *info)
+         goto nla_put_failure;
+ 
+     nlmsg_end(skb, nlh);
+-    net = dev_net(input_vport->dev);
+     rtnl_notify(skb, net, 0, RTNLGRP_NEIGH, NULL, GFP_ATOMIC);
+ 	dev_put(input_vport->dev);
+ 

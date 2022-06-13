@@ -1,0 +1,72 @@
+From 2c70d8a3f717650e767b6b3898f5431fccfedbed Mon Sep 17 00:00:00 2001
+From: Anton Bilohai <a.bilohai@inango-systems.com>
+Date: Fri, 27 May 2022 19:07:36 +0300
+Subject: [PATCH] Commit Title: Covert dpif to dp_ifindex
+
+BugID: 27194
+Bug Fixed(y/N[blankN]): n
+CodeReviewId: 0
+Description:
+    - Obtain dp_ifindex using special conversation function and save it to
+    mac learning for later use, when Linux is notified about
+    NEW_NEIGH/DEL_NEIGH
+---
+ lib/dpif-netlink.c           |  9 +++++++++
+ lib/dpif-netlink.h           |  1 +
+ ofproto/ofproto-dpif-xlate.c | 11 +++--------
+ 3 files changed, 13 insertions(+), 8 deletions(-)
+
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index f23f602b1..3ed51b6e9 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -763,6 +763,15 @@ get_vport_type(const struct dpif_netlink_vport *vport)
+     return "unknown";
+ }
+ 
++int
++dpif_to_dp_ifindex(void *dpif)
++{
++    struct dpif_netlink *dpif_nl;
++
++    dpif_nl = dpif_netlink_cast((struct dpif*) dpif);
++    return dpif_nl->dp_ifindex;
++}
++
+ enum ovs_vport_type
+ netdev_to_ovs_vport_type(const char *type)
+ {
+diff --git a/lib/dpif-netlink.h b/lib/dpif-netlink.h
+index cf2164fcb..31f704743 100644
+--- a/lib/dpif-netlink.h
++++ b/lib/dpif-netlink.h
+@@ -75,5 +75,6 @@ int dpif_netlink_vport_set_flags(const char *name, uint32_t flags);
+ int dpif_netlink_vport_set_carrier(const char *name, bool carrier);
+ 
+ enum ovs_vport_type netdev_to_ovs_vport_type(const char *type);
++int dpif_to_dp_ifindex(void *dpif);
+ 
+ #endif /* dpif-netlink.h */
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 349c04f2a..da5d2d6ed 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2574,15 +2574,10 @@ update_learning_table__(const struct xbridge *xbridge,
+                         struct xbundle *in_xbundle, struct eth_addr dl_src,
+                         int vlan, bool is_grat_arp)
+ {
+-    struct xport *xport;
+-    struct dpif_netlink dpif_nl;
+-    xport = CONTAINER_OF(ovs_list_front(&in_xbundle->xports), struct xport,
+-                             bundle_node);
++    int dp_ifindex;
+ 
+-    &dpif_nl = dpif_netlink_cast(xbridge->dpif);
+-    xbridge->ml->dp_ifindex = dpif_nl->dp_ifindex;
+-    if (xport->odp_port != ODPP_NONE)
+-        xbridge->ml->odp_index = xport->odp_port;
++    dp_ifindex = dpif_to_dp_ifindex(xbridge->dpif);
++    xbridge->ml->dp_ifindex = dp_ifindex;
+ 
+     return (in_xbundle == &ofpp_none_bundle
+             || !mac_learning_update(xbridge->ml, dl_src, vlan,

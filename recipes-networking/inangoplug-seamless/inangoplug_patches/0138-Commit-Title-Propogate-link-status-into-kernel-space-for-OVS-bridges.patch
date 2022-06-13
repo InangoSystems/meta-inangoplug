@@ -1,0 +1,251 @@
+From 96c59ecffe649751ae55824d894b8b613c26eb7a Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Thu, 19 May 2022 15:20:24 +0300
+Subject: [PATCH] Commit Title: Propogate link status into kernel space for OVS
+ bridges
+
+BugId                 : 28692
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+- propogate link status into kernel space for ovs bridge
+---
+ datapath/datapath.c                               | 38 +++++++++++++++++++++++
+ datapath/linux/compat/include/linux/openvswitch.h |  3 +-
+ lib/dpif-netlink.c                                | 22 +++++++++++++
+ lib/dpif-netlink.h                                |  1 +
+ lib/netdev-linux.c                                | 13 ++++++++
+ lib/netdev-provider.h                             |  1 +
+ lib/netdev.c                                      | 10 ++++++
+ lib/netdev.h                                      |  1 +
+ vswitchd/bridge.c                                 | 10 ++++++
+ 9 files changed, 98 insertions(+), 1 deletion(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index f4b2d452f..1611f6ad9 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -2345,6 +2345,36 @@ static int ovs_vport_cmd_del_flags(struct sk_buff *skb, struct genl_info *info)
+ 	return 0;
+ }
+ 
++static int ovs_vport_cmd_set_carrier(struct sk_buff *skb, struct genl_info *info)
++{
++	struct vport *vport;
++	struct nlattr **a = info->attrs;
++	uint32_t carrier;
++
++	ovs_lock();
++
++	vport = lookup_vport(sock_net(skb->sk), info->userhdr, a);
++	if (vport == NULL){
++		ovs_unlock();
++		return -1;
++	}
++
++	if (a[OVS_VPORT_ATTR_FLAGS]) {
++		carrier = nla_get_u32(a[OVS_VPORT_ATTR_FLAGS]);
++	} else {
++		ovs_unlock();
++		return -1;
++	}
++	if (carrier) {
++		netif_carrier_on(vport->dev);
++	} else {
++		netif_carrier_off(vport->dev);
++	}
++	
++	ovs_unlock();
++
++	return 0;
++}
+ static const struct nla_policy datapath_policy[OVS_DP_ATTR_MAX + 1] = {
+ 	[OVS_DP_ATTR_NAME] = { .type = NLA_NUL_STRING, .len = IFNAMSIZ - 1 },
+ 	[OVS_DP_ATTR_UPCALL_PID] = { .type = NLA_U32 },
+@@ -3005,6 +3035,14 @@ static const struct genl_ops dp_vport_genl_ops[] = {
+ 	  .policy = vport_policy,
+ 	  .doit = ovs_vport_cmd_del_flags,
+ 	},
++	{ .cmd = OVS_VPORT_CMD_SET_CARRIER,
++#ifdef HAVE_GENL_VALIDATE_FLAGS
++	  .validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
++#endif
++	  .flags = 0,		    /* OK for unprivileged users. */
++	  .policy = vport_policy,
++	  .doit = ovs_vport_cmd_set_carrier,
++	},
+ };
+ 
+ struct genl_family dp_vport_genl_family __ro_after_init = {
+diff --git a/datapath/linux/compat/include/linux/openvswitch.h b/datapath/linux/compat/include/linux/openvswitch.h
+index 29fd19672..8e1fd59a7 100644
+--- a/datapath/linux/compat/include/linux/openvswitch.h
++++ b/datapath/linux/compat/include/linux/openvswitch.h
+@@ -241,7 +241,8 @@ enum ovs_vport_cmd {
+ 	OVS_VPORT_CMD_ADDMCASTGRP,
+ 	OVS_VPORT_CMD_DELMCASTGRP,
+ 	OVS_VPORT_CMD_SET_FLAGS,
+-	OVS_VPORT_CMD_DEL_FLAGS
++	OVS_VPORT_CMD_DEL_FLAGS,
++	OVS_VPORT_CMD_SET_CARRIER
+ };
+ 
+ enum ovs_vport_type {
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index 89ae752c8..a9003245d 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -4091,6 +4091,24 @@ dpif_netlink_vport_set_flags(const char *name, uint32_t flags) {
+     return 0;
+ }
+ 
++int
++dpif_netlink_vport_set_carrier(const char *name, bool carrier) {
++    struct dpif_netlink_vport request;
++    int error;
++
++    dpif_netlink_vport_init(&request);
++    request.cmd = OVS_VPORT_CMD_SET_CARRIER;
++    request.name = name;
++    request.flags = carrier;
++
++    error = dpif_netlink_vport_transact(&request, NULL, NULL);
++    if (!error) {
++        return -1;
++    }
++
++    return 0;
++}
++
+ /* Parses the contents of 'buf', which contains a "struct ovs_header" followed
+  * by Netlink attributes, into 'vport'.  Returns 0 if successful, otherwise a
+  * positive errno value.
+@@ -4222,6 +4240,10 @@ dpif_netlink_vport_to_ofpbuf(const struct dpif_netlink_vport *vport,
+     if (vport->cmd == OVS_VPORT_CMD_SET_FLAGS || vport->cmd == OVS_VPORT_CMD_DEL_FLAGS) {
+         nl_msg_put_u32(buf, OVS_VPORT_ATTR_FLAGS, vport->flags);
+     }
++
++    if (vport->cmd == OVS_VPORT_CMD_SET_CARRIER) {
++        nl_msg_put_u32(buf, OVS_VPORT_ATTR_FLAGS, vport->flags);
++    }
+ }
+ 
+ /* Clears 'vport' to "empty" values. */
+diff --git a/lib/dpif-netlink.h b/lib/dpif-netlink.h
+index 009290c89..adeb58b7d 100644
+--- a/lib/dpif-netlink.h
++++ b/lib/dpif-netlink.h
+@@ -72,6 +72,7 @@ int dpif_netlink_rtm_del_mcast_grp(const void *dpif_, int port_no, struct in6_ad
+ bool dpif_netlink_is_internal_device(const char *name);
+ 
+ int dpif_netlink_vport_set_flags(const char *name, uint32_t flags);
++int dpif_netlink_vport_set_carrier(const char *name, bool carrier);
+ 
+ enum ovs_vport_type netdev_to_ovs_vport_type(const char *type);
+ 
+diff --git a/lib/netdev-linux.c b/lib/netdev-linux.c
+index c6f3d2740..a41baf751 100644
+--- a/lib/netdev-linux.c
++++ b/lib/netdev-linux.c
+@@ -1946,6 +1946,18 @@ netdev_linux_get_carrier(const struct netdev *netdev_, bool *carrier)
+     return 0;
+ }
+ 
++static int
++netdev_linux_set_carrier(const struct netdev *netdev_, bool carrier)
++{
++    struct netdev_linux *netdev = netdev_linux_cast(netdev_);
++
++    ovs_mutex_lock(&netdev->mutex);
++    dpif_netlink_vport_set_carrier(netdev_->name, carrier);
++    ovs_mutex_unlock(&netdev->mutex);
++
++    return 0;
++}
++
+ static long long int
+ netdev_linux_get_carrier_resets(const struct netdev *netdev_)
+ {
+@@ -3513,6 +3525,7 @@ exit:
+     .set_mtu = netdev_linux_set_mtu,                            \
+     .get_ifindex = netdev_linux_get_ifindex,                    \
+     .get_carrier = netdev_linux_get_carrier,                    \
++    .set_carrier = netdev_linux_set_carrier,                    \
+     .get_carrier_resets = netdev_linux_get_carrier_resets,      \
+     .set_miimon_interval = netdev_linux_set_miimon_interval,    \
+     .set_advertisements = netdev_linux_set_advertisements,      \
+diff --git a/lib/netdev-provider.h b/lib/netdev-provider.h
+index 22f4cde33..e8961a1c5 100644
+--- a/lib/netdev-provider.h
++++ b/lib/netdev-provider.h
+@@ -446,6 +446,7 @@ struct netdev_class {
+      * up as long as device is up).
+      */
+     int (*get_carrier)(const struct netdev *netdev, bool *carrier);
++    int (*set_carrier)(const struct netdev *netdev, bool carrier);
+ 
+     /* Returns the number of times 'netdev''s carrier has changed since being
+      * initialized.
+diff --git a/lib/netdev.c b/lib/netdev.c
+index 407037ed8..dab206811 100644
+--- a/lib/netdev.c
++++ b/lib/netdev.c
+@@ -1546,6 +1546,16 @@ netdev_get_carrier(const struct netdev *netdev)
+     return carrier;
+ }
+ 
++int
++netdev_set_carrier(const struct netdev *netdev, bool carrier)
++{
++    if (!netdev->netdev_class->set_carrier) {
++        return EOPNOTSUPP;
++    }
++
++    return netdev->netdev_class->set_carrier(netdev, carrier);
++}
++
+ /* Returns the number of times 'netdev''s carrier has changed. */
+ long long int
+ netdev_get_carrier_resets(const struct netdev *netdev)
+diff --git a/lib/netdev.h b/lib/netdev.h
+index fdbe0e1f5..6eb723039 100644
+--- a/lib/netdev.h
++++ b/lib/netdev.h
+@@ -229,6 +229,7 @@ int netdev_get_etheraddr(const struct netdev *, struct eth_addr *mac);
+ 
+ /* PHY interface. */
+ bool netdev_get_carrier(const struct netdev *);
++int netdev_set_carrier(const struct netdev *, bool carrier);
+ long long int netdev_get_carrier_resets(const struct netdev *);
+ int netdev_set_miimon_interval(struct netdev *, long long int interval);
+ 
+diff --git a/vswitchd/bridge.c b/vswitchd/bridge.c
+index 14ee6ea5e..672823ac1 100644
+--- a/vswitchd/bridge.c
++++ b/vswitchd/bridge.c
+@@ -3191,6 +3191,8 @@ run_status_update(void)
+             dpdk_status(cfg);
+             HMAP_FOR_EACH (br, node, &all_bridges) {
+                 struct port *port;
++                bool br_carrier = 0;
++                struct iface *br_iface = NULL;
+ 
+                 br_refresh_stp_status(br);
+                 br_refresh_rstp_status(br);
+@@ -3204,8 +3206,16 @@ run_status_update(void)
+                     LIST_FOR_EACH (iface, port_elem, &port->ifaces) {
+                         iface_refresh_netdev_status(iface);
+                         iface_refresh_ofproto_status(iface);
++                        if (iface->ofp_port != OFPP_LOCAL) {
++                            br_carrier |= netdev_get_carrier(iface->netdev);
++                        } else {
++                            br_iface = iface;
++                        }
+                     }
+                 }
++                if (br_iface) {
++                    netdev_set_carrier(br_iface->netdev, br_carrier);
++                }
+             }
+         }
+     }

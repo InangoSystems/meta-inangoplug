@@ -1,0 +1,46 @@
+From 163c8ab9cc340c0b786fdf8bda5b6ba7fa24e07a Mon Sep 17 00:00:00 2001
+From: Georgii Okhokhonin <g.okhokhonin@inango-systems.com>
+Date: Wed, 1 Jun 2022 00:29:27 +0300
+Subject: [PATCH] Commit Title: Change init sequence
+
+BugId: 28984
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description: Move plug start from utopia init to a systemctl
+---
+ rhel/usr_lib_systemd_system_openvswitch.service | 1 +
+ utilities/ovs-ctl.in                            | 2 --
+ 2 files changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/rhel/usr_lib_systemd_system_openvswitch.service b/rhel/usr_lib_systemd_system_openvswitch.service
+index 61b312b14..22948d151 100644
+--- a/rhel/usr_lib_systemd_system_openvswitch.service
++++ b/rhel/usr_lib_systemd_system_openvswitch.service
+@@ -6,6 +6,7 @@ PartOf=network.target
+ Requires=ovsdb-server.service
+ Requires=ovs-vswitchd.service
+ Requires=ovs-brcompatd.service
++Before=gwprovapp.service gwprovapp-ethwan.service
+ 
+ [Service]
+ Type=oneshot
+diff --git a/utilities/ovs-ctl.in b/utilities/ovs-ctl.in
+index 0b61912cf..fac062714 100644
+--- a/utilities/ovs-ctl.in
++++ b/utilities/ovs-ctl.in
+@@ -287,7 +287,6 @@ do_start_brcompatd () {
+ start_brcompatd () {
+     if test X"$OVS_BRCOMPATD" = Xyes; then
+         do_start_brcompatd || return 1
+-        touch /tmp/inangoplug_started
+     fi
+ 
+     return 0
+@@ -320,7 +319,6 @@ stop_forwarding () {
+ stop_brcompatd () {
+     if test X"$OVS_BRCOMPATD" = Xyes; then
+         stop_daemon ovs-brcompatd
+-        rm -f /tmp/inangoplug_started
+     fi
+ }
+ 

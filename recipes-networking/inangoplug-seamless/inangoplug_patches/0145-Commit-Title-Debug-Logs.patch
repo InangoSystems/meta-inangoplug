@@ -1,0 +1,56 @@
+From b60e88021fe00dd234b13d404d2c35f868885603 Mon Sep 17 00:00:00 2001
+From: Anton Bilohai <a.bilohai@inango-systems.com>
+Date: Mon, 23 May 2022 18:08:20 +0300
+Subject: [PATCH] Commit Title: Debug Logs
+
+BugID: 27194
+Bug Fixed(y/N[blankN]): n
+CodeReviewId: 0
+Description:
+    - Debug logs. Nothing more to say here
+---
+ datapath/datapath.c | 8 ++++++++
+ lib/dpif-netlink.c  | 4 ++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 72bcfb40d..060fed608 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -2088,6 +2088,14 @@ static int ovs_vport_cmd_newneigh(struct sk_buff *skbn, struct genl_info *info)
+     } else {
+           goto error;
+     }
++
++    printk(KERN_ERR "OVS: obtaining port_no\n");
++	port_no = a[OVS_VPORT_ATTR_PORT_NO]
++		? nla_get_u32(a[OVS_VPORT_ATTR_PORT_NO]) : 0;
++	if (port_no >= DP_MAX_PORTS)
++		return -EFBIG;
++
++    printk(KERN_ERR "OVS: locking RCU\n");
+ // LOCK RCU
+ // Obtain ifindex from
+ 	rcu_read_lock();
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index f47633525..e0717fedd 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -4332,6 +4332,8 @@ dpif_netlink_rtm_newneigh(odp_port_t odp_index, const struct eth_addr src_mac)
+ {
+     int error;
+ 
++    VLOG_ERR("Sending NEWNEIGH odp: %u, MAC:%02x:%02x:%02x:%02x:%02x:%02x \n",
++            odp_index, src_mac.ea[0], src_mac.ea[1],src_mac.ea[2],src_mac.ea[3],src_mac.ea[4],src_mac.ea[5]);
+     error = dpif_netlink_mac_send(odp_index, src_mac, OVS_VPORT_CMD_NEWNEIGH);
+ 
+     if (!error) {
+@@ -4346,6 +4348,8 @@ dpif_netlink_rtm_delneigh(odp_port_t odp_index, const struct eth_addr src_mac)
+ {
+     int error;
+ 
++    VLOG_ERR("Sending DELNEIGH odp: %u, MAC:%02x:%02x:%02x:%02x:%02x:%02x \n",
++            odp_index, src_mac.ea[0], src_mac.ea[1],src_mac.ea[2],src_mac.ea[3],src_mac.ea[4],src_mac.ea[5]);
+     error = dpif_netlink_mac_send(odp_index, src_mac, OVS_VPORT_CMD_DELNEIGH);
+ 
+     if (!error) {

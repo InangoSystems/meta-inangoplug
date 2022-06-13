@@ -137,5 +137,19 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0135-Fixed-OVS-bridges-managing.patch \
     file://0136-Commit-Title-Support-configure-mac-address-via-newlink-operations.patch \
     file://0137-Commit-Title-Support-configure-mac-address-via-newlink-operations.patch \
+    file://0138-Commit-Title-Propogate-link-status-into-kernel-space-for-OVS-bridges.patch \
+    file://0139-Commit-Title-Change-init-sequence.patch \
+    file://0140-Commit-Title-Fix-return-status-during-create-bridge.patch \
+    file://0141-Commit-Title-fix-recursive-mac-configuration.patch \
+    file://0142-Commit-Title-Send-RNTL-notification-when-port-is-set.patch \
+    file://0143-Commit-Title-Disable-notification-to-Linux-send-on-MAC-learning.patch \
+    file://0144-Commit-Title-Use-Datapath-ID-instead-of-Linux-ID-during-RTNL-notification.patch \
+    file://0145-Commit-Title-Debug-Logs.patch \
+    file://0146-Commit-Title-Move-odp_index-to-port_no-when-notifies-Datapath.patch \
+    file://0147-Commit-Title-Covert-dpif-to-dp_ifindex.patch \
+    file://0148-Commit-Title-Obtain-odp_port-from-port.patch \
+    file://0149-Commit-Title-Use-lookup_vport.patch \
+    file://0150-Commit-Title-Formatting.patch \
+    file://0151-Commit-Title-Fixate-lib-build-order.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

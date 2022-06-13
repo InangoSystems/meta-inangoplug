@@ -1,0 +1,171 @@
+From 5455887249e1093dce463e471fd4db47e2809a59 Mon Sep 17 00:00:00 2001
+From: Anton Bilohai <a.bilohai@inango-systems.com>
+Date: Thu, 2 Jun 2022 14:56:32 +0300
+Subject: [PATCH] Commit Title: Obtain odp_port from port
+
+BugID: 27194
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description:
+    - Currently, when we notify Linux about change in MAC Neighbors
+    we save odp_port in mac learning table, then take it from there. But
+    odp_port is port specific, when mac learning mac table is bridge
+    specific. Which leads to unexpected behaviour
+    - Create wrapper funct to get odp_port from ofbundle. Use it to
+    obtain odp_port directly from mac-learning.c
+---
+ datapath/datapath.c          | 6 ------
+ lib/automake.mk              | 3 +++
+ lib/mac-learning.c           | 9 ++++++++-
+ lib/mac-learning.h           | 1 -
+ ofproto/ofproto-dpif-xlate.c | 7 +++++--
+ ofproto/ofproto-dpif.c       | 9 +++++++++
+ ofproto/ofproto-dpif.h       | 1 +
+ 7 files changed, 26 insertions(+), 10 deletions(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 3cc04f153..089c21a86 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -2094,13 +2094,10 @@ static int ovs_vport_cmd_newneigh(struct sk_buff *skbn, struct genl_info *info)
+ 	if (port_no >= DP_MAX_PORTS)
+ 		return -EFBIG;
+ 
+-// LOCK RCU
+-// Obtain ifindex from
+ 	rcu_read_lock();
+ 	dp = get_dp_rcu(sock_net(skbn->sk), ovs_header->dp_ifindex);
+ 	input_vport = ovs_vport_rcu(dp, port_no);
+ 	rcu_read_unlock();
+-// FREE RCU LOCK
+     printk(KERN_ERR "OVS: NEW_NEIGH port_no: %d, dp_ifindex: %d, if_index: %d (%s)\n",
+             port_no, ovs_header->dp_ifindex, input_vport->dev->ifindex, input_vport->dev->name);
+ 
+@@ -2160,13 +2157,10 @@ static int ovs_vport_cmd_delneigh(struct sk_buff *skbn, struct genl_info *info)
+ 	if (port_no >= DP_MAX_PORTS)
+ 		return -EFBIG;
+ 
+-// LOCK RCU
+-// Obtain ifindex from
+ 	rcu_read_lock();
+ 	dp = get_dp_rcu(sock_net(skbn->sk), ovs_header->dp_ifindex);
+ 	input_vport = ovs_vport_rcu(dp, port_no);
+ 	rcu_read_unlock();
+-// FREE RCU LOCK
+     printk(KERN_ERR "OVS: DEL_NEIGH port_no: %d, dp_ifindex: %d, if_index: %d (%s)\n",
+             port_no, ovs_header->dp_ifindex, input_vport->dev->ifindex, input_vport->dev->name);
+ 
+diff --git a/lib/automake.mk b/lib/automake.mk
+index 95925b57c..4eae0cefc 100644
+--- a/lib/automake.mk
++++ b/lib/automake.mk
+@@ -338,6 +338,9 @@ lib_libopenvswitch_la_SOURCES = \
+ 	lib/lldp/lldpd-structs.c \
+ 	lib/lldp/lldpd-structs.h
+ 
++lib_libopenvswitch_la_LIBADD += \
++	ofproto/libofproto.la
++
+ if WIN32
+ lib_libopenvswitch_la_SOURCES += \
+ 	lib/daemon-windows.c \
+diff --git a/lib/mac-learning.c b/lib/mac-learning.c
+index e4630d26a..3d3abe7c0 100644
+--- a/lib/mac-learning.c
++++ b/lib/mac-learning.c
+@@ -30,6 +30,7 @@
+ #include "unaligned.h"
+ #include "util.h"
+ #include "vlan-bitmap.h"
++#include "ofproto/ofproto-dpif.h"
+ 
+ COVERAGE_DEFINE(mac_learning_learned);
+ COVERAGE_DEFINE(mac_learning_expired);
+@@ -511,8 +512,14 @@ mac_learning_lookup(const struct mac_learning *ml,
+ void
+ mac_learning_expire(struct mac_learning *ml, struct mac_entry *e)
+ {
++    void *port;
++    odp_port_t odp_port;
++
++    port = mac_entry_get_port(ml, e);
++    odp_port = ofbundle_to_odp_port(port);
++
+     ml->need_revalidate = true;
+-    dpif_netlink_rtm_delneigh(ml->odp_index, ml->dp_ifindex, e->mac);
++    dpif_netlink_rtm_delneigh(odp_port, ml->dp_ifindex, e->mac);
+     mac_entry_set_port(ml, e, NULL);
+     hmap_remove(&ml->table, &e->hmap_node);
+     ovs_list_remove(&e->lru_node);
+diff --git a/lib/mac-learning.h b/lib/mac-learning.h
+index 82a31b4c4..ffb4681b5 100644
+--- a/lib/mac-learning.h
++++ b/lib/mac-learning.h
+@@ -159,7 +159,6 @@ struct mac_learning {
+     struct ovs_refcount ref_cnt;
+     struct ovs_rwlock rwlock;
+     bool need_revalidate;
+-    odp_port_t odp_index;
+     int dp_ifindex;
+ 
+     /* Statistics */
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index da5d2d6ed..8bbe0d4f2 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2578,7 +2578,6 @@ update_learning_table__(const struct xbridge *xbridge,
+ 
+     dp_ifindex = dpif_to_dp_ifindex(xbridge->dpif);
+     xbridge->ml->dp_ifindex = dp_ifindex;
+-
+     return (in_xbundle == &ofpp_none_bundle
+             || !mac_learning_update(xbridge->ml, dl_src, vlan,
+                                     is_grat_arp,
+@@ -2594,10 +2593,14 @@ update_learning_table(const struct xlate_ctx *ctx,
+ 
+     if (!update_learning_table__(ctx->xbridge, in_xbundle, dl_src, vlan,
+                                  is_grat_arp)) {
++        struct xport *xport;
++
+         xlate_report_debug(ctx, OFT_DETAIL, "learned that "ETH_ADDR_FMT" is "
+                            "on port %s in VLAN %d",
+                            ETH_ADDR_ARGS(dl_src), in_xbundle->name, vlan);
+-        dpif_netlink_rtm_newneigh(ctx->xbridge->ml->odp_index, ctx->xbridge->ml->dp_ifindex, dl_src);
++        xport = CONTAINER_OF(ovs_list_front(&in_xbundle->xports), struct xport,
++                             bundle_node);
++        dpif_netlink_rtm_newneigh(xport->odp_port, ctx->xbridge->ml->dp_ifindex, dl_src);
+     }
+ }
+ 
+diff --git a/ofproto/ofproto-dpif.c b/ofproto/ofproto-dpif.c
+index 6415e9c0f..178b5932f 100644
+--- a/ofproto/ofproto-dpif.c
++++ b/ofproto/ofproto-dpif.c
+@@ -6683,6 +6683,15 @@ odp_port_to_ofport(const struct dpif_backer *backer, odp_port_t odp_port)
+     return NULL;
+ }
+ 
++odp_port_t
++ofbundle_to_odp_port(void *port)
++{
++    struct ofport_dpif *ofport;
++
++    ofport = ofbundle_get_a_port((struct ofbundle*) port);
++    return ofport->odp_port;
++}
++
+ static ofp_port_t
+ odp_port_to_ofp_port(const struct ofproto_dpif *ofproto, odp_port_t odp_port)
+ {
+diff --git a/ofproto/ofproto-dpif.h b/ofproto/ofproto-dpif.h
+index 7499d2409..4af3badf4 100644
+--- a/ofproto/ofproto-dpif.h
++++ b/ofproto/ofproto-dpif.h
+@@ -289,6 +289,7 @@ extern struct shash all_dpif_backers;
+ struct ofport_dpif *odp_port_to_ofport(const struct dpif_backer *, odp_port_t);
+ 
+ odp_port_t ofp_port_to_odp_port_ext(const struct ofproto_dpif *ofproto, ofp_port_t ofp_port);
++odp_port_t ofbundle_to_odp_port(void *port);
+ 
+ /* A bridge based on a "dpif" datapath. */
+ 
