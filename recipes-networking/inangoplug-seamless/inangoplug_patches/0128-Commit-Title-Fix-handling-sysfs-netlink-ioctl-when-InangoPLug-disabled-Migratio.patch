@@ -1,0 +1,1263 @@
+From 6afd3cbc0a06721e4673bbe7d55ba988f39e792a Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Fri, 10 Jun 2022 17:19:31 +0300
+Subject: [PATCH] Commit Title: Fix handling sysfs/netlink/ioctl when
+ InangoPLug disabled (Migration from 5.15 kernel)
+
+BugID: 29176
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description:
+- Add deinit callbacks for sysfs handler in brcompat
+- change order of initialization OVS slave interface to collect info
+about slave interface during send netlink notification
+- add wrapper for all br_compat commands
+---
+ datapath/brcompat_main.c      | 315 ++++++++++++++++++++++++++++++++++++------
+ datapath/datapath.c           |  60 ++++----
+ datapath/datapath.h           |   7 +
+ datapath/dp_sysfs.h           |   3 +
+ datapath/dp_sysfs_dp.c        | 184 +++++++++++-------------
+ datapath/dp_sysfs_if.c        |  44 +++---
+ datapath/vport-internal_dev.c |  42 +++++-
+ datapath/vport-netdev.c       |  20 +--
+ 8 files changed, 466 insertions(+), 209 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 7859b2194..2f41ed56f 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -878,51 +878,194 @@ static int brc_dev_mtu(struct net_device *dev, int mtu)
+ static int brc_dev_sysfs(struct net_device *dev, unsigned long *ul_value, int cmd, int oper)
+ {
+ 	int err = 0;
++#if IS_ENABLED(CONFIG_BRIDGE)
++	struct vport *vport = ovs_internal_dev_get_vport(dev);
++#endif
+ 
+ 	if (oper == GET_PARAMETER)
+-		switch(cmd){
+-			case BRC_GENL_C_GET_BRIDGE_FORWARD_DELAY:
+-				*ul_value = BRC_STP_DEFAULT_FWD_DELAY;
+-				break;
+-			case BRC_GENL_C_GET_BRIDGE_HELLO_TIME:
+-				*ul_value = BRC_STP_DEFAULT_HELLO_TIME;
+-				break;
+-			case BRC_GENL_C_GET_BRIDGE_MAX_AGE: 
+-				*ul_value = BRC_STP_DEFAULT_MAX_AGE;
+-				break;
+-			/*start*/
+-			case BRC_GENL_C_GET_BRIDGE_PRIORITY:
+-				*ul_value = BRC_STP_DEFAULT_BRIDGE_PRIORITY;
+-				break;
+-			case BRC_GENL_C_GET_PORT_PATH_COST:
+-				*ul_value = BRC_STP_PATH_COST;
+-				break;
+-			case BRC_GENL_C_GET_BRIDGE_ROOT_ID: 
+-			case BRC_GENL_C_GET_BRIDGE_STP_STATE:
+-			case BRC_GENL_C_GET_PORT_STATE:
+-				*ul_value = 0;
+-				break;
+-			case BRC_GENL_C_GET_AGEING_TIME:
+-				*ul_value = BRC_DEFAULT_MAC_AGING_TIME;
+-				break;
+-			default:
+-				return brc_get_ulong_val_cmd(dev, cmd, ul_value);
++	{
++		if (netif_is_ovs_master(dev))
++		{
++			switch(cmd)
++			{
++				case IFLA_BR_AGEING_TIME:
++					*ul_value = BRC_DEFAULT_MAC_AGING_TIME;
++					break;
++				case IFLA_BR_FORWARD_DELAY:
++					*ul_value = BRC_STP_DEFAULT_FWD_DELAY;
++					break;
++				case IFLA_BR_HELLO_TIME:
++					*ul_value = BRC_STP_DEFAULT_HELLO_TIME;
++					break;
++				case IFLA_BR_MAX_AGE:
++					*ul_value = BRC_STP_DEFAULT_MAX_AGE;
++					break;
++				case IFLA_BR_MCAST_SNOOPING:
++					return brc_get_ulong_val_cmd(dev, BRC_GENL_C_GET_BRIDGE_MULTICAST_SNOOPING, ul_value);
++#if IS_ENABLED(CONFIG_BRIDGE)
++				case IFLA_BR_MCAST_LAST_MEMBER_CNT:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_get_last_member_cnt(vport->brcompat_data, ul_value);
++					break;
++				case IFLA_BR_MCAST_LAST_MEMBER_INTVL:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_get_last_member_intvl(vport->brcompat_data, ul_value);
++					break;
++				case IFLA_BR_MCAST_MEMBERSHIP_INTVL:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_get_membership_intvl(vport->brcompat_data, ul_value);
++					break;
++				case IFLA_BR_MCAST_QUERIER:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_get_querier(vport->brcompat_data, ul_value);
++					break;
++				case IFLA_BR_MCAST_QUERY_INTVL:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_get_query_intvl(vport->brcompat_data, ul_value);
++					break;
++				case IFLA_BR_MCAST_QUERY_RESPONSE_INTVL:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_get_query_response_intvl(vport->brcompat_data, ul_value);
++					break;
++				case IFLA_BR_MCAST_QUERY_USE_IFADDR:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_get_query_use_ifaddr(vport->brcompat_data, ul_value);
++					break;
++				case IFLA_BR_MCAST_IGMP_VERSION:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_get_igmp_version(vport->brcompat_data, ul_value);
++					break;
++				case IFLA_BR_MCAST_MLD_VERSION:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_get_mld_version(vport->brcompat_data, ul_value);
++					break;
++#endif
++				case IFLA_BR_PRIORITY:
++					*ul_value = BRC_STP_DEFAULT_BRIDGE_PRIORITY;
++					break;
++				case IFLA_BR_STP_STATE:
++					*ul_value = 0;
++					break;
++				default:
++					return brc_get_ulong_val_cmd(dev, cmd, ul_value);
++			}
+ 		}
++		else if (dev->priv_flags & IFF_OVS_DATAPATH)
++		{
++			switch(cmd)
++			{
++				case IFLA_BRPORT_COST:
++					*ul_value = BRC_STP_PATH_COST;
++					break;
++#if IS_ENABLED(CONFIG_BRIDGE)
++				case IFLA_BRPORT_FAST_LEAVE:
++					if (vport && vport->brcompat_data)
++						br_compat_get_port_flag(vport->brcompat_data, ul_value, BR_MULTICAST_FAST_LEAVE);
++					break;
++#endif
++				case IFLA_BRPORT_NO:
++					return brc_get_ulong_val_cmd(dev, BRC_GENL_C_GET_PORT_PORT_NO, ul_value);
++				case IFLA_BRPORT_STATE:
++					*ul_value = 0;
++					break;
++				default:
++					return brc_get_ulong_val_cmd(dev, cmd, ul_value);
++			}
++		}
++	}
+ 	else if (oper == SET_PARAMETER)
+-		switch (cmd)
++	{
++		if (netif_is_ovs_master(dev))
+ 		{
+-			case BRC_GENL_C_SET_BRIDGE_FORWARD_DELAY:
+-			case BRC_GENL_C_SET_BRIDGE_HELLO_TIME:
+-			case BRC_GENL_C_SET_BRIDGE_MAX_AGE:
+-			case BRC_GENL_C_SET_BRIDGE_PRIORITY:
+-			case BRC_GENL_C_SET_BRIDGE_STP_STATE:
+-			case BRC_GENL_C_SET_PORT_PATH_COST:
+-			 err = EOPNOTSUPP;
+-			 break;
+-			default:
+-				return brc_set_ulong_val_cmd(dev, cmd, *ul_value);
+-				break;
++			switch (cmd)
++			{
++				case IFLA_BR_AGEING_TIME:
++					return brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_AGEING_TIME, *ul_value);
++				case IFLA_BR_FORWARD_DELAY:
++				case IFLA_BR_HELLO_TIME:
++				case IFLA_BR_MAX_AGE:
++					err = -EOPNOTSUPP;
++					break;
++				case IFLA_BR_MCAST_SNOOPING:
++					err = brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_BRIDGE_MULTICAST_SNOOPING, *ul_value);
++#if IS_ENABLED(CONFIG_BRIDGE)
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_toggle(vport->brcompat_data, !!(*ul_value));
++#endif
++					break;
++#if IS_ENABLED(CONFIG_BRIDGE)
++				case IFLA_BR_MCAST_LAST_MEMBER_CNT:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_set_last_member_cnt(vport->brcompat_data, *ul_value);
++					break;
++				case IFLA_BR_MCAST_LAST_MEMBER_INTVL:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_set_last_member_intvl(vport->brcompat_data, *ul_value);
++					break;
++				case IFLA_BR_MCAST_MEMBERSHIP_INTVL:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_set_membership_intvl(vport->brcompat_data, *ul_value);
++					break;
++				case IFLA_BR_MCAST_QUERIER:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_set_querier(vport->brcompat_data, !!(*ul_value));
++					break;
++				case IFLA_BR_MCAST_QUERY_INTVL:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_set_query_intvl(vport->brcompat_data, *ul_value);
++					break;
++				case IFLA_BR_MCAST_QUERY_RESPONSE_INTVL:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_set_query_response_intvl(vport->brcompat_data, *ul_value);
++					break;
++				case IFLA_BR_MCAST_QUERY_USE_IFADDR:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_set_query_use_ifaddr(vport->brcompat_data, !!(*ul_value));
++					break;
++				case IFLA_BR_MCAST_IGMP_VERSION:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_set_igmp_version(vport->brcompat_data, *ul_value);
++					break;
++				case IFLA_BR_MCAST_MLD_VERSION:
++					if (vport && vport->brcompat_data)
++						br_compat_multicast_set_mld_version(vport->brcompat_data, *ul_value);
++					break;
++#endif
++				case IFLA_BR_PRIORITY:
++				case IFLA_BR_STP_STATE:
++					err = -EOPNOTSUPP;
++					break;
++				default:
++					return brc_set_ulong_val_cmd(dev, cmd, *ul_value);
++			}
++		}
++		else if (dev->priv_flags & IFF_OVS_DATAPATH)
++		{
++			switch (cmd)
++			{
++				case IFLA_BRPORT_COST:
++					err = -EOPNOTSUPP;
++					break;
++				case IFLA_BRPORT_FAST_LEAVE:
++					dev_hold(dev);
++					err = brc_set_ulong_val_cmd(dev, BRC_GENL_C_SET_PORT_MC_SNOOPING_FLOOD_REPORTS, !*ul_value);
++#if IS_ENABLED(CONFIG_BRIDGE)
++					if (likely(dev->priv_flags & IFF_OVS_DATAPATH)) {
++						if (vport && vport->brcompat_data)
++							br_compat_set_port_flag(vport->brcompat_data, *ul_value, BR_MULTICAST_FAST_LEAVE);
++					}
++#endif
++					dev_put(dev);
++					break;
++				case IFLA_BRPORT_NO:
++				case IFLA_BRPORT_STATE:
++					err = -EOPNOTSUPP;
++					break;
++				default:
++					return brc_set_ulong_val_cmd(dev, cmd, *ul_value);
++			}
+ 		}
++	}
+ 	else
+ 		err = -1;
+ 
+@@ -949,6 +1092,63 @@ static int brc_dev_sysfs_string(struct net_device *dev, char *ustring, int cmd)
+ 	return err;
+ }
+ 
++static void brc_dev_init(struct vport *vport)
++{
++	if (vport && vport->brcompat_data)
++		br_compat_multicast_init_stats(vport->brcompat_data);
++}
++
++static void brc_dev_open(struct vport *vport)
++{
++	if (vport && vport->brcompat_data)
++		br_compat_multicast_open(vport->brcompat_data);
++}
++
++static void brc_dev_stop(struct vport *vport)
++{
++	if (vport && vport->brcompat_data)
++		br_compat_multicast_stop(vport->brcompat_data);
++}
++
++static int brc_dev_set_mtu_set_by_user(struct net_device *dev, int is_set_by_user)
++{
++	return br_compat_set_mtu_set_by_user(dev, is_set_by_user);
++}
++
++static int brc_multicast_add_group(struct vport *vport, struct br_ip *group, unsigned char *mac)
++{
++	void *br_mport = NULL;
++	void *mport = NULL;
++
++	if (!vport || !vport->brcompat_data)
++		return -1;
++
++	if (vport->type == OVS_VPORT_TYPE_INTERNAL) {
++		br_mport = vport->brcompat_data;
++	} else {
++		mport = vport->brcompat_data;
++	}
++
++	return br_compat_multicast_add_group(br_mport, mport, group, mac);
++}
++
++static int brc_multicast_del_group(struct vport *vport, struct br_ip *group, unsigned char *mac)
++{
++	void *br_mport = NULL;
++	void *mport = NULL;
++
++	if (!vport || !vport->brcompat_data)
++		return -1;
++
++	if (vport->type == OVS_VPORT_TYPE_INTERNAL) {
++		br_mport = vport->brcompat_data;
++	} else {
++		mport = vport->brcompat_data;
++	}
++
++	return br_compat_multicast_leave_group(br_mport, mport, group, mac);
++}
++
+ static int brc_genl_query(struct sk_buff *skb, struct genl_info *info)
+ {
+ 	int err = -EINVAL;
+@@ -1103,10 +1303,15 @@ static int brc_br_bridge_setup(struct vport *vport, int add)
+ 	if (!vport)
+ 		return -EINVAL;
+ 
+-	if (add)
++	if (add) {
++		if(!try_module_get(THIS_MODULE)) {
++			pr_warn("Impossible to increment reference count!\n");
++		}
+ 		return br_compat_bridge_create(vport->dev, &vport->brcompat_data);
++	}
+ 	else
+ 	{
++		module_put(THIS_MODULE);
+ 		br_compat_multicast_dev_del(vport->brcompat_data);
+ 		vport->brcompat_data = NULL;
+ 		return 0;
+@@ -1519,6 +1724,15 @@ static int __init brc_init(void)
+ 
+ 	ovs_get_fdb_entries = brc_get_fdb_entries;
+ 
++	ovs_dp_dev_init = brc_dev_init;
++	ovs_dp_dev_open = brc_dev_open;
++	ovs_dp_dev_stop = brc_dev_stop;
++
++	ovs_dp_dev_set_mtu_set_by_user = brc_dev_set_mtu_set_by_user;
++
++	ovs_dp_multicast_add_group = brc_multicast_add_group;
++	ovs_dp_multicast_del_group = brc_multicast_del_group;
++
+ 	rtnl_lock();
+ 
+ 	br_link_ops = (struct rtnl_link_ops *)rtnl_link_ops_get("bridge");
+@@ -1610,6 +1824,27 @@ static void brc_cleanup(void)
+ 	/* Unregister brc_get_fdb_entries */
+ 	ovs_get_fdb_entries = NULL;
+ 
++	ovs_dp_dev_init = NULL;
++
++	ovs_dp_dev_open = NULL;
++
++	ovs_dp_dev_stop = NULL;
++
++	ovs_dp_dev_set_mtu_set_by_user = NULL;
++
++	ovs_dp_multicast_add_group = NULL;
++
++	ovs_dp_multicast_del_group = NULL;
++
++	ovs_dp_sysfs_hook = NULL;
++	ovs_dp_sysfs_string_hook = NULL;
++
++	rtnl_lock();
++	br_link_ops = (struct rtnl_link_ops *)rtnl_link_ops_get("bridge");
++	memcpy(br_link_ops, &br_compat_link_ops, sizeof(*br_link_ops));
++
++	rtnl_unlock();
++
+ 	/* Back the hook of the linux bridge to socket module */
+ 	brioctl_set(bridge_ioctl_hook);
+ 
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 4b3b77eb7..7bfd913c9 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -68,7 +68,6 @@
+ #include "gso.h"
+ #include "vport-internal_dev.h"
+ #include "vport-netdev.h"
+-#include "openvswitch/brcompat-netlink.h"
+ #include <net/br_compat.h>
+ 
+ unsigned int ovs_net_id __read_mostly;
+@@ -112,6 +111,24 @@ EXPORT_SYMBOL(ovs_dp_get_rtnl_link_ops_hook);
+ int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
+ EXPORT_SYMBOL(ovs_dp_sysfs_hook);
+ 
++void (*ovs_dp_dev_init)(struct vport *vport);
++EXPORT_SYMBOL(ovs_dp_dev_init);
++
++void (*ovs_dp_dev_open)(struct vport *vport);
++EXPORT_SYMBOL(ovs_dp_dev_open);
++
++void (*ovs_dp_dev_stop)(struct vport *vport);
++EXPORT_SYMBOL(ovs_dp_dev_stop);
++
++int (*ovs_dp_dev_set_mtu_set_by_user)(struct net_device *dev, int is_set_by_user);
++EXPORT_SYMBOL(ovs_dp_dev_set_mtu_set_by_user);
++
++int (*ovs_dp_multicast_add_group)(struct vport *vport, struct br_ip *group, unsigned char *mac);
++EXPORT_SYMBOL(ovs_dp_multicast_add_group);
++
++int (*ovs_dp_multicast_del_group)(struct vport *vport, struct br_ip *group, unsigned char *mac);
++EXPORT_SYMBOL(ovs_dp_multicast_del_group);
++
+ int (*ovs_dp_sysfs_string_hook)(struct net_device *dev, char *ustring, int cmd);
+ EXPORT_SYMBOL(ovs_dp_sysfs_string_hook);
+ 
+@@ -2214,8 +2231,6 @@ static int ovs_vport_cmd_addmcastgrp(struct sk_buff *skb, struct genl_info *info
+ 	struct pp_am_multicast_event_msg msg;
+ 	int err = -1;
+ 	struct vport *vport;
+-	void *br_mport = NULL;
+-	void *mport = NULL;
+ 	struct nlattr **a = info->attrs;
+ 	struct br_ip group;
+ 	unsigned char mac[ETH_ALEN];
+@@ -2229,14 +2244,11 @@ static int ovs_vport_cmd_addmcastgrp(struct sk_buff *skb, struct genl_info *info
+ 	if (err)
+ 		goto err;
+ 
+-	if (vport->type == OVS_VPORT_TYPE_INTERNAL) {
+-		br_mport = vport->brcompat_data;
+-	} else {
+-		mport = vport->brcompat_data;
+-	}
+ 
+ 	pp_am_port_event(PP_AM_MULTICAST_JOIN, &msg);
+-	err = br_compat_multicast_add_group(br_mport, mport, &group, mac);
++	if (ovs_dp_multicast_add_group)
++		err = ovs_dp_multicast_add_group(vport, &group, mac);
++
+ err:
+ 	ovs_unlock();
+ 	return err;
+@@ -2247,8 +2259,6 @@ static int ovs_vport_cmd_delmcastgrp(struct sk_buff *skb, struct genl_info *info
+ 	struct pp_am_multicast_event_msg msg;
+ 	int err = -1;
+ 	struct vport *vport;
+-	void *br_mport;
+-	void *mport;
+ 	struct nlattr **a = info->attrs;
+ 	struct br_ip group;
+ 	unsigned char mac[ETH_ALEN];
+@@ -2262,14 +2272,10 @@ static int ovs_vport_cmd_delmcastgrp(struct sk_buff *skb, struct genl_info *info
+ 	if (err)
+ 		goto err;
+ 
+-	if (vport->type == OVS_VPORT_TYPE_INTERNAL) {
+-		br_mport = vport->brcompat_data;
+-	} else {
+-		mport = vport->brcompat_data;
+-	}
+ 
+ 	pp_am_port_event(PP_AM_MULTICAST_LEAVE, &msg);
+-	err = br_compat_multicast_leave_group(br_mport, mport, &group, mac);
++	if (ovs_dp_multicast_del_group)
++		ovs_dp_multicast_del_group(vport, &group, mac);
+ err:
+ 	ovs_unlock();
+ 	return err;
+@@ -2551,16 +2557,12 @@ struct vport* get_vport_by_bridge(struct datapath *dp, const char *bridge)
+ 	return NULL;
+ }
+ 
+-static int ovs_brcompat_bridge_setup(struct vport *vport, struct vport_parms *parms){
+-	if (ovs_dp_br_bridge_setup) {
+-		return ovs_dp_br_bridge_setup(vport, 1);
+-	}
+-	return -EOPNOTSUPP;
+-}
+-
+ static int ovs_brcompat_port_setup(struct vport *vport, struct vport_parms *parms){
+ 	struct vport *br_vport;
+ 
++	if (!ovs_dp_br_bridge_port_setup) 
++		return -EOPNOTSUPP;
++
+ 	if (!parms->bridge_name || !*parms->bridge_name)
+ 			return -EINVAL;
+ 
+@@ -2569,9 +2571,7 @@ static int ovs_brcompat_port_setup(struct vport *vport, struct vport_parms *parm
+ 	if (br_vport == NULL)
+ 		return -EINVAL;
+ 
+-	if (ovs_dp_br_bridge_port_setup) {
+-		return ovs_dp_br_bridge_port_setup(br_vport, vport, 1);
+-	}
++	return ovs_dp_br_bridge_port_setup(br_vport, vport, 1);
+ 
+ 	return -EOPNOTSUPP;
+ }
+@@ -2584,9 +2584,7 @@ static int ovs_dp_brcompat_init(struct vport *vport, struct vport_parms *parms)
+ 		return err;
+ 	}
+ 
+-	if (parms->type == OVS_VPORT_TYPE_INTERNAL) {
+-		err = ovs_brcompat_bridge_setup(vport, parms);
+-	} else {
++	if (parms->type != OVS_VPORT_TYPE_INTERNAL) {
+ 		err = ovs_brcompat_port_setup(vport, parms);
+ 	}
+ 
+@@ -2598,7 +2596,7 @@ static int ovs_brcompat_bridge_destroy(struct vport *vport)
+ 	if (ovs_dp_br_bridge_setup) {
+ 		return ovs_dp_br_bridge_setup( vport, 0);
+ 	}
+-	return EOPNOTSUPP;
++	return -EOPNOTSUPP;
+ }
+ 
+ static int ovs_dp_brcompat_destroy(struct vport *vport)
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index b831d164f..8817796f5 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -25,6 +25,7 @@
+ #define DATAPATH_H 1
+ 
+ #include <asm/page.h>
++#include <linux/if_bridge.h>
+ #include <linux/kernel.h>
+ #include <linux/mutex.h>
+ #include <linux/netdevice.h>
+@@ -282,6 +283,12 @@ extern struct rtnl_link_ops * (*ovs_dp_get_rtnl_link_ops_hook)(void);
+ extern int (*ovs_dp_sysfs_hook)(struct net_device *dev, unsigned long *ul_value, int cmd, int oper);
+ extern int (*ovs_dp_sysfs_string_hook)(struct net_device *dev, char *ustring, int cmd);
+ extern int (*ovs_get_fdb_entries)(struct net_device *dev, void *userbuf, unsigned long maxnum, unsigned long offset, bool is_user_buf);
++extern void (*ovs_dp_dev_init)(struct vport *vport);
++extern void (*ovs_dp_dev_open)(struct vport *vport);
++extern void (*ovs_dp_dev_stop)(struct vport *vport);
++extern int (*ovs_dp_dev_set_mtu_set_by_user)(struct net_device *dev, int is_set_by_user);
++extern int (*ovs_dp_multicast_add_group)(struct vport *vport, struct br_ip *group, unsigned char *mac);
++extern int (*ovs_dp_multicast_del_group)(struct vport *vport, struct br_ip *group, unsigned char *mac);
+ 
+ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key);
+ void ovs_dp_detach_port(struct vport *);
+diff --git a/datapath/dp_sysfs.h b/datapath/dp_sysfs.h
+index eb81c2410..64b65d37d 100644
+--- a/datapath/dp_sysfs.h
++++ b/datapath/dp_sysfs.h
+@@ -19,6 +19,9 @@
+ #ifndef DP_SYSFS_H
+ #define DP_SYSFS_H 1
+ 
++#define GET_PARAMETER 0
++#define SET_PARAMETER 1
++
+ struct datapath;
+ struct vport;
+ 
+diff --git a/datapath/dp_sysfs_dp.c b/datapath/dp_sysfs_dp.c
+index 2386ed9f3..ab2f3fc3c 100644
+--- a/datapath/dp_sysfs_dp.c
++++ b/datapath/dp_sysfs_dp.c
+@@ -39,27 +39,20 @@
+ #include <linux/if_bridge.h>
+ #include <linux/rtnetlink.h>
+ #include <linux/version.h>
++#if IS_ENABLED(CONFIG_BRIDGE)
+ #include <net/br_compat.h>
++#endif
+ 
+ #include "dp_sysfs.h"
+ #include "datapath.h"
+ #include "vport-internal_dev.h"
+-#include "openvswitch/brcompat-netlink.h"
+ 
+ #ifdef CONFIG_SYSFS
+ 
+-/* Hack to attempt to build on more platforms. */
+-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,21)
+-#define INTERNAL_DEVICE_ATTR CLASS_DEVICE_ATTR
+-#define DEVICE_PARAMS struct class_device *d
+-#define DEVICE_ARGS d
+-#define DEV_ATTR(NAME) class_device_attr_##NAME
+-#else
+ #define INTERNAL_DEVICE_ATTR DEVICE_ATTR
+ #define DEVICE_PARAMS struct device *d, struct device_attribute *attr
+ #define DEVICE_ARGS d, attr
+ #define DEV_ATTR(NAME) dev_attr_##NAME
+-#endif
+ 
+ static bool nf_disable_arptables_value = false;
+ static bool nf_disable_ip6tables_value = false;
+@@ -104,13 +97,15 @@ static ssize_t show_ageing_time(DEVICE_PARAMS, char *buf)
+ {
+ 	unsigned long value;
+ 
+-	ovs_dp_sysfs_hook((to_net_dev(d)), &value, BRC_GENL_C_GET_AGEING_TIME, GET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook((to_net_dev(d)), &value, IFLA_BR_AGEING_TIME, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_ageing_time(struct net_device *dev, unsigned long val)
+ {
+-	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_AGEING_TIME, SET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_AGEING_TIME, SET_PARAMETER);
+ 	return 0;
+ }
+ 
+@@ -127,13 +122,15 @@ static ssize_t show_forward_delay(DEVICE_PARAMS, char *buf)
+ {
+ 	unsigned long value;
+ 
+-	ovs_dp_sysfs_hook((to_net_dev(d)), &value, BRC_GENL_C_GET_BRIDGE_FORWARD_DELAY, GET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook((to_net_dev(d)), &value, IFLA_BR_FORWARD_DELAY, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_forward_delay(struct net_device *dev, unsigned long val)
+ {
+-	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_BRIDGE_FORWARD_DELAY, SET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_FORWARD_DELAY, SET_PARAMETER);
+ 	return 0;
+ }
+ 
+@@ -149,13 +146,15 @@ static ssize_t show_hello_time(DEVICE_PARAMS, char *buf)
+ {
+ 	unsigned long value;
+ 
+-	ovs_dp_sysfs_hook((to_net_dev(d)), &value, BRC_GENL_C_GET_BRIDGE_HELLO_TIME, GET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook((to_net_dev(d)), &value, IFLA_BR_HELLO_TIME, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_hello_time(struct net_device *dev, unsigned long val)
+ {
+-	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_BRIDGE_HELLO_TIME, SET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_HELLO_TIME, SET_PARAMETER);
+ 	return 0;
+ }
+ 
+@@ -172,13 +171,15 @@ static ssize_t show_max_age(DEVICE_PARAMS, char *buf)
+ {
+ 	unsigned long value;
+ 
+-	ovs_dp_sysfs_hook((to_net_dev(d)), &value, BRC_GENL_C_GET_BRIDGE_MAX_AGE, GET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook((to_net_dev(d)), &value, IFLA_BR_MAX_AGE, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_max_age(struct net_device *dev, unsigned long val)
+ {
+-	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_BRIDGE_MAX_AGE, SET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_MAX_AGE, SET_PARAMETER);
+ 	return 0;
+ }
+ 
+@@ -193,17 +194,15 @@ static ssize_t show_multicast_snooping(DEVICE_PARAMS, char *buf)
+ {
+ 	unsigned long value;
+ 
+-	ovs_dp_sysfs_hook((to_net_dev(d)), &value, BRC_GENL_C_GET_BRIDGE_MULTICAST_SNOOPING, GET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook((to_net_dev(d)), &value, IFLA_BR_MCAST_SNOOPING, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_multicast_snooping(struct net_device *dev, unsigned long val)
+ {
+-	struct vport *vport;
+-
+-	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_BRIDGE_MULTICAST_SNOOPING, SET_PARAMETER);
+-	vport = ovs_internal_dev_get_vport(dev);
+-	br_compat_multicast_toggle(vport->brcompat_data, !!val);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_MCAST_SNOOPING, SET_PARAMETER);
+ 	return 0;
+ }
+ 
+@@ -219,13 +218,15 @@ static ssize_t show_priority(DEVICE_PARAMS, char *buf)
+ {
+ 	unsigned long value;
+ 
+-	ovs_dp_sysfs_hook((to_net_dev(d)), &value, BRC_GENL_C_GET_BRIDGE_PRIORITY, GET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook((to_net_dev(d)), &value, IFLA_BR_PRIORITY, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_priority(struct net_device *dev, unsigned long val)
+ {
+-	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_BRIDGE_PRIORITY, SET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_PRIORITY, SET_PARAMETER);
+ 	return 0;
+ }
+ 
+@@ -241,14 +242,16 @@ static ssize_t show_stp_state(DEVICE_PARAMS, char *buf)
+ {
+ 	unsigned long value;
+ 
+-	ovs_dp_sysfs_hook((to_net_dev(d)), &value, BRC_GENL_C_GET_BRIDGE_STP_STATE, GET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook((to_net_dev(d)), &value, IFLA_BR_STP_STATE, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ 
+ static int set_stp_state(struct net_device *dev, unsigned long val)
+ {
+-	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_BRIDGE_STP_STATE, SET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_STP_STATE, SET_PARAMETER);
+ 	return 0;
+ }
+ 
+@@ -274,23 +277,24 @@ static ssize_t show_bridge_id(DEVICE_PARAMS, char *buf)
+ {
+ 	struct vport *vport;
+ 	ssize_t result;
+-	unsigned long u_value;
++	unsigned long u_value = 0;
+ 	u8 *prio = (u8 *)&u_value;
+ 
+-	ovs_dp_sysfs_hook((to_net_dev(d)), &u_value, BRC_GENL_C_GET_BRIDGE_PRIORITY, GET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook((to_net_dev(d)), &u_value, IFLA_BR_PRIORITY, GET_PARAMETER);
+ 
+ 	rcu_read_lock();
+ 
+ 	vport = ovs_internal_dev_get_vport(to_net_dev(d));
+ 	if (vport) {
+ 		const unsigned char *addr;
+-
+ 		addr = vport->ops->get_addr(vport);
+ 		result = sprintf(buf, "%.2x%.2x.%.2x%.2x%.2x%.2x%.2x%.2x\n",
+ 				 prio[1], prio[0], addr[0], addr[1], addr[2], addr[3],
+ 				 addr[4], addr[5]);
+-	} else
++	} else {
+ 		result = -ENODEV;
++	}
+ 
+ 	rcu_read_unlock();
+ 
+@@ -328,20 +332,17 @@ static INTERNAL_DEVICE_ATTR(hash_max, S_IRUGO | S_IWUSR, show_hash_max, store_ha
+ 
+ static int show_multicast_last_member_count(DEVICE_PARAMS, char *buf)
+ {
+-	struct vport *vport;
+-	unsigned long value;
++	unsigned long value = 0;
+ 
+-	vport = ovs_internal_dev_get_vport(to_net_dev(d));
+-	br_compat_multicast_get_last_member_cnt(vport->brcompat_data, &value);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(to_net_dev(d), &value, IFLA_BR_MCAST_LAST_MEMBER_CNT, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_multicast_last_member_count(struct net_device *dev, unsigned long val)
+ {
+-	struct vport *vport;
+-
+-	vport = ovs_internal_dev_get_vport(dev);
+-	br_compat_multicast_set_last_member_cnt(vport->brcompat_data, val);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_MCAST_LAST_MEMBER_CNT, SET_PARAMETER);
+ 	return 0;
+ }
+ 
+@@ -355,20 +356,18 @@ static INTERNAL_DEVICE_ATTR(multicast_last_member_count, S_IRUGO | S_IWUSR, show
+ 
+ static int show_multicast_last_member_interval(DEVICE_PARAMS, char *buf)
+ {
+-	struct vport *vport;
+-	unsigned long value;
++	unsigned long value = 0;
+ 
+-	vport = ovs_internal_dev_get_vport(to_net_dev(d));
+-	br_compat_multicast_get_last_member_intvl(vport->brcompat_data, &value);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(to_net_dev(d), &value, IFLA_BR_MCAST_LAST_MEMBER_INTVL, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_multicast_last_member_interval(struct net_device *dev, unsigned long val)
+ {
+-	struct vport *vport;
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_MCAST_LAST_MEMBER_INTVL, SET_PARAMETER);
+ 
+-	vport = ovs_internal_dev_get_vport(dev);
+-	br_compat_multicast_set_last_member_intvl(vport->brcompat_data, val);
+ 	return 0;
+ }
+ 
+@@ -381,20 +380,19 @@ static INTERNAL_DEVICE_ATTR(multicast_last_member_interval, S_IRUGO | S_IWUSR, s
+ 
+ static int show_multicast_membership_interval(DEVICE_PARAMS, char *buf)
+ {
+-	struct vport *vport;
+-	unsigned long value;
++	unsigned long value = 0;
++
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(to_net_dev(d), &value, IFLA_BR_MCAST_MEMBERSHIP_INTVL, GET_PARAMETER);
+ 
+-	vport = ovs_internal_dev_get_vport(to_net_dev(d));
+-	br_compat_multicast_get_membership_intvl(vport->brcompat_data, &value);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_multicast_membership_interval(struct net_device *dev, unsigned long val)
+ {
+-	struct vport *vport;
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_MCAST_MEMBERSHIP_INTVL, SET_PARAMETER);
+ 
+-	vport = ovs_internal_dev_get_vport(dev);
+-	br_compat_multicast_set_membership_intvl(vport->brcompat_data, val);
+ 	return 0;
+ }
+ 
+@@ -407,20 +405,17 @@ static INTERNAL_DEVICE_ATTR(multicast_membership_interval, S_IRUGO | S_IWUSR, sh
+ 
+ static int show_multicast_querier(DEVICE_PARAMS, char *buf)
+ {
+-	struct vport *vport;
+-	unsigned long value;
++	unsigned long value = 0;
+ 
+-	vport = ovs_internal_dev_get_vport(to_net_dev(d));
+-	br_compat_multicast_get_querier(vport->brcompat_data, &value);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(to_net_dev(d), &value, IFLA_BR_MCAST_QUERIER, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_multicast_querier(struct net_device *dev, unsigned long val)
+ {
+-	struct vport *vport;
+-
+-	vport = ovs_internal_dev_get_vport(dev);
+-	br_compat_multicast_set_querier(vport->brcompat_data, !!val);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_MCAST_QUERIER, SET_PARAMETER);
+ 	return 0;
+ }
+ 
+@@ -448,20 +443,17 @@ static INTERNAL_DEVICE_ATTR(multicast_querier_interval, S_IRUGO | S_IWUSR, show_
+ 
+ static int show_multicast_query_interval(DEVICE_PARAMS, char *buf)
+ {
+-	struct vport *vport;
+-	unsigned long value;
++	unsigned long value = 0;
+ 
+-	vport = ovs_internal_dev_get_vport(to_net_dev(d));
+-	br_compat_multicast_get_query_intvl(vport->brcompat_data, &value);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(to_net_dev(d), &value, IFLA_BR_MCAST_QUERY_INTVL, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_multicast_query_interval(struct net_device *dev, unsigned long val)
+ {
+-	struct vport *vport;
+-
+-	vport = ovs_internal_dev_get_vport(dev);
+-	br_compat_multicast_set_query_intvl(vport->brcompat_data, val);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_MCAST_QUERY_INTVL, SET_PARAMETER);
+ 	return 0;
+ }
+ 
+@@ -474,20 +466,17 @@ static INTERNAL_DEVICE_ATTR(multicast_query_interval, S_IRUGO | S_IWUSR, show_mu
+ 
+ static int show_multicast_query_response_interval(DEVICE_PARAMS, char *buf)
+ {
+-	struct vport *vport;
+-	unsigned long value;
++	unsigned long value = 0;
+ 
+-	vport = ovs_internal_dev_get_vport(to_net_dev(d));
+-	br_compat_multicast_get_query_response_intvl(vport->brcompat_data, &value);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(to_net_dev(d), &value, IFLA_BR_MCAST_QUERY_RESPONSE_INTVL, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_multicast_query_response_interval(struct net_device *dev, unsigned long val)
+ {
+-	struct vport *vport;
+-
+-	vport = ovs_internal_dev_get_vport(dev);
+-	br_compat_multicast_set_query_response_intvl(vport->brcompat_data, val);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_MCAST_QUERY_RESPONSE_INTVL, SET_PARAMETER);
+ 	return 0;
+ }
+ 
+@@ -500,20 +489,17 @@ static INTERNAL_DEVICE_ATTR(multicast_query_response_interval, S_IRUGO | S_IWUSR
+ 
+ static int show_multicast_query_use_ifaddr(DEVICE_PARAMS, char *buf)
+ {
+-	struct vport *vport;
+-	unsigned long value;
++	unsigned long value = 0;
+ 
+-	vport = ovs_internal_dev_get_vport(to_net_dev(d));
+-	br_compat_multicast_get_query_use_ifaddr(vport->brcompat_data, &value);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(to_net_dev(d), &value, IFLA_BR_MCAST_QUERY_USE_IFADDR, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_multicast_query_use_ifaddr(struct net_device *dev, unsigned long val)
+ {
+-	struct vport *vport;
+-
+-	vport = ovs_internal_dev_get_vport(dev);
+-	br_compat_multicast_set_query_use_ifaddr(vport->brcompat_data, !!val);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_MCAST_QUERY_USE_IFADDR, SET_PARAMETER);
+ 	return 0;
+ }
+ 
+@@ -526,20 +512,17 @@ static INTERNAL_DEVICE_ATTR(multicast_query_use_ifaddr, S_IRUGO | S_IWUSR, show_
+ 
+ static int show_multicast_igmp_version(DEVICE_PARAMS, char *buf)
+ {
+-	struct vport *vport;
+-	unsigned long value;
++	unsigned long value = 0;
+ 
+-	vport = ovs_internal_dev_get_vport(to_net_dev(d));
+-	br_compat_multicast_get_igmp_version(vport->brcompat_data, &value);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(to_net_dev(d), &value, IFLA_BR_MCAST_IGMP_VERSION, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_multicast_igmp_version(struct net_device *dev, unsigned long val)
+ {
+-	struct vport *vport;
+-
+-	vport = ovs_internal_dev_get_vport(dev);
+-	br_compat_multicast_set_igmp_version(vport->brcompat_data, val);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_MCAST_IGMP_VERSION, SET_PARAMETER);
+ 	return 0;
+ }
+ 
+@@ -553,20 +536,17 @@ static INTERNAL_DEVICE_ATTR(multicast_igmp_version, S_IRUGO | S_IWUSR, show_mult
+ #if IS_ENABLED(CONFIG_IPV6)
+ static int show_multicast_mld_version(DEVICE_PARAMS, char *buf)
+ {
+-	struct vport *vport;
+-	unsigned long value;
++	unsigned long value = 0;
+ 
+-	vport = ovs_internal_dev_get_vport(to_net_dev(d));
+-	br_compat_multicast_get_mld_version(vport->brcompat_data, &value);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(to_net_dev(d), &value, IFLA_BR_MCAST_MLD_VERSION, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ 
+ static int set_multicast_mld_version(struct net_device *dev, unsigned long val)
+ {
+-	struct vport *vport;
+-
+-	vport = ovs_internal_dev_get_vport(dev);
+-	br_compat_multicast_set_mld_version(vport->brcompat_data, val);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(dev, &val, IFLA_BR_MCAST_MLD_VERSION, SET_PARAMETER);
+ 	return 0;
+ }
+ 
+@@ -876,6 +856,7 @@ int ovs_dp_sysfs_add_dp(struct datapath *dp, struct vport *vport)
+ 
+  out2:
+ 	sysfs_remove_group(kobj, &bridge_group);
++	sysfs_remove_bin_file(kobj, &brforward_attribute);
+  out1:
+ 	return err;
+ }
+@@ -892,6 +873,7 @@ int ovs_dp_sysfs_del_dp(struct datapath *dp)
+ 
+ 	kobject_del(&dp->ifobj);
+ 	sysfs_remove_group(kobj, &bridge_group);
++	sysfs_remove_bin_file(kobj, &brforward_attribute);
+ 
+ 	return 0;
+ }
+diff --git a/datapath/dp_sysfs_if.c b/datapath/dp_sysfs_if.c
+index d0ff30477..beab5cc57 100644
+--- a/datapath/dp_sysfs_if.c
++++ b/datapath/dp_sysfs_if.c
+@@ -28,12 +28,12 @@
+ #include <linux/netdevice.h>
+ #include <linux/if_bridge.h>
+ #include <linux/rtnetlink.h>
++#if IS_ENABLED(CONFIG_BRIDGE)
+ #include <net/br_compat.h>
+-
++#endif
+ #include "datapath.h"
+ #include "dp_sysfs.h"
+ #include "vport.h"
+-#include "openvswitch/brcompat-netlink.h"
+ 
+ #ifdef CONFIG_SYSFS
+ 
+@@ -64,14 +64,17 @@ struct brport_attribute brport_attr_##_name = {			\
+ 
+ static ssize_t show_path_cost(struct vport *p, char *buf)
+ {
+-	unsigned long value;
++	unsigned long value = 0;
+ 
+-	ovs_dp_sysfs_hook(p->dev, &value, BRC_GENL_C_GET_PORT_PATH_COST, GET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(p->dev, &value, IFLA_BRPORT_COST, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
++
+ static ssize_t store_path_cost(struct vport *p, unsigned long v)
+ {
+-	ovs_dp_sysfs_hook(p->dev, &v, BRC_GENL_C_SET_PORT_PATH_COST, SET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(p->dev, &v, IFLA_BRPORT_COST, SET_PARAMETER);
+ 	return 0;
+ }
+ static BRPORT_ATTR(path_cost, S_IRUGO | S_IWUSR,
+@@ -120,9 +123,10 @@ static BRPORT_ATTR(port_id, S_IRUGO, show_port_id, NULL);
+ 
+ static ssize_t show_port_no(struct vport *p, char *buf)
+ {
+-	unsigned long value;
++	unsigned long value = 0;
+ 
+-	ovs_dp_sysfs_hook(p->dev, &value, BRC_GENL_C_GET_PORT_PORT_NO, GET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(p->dev, &value, IFLA_BRPORT_NO, GET_PARAMETER);
+ 	return sprintf(buf, "0x%lx\n", value);
+ }
+ 
+@@ -142,9 +146,10 @@ static BRPORT_ATTR(config_pending, S_IRUGO, show_config_pending, NULL);
+ 
+ static ssize_t show_port_state(struct vport *p, char *buf)
+ {
+-	unsigned long value;
++	unsigned long value = 0;
+ 
+-	ovs_dp_sysfs_hook(p->dev, &value, BRC_GENL_C_GET_PORT_STATE, GET_PARAMETER);
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(p->dev, &value, IFLA_BRPORT_STATE, GET_PARAMETER);
+ 	return sprintf(buf, "%lu\n", value);
+ }
+ static BRPORT_ATTR(state, S_IRUGO, show_port_state, NULL);
+@@ -169,23 +174,20 @@ static BRPORT_ATTR(hold_timer, S_IRUGO, show_hold_timer, NULL);
+ 
+ static ssize_t show_fastleave(struct vport *p, char *buf)
+ {
+-	unsigned long flag;
++	unsigned long flag = 0;
++
++#if IS_ENABLED(CONFIG_BRIDGE)
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(p->dev, &flag, IFLA_BRPORT_FAST_LEAVE, GET_PARAMETER);
++#endif
+ 
+-	br_compat_get_port_flag(p->brcompat_data, &flag, BR_MULTICAST_FAST_LEAVE);
+ 	return sprintf(buf, "%lu\n", flag);
+ }
+ static ssize_t store_fastleave(struct vport *p, unsigned long v)
+ {
+-	unsigned long val = !v;
+-	struct net_device *dev = p->dev;
+-
+-	dev_hold(dev);
+-	ovs_dp_sysfs_hook(dev, &val, BRC_GENL_C_SET_PORT_MC_SNOOPING_FLOOD_REPORTS, SET_PARAMETER);
+-
+-	if (likely(dev->priv_flags & IFF_OVS_DATAPATH)) {
+-		br_compat_set_port_flag(p->brcompat_data, !!v, BR_MULTICAST_FAST_LEAVE);
+-	}
+-	dev_put(dev);
++	unsigned long val = !!v;
++	if (ovs_dp_sysfs_hook)
++		ovs_dp_sysfs_hook(p->dev, &val, IFLA_BRPORT_FAST_LEAVE, SET_PARAMETER);
+ 
+ 	return 0;
+ }
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index 6a4d323d6..90a3483c2 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -67,6 +67,22 @@ internal_dev_xmit(struct sk_buff *skb, struct net_device *netdev)
+ 	return NETDEV_TX_OK;
+ }
+ 
++static int internal_dev_init(struct net_device *dev)
++{
++	struct vport *vport;
++	vport = ovs_internal_dev_get_vport(dev);
++
++	if (ovs_dp_dev_init)
++		ovs_dp_dev_init(vport);
++
++	return 0;
++}
++
++static void internal_dev_uninit(struct net_device *dev)
++{
++	return;
++}
++
+ 
+ static int internal_dev_open(struct net_device *netdev)
+ {
+@@ -74,8 +90,8 @@ static int internal_dev_open(struct net_device *netdev)
+ 	vport = ovs_internal_dev_get_vport(netdev);
+ 
+ 	netif_start_queue(netdev);
+-	if (vport)
+-		br_compat_multicast_open(vport->brcompat_data);
++	if (ovs_dp_dev_open)
++		ovs_dp_dev_open(vport);
+ 	
+ 	return 0;
+ }
+@@ -85,8 +101,8 @@ static int internal_dev_stop(struct net_device *netdev)
+ 	struct vport *vport;
+ 	vport = ovs_internal_dev_get_vport(netdev);
+ 
+-	if (vport)
+-		br_compat_multicast_stop(vport->brcompat_data);
++	if (ovs_dp_dev_stop)
++		ovs_dp_dev_stop(vport);
+ 
+ 	netif_stop_queue(netdev);
+ 	return 0;
+@@ -136,7 +152,8 @@ static int internal_dev_change_mtu(struct net_device *dev, int new_mtu)
+ 		}
+ 	}
+ 
+-	br_compat_set_mtu_set_by_user(dev, (old_flags & OVS_VPORT_FLAG_SET_MTU_BY_USER) ? 1 : 0);
++	if (ovs_dp_dev_set_mtu_set_by_user)
++		ovs_dp_dev_set_mtu_set_by_user(dev, (old_flags & OVS_VPORT_FLAG_SET_MTU_BY_USER) ? 1 : 0);
+ 
+ 	dev->mtu = new_mtu;
+ 	return 0;
+@@ -259,6 +276,8 @@ static int br_setlink(struct net_device *dev, struct nlmsghdr *nlh, u16 flags)
+ }
+ 
+ static const struct net_device_ops internal_dev_netdev_ops = {
++	.ndo_init = internal_dev_init,
++	.ndo_uninit = internal_dev_uninit,
+ 	.ndo_open = internal_dev_open,
+ 	.ndo_stop = internal_dev_stop,
+ 	.ndo_start_xmit = internal_dev_xmit,
+@@ -310,7 +329,7 @@ static int br_fill_info(struct sk_buff *skb, const struct net_device *br_dev)
+ 	if (ovs_dp_br_fill_info_hook) {
+ 		return ovs_dp_br_fill_info_hook(vport, skb, br_dev);
+ 	}
+-	return -EOPNOTSUPP;
++	return 0;
+ }
+ 
+ static int br_port_fill_slave_info(struct sk_buff *skb, const struct net_device *br_dev, const struct net_device *dev)
+@@ -324,7 +343,7 @@ static int br_port_fill_slave_info(struct sk_buff *skb, const struct net_device
+ 	if (ovs_dp_br_port_fill_slave_info_hook) {
+ 		return ovs_dp_br_port_fill_slave_info_hook(vport, skb, br_dev, dev);
+ 	}
+-	return -EOPNOTSUPP;
++	return 0;
+ }
+ 
+ static struct rtnl_link_ops internal_dev_link_ops __read_mostly = {
+@@ -377,6 +396,13 @@ static void do_setup(struct net_device *netdev)
+ 	eth_hw_addr_random(netdev);
+ }
+ 
++static int ovs_brcompat_bridge_setup(struct vport *vport, const struct vport_parms *parms){
++	if (ovs_dp_br_bridge_setup) {
++		return ovs_dp_br_bridge_setup(vport, 1);
++	}
++	return -EOPNOTSUPP;
++}
++
+ static struct vport *internal_dev_create(const struct vport_parms *parms)
+ {
+ 	struct vport *vport;
+@@ -409,6 +435,8 @@ static struct vport *internal_dev_create(const struct vport_parms *parms)
+ 	if (vport->port_no == OVSP_LOCAL)
+ 		vport->dev->features |= NETIF_F_NETNS_LOCAL;
+ 
++	ovs_brcompat_bridge_setup(vport, parms);
++
+ 	rtnl_lock();
+ 	err = register_netdevice(vport->dev);
+ 	if (err)
+diff --git a/datapath/vport-netdev.c b/datapath/vport-netdev.c
+index 039ca9a6b..cf929c05d 100644
+--- a/datapath/vport-netdev.c
++++ b/datapath/vport-netdev.c
+@@ -126,26 +126,28 @@ struct vport *ovs_netdev_link(struct vport *vport, const char *name, const char
+ 	}
+ 
+ 	rtnl_lock();
+-	err = netdev_master_upper_dev_link(vport->dev,
+-					bridge ? bridge->dev : get_dpdev(vport->dp),
+-					NULL, NULL, NULL);
+-	if (err)
+-		goto error_unlock;
++
++	vport->dev->priv_flags |= IFF_OVS_DATAPATH;
+ 
+ 	err = netdev_rx_handler_register(vport->dev, netdev_frame_hook,
+ 					 vport);
+ 	if (err)
+-		goto error_master_upper_dev_unlink;
++		goto error_unlock;
++
++	err = netdev_master_upper_dev_link(vport->dev,
++					bridge ? bridge->dev : get_dpdev(vport->dp),
++					NULL, NULL, NULL);
++	if (err)
++		goto error_rx_handler_unregister;
+ 
+ 	dev_disable_lro(vport->dev);
+ 	dev_set_promiscuity(vport->dev, 1);
+-	vport->dev->priv_flags |= IFF_OVS_DATAPATH;
+ 	rtnl_unlock();
+ 
+ 	return vport;
+ 
+-error_master_upper_dev_unlink:
+-	netdev_upper_dev_unlink(vport->dev, bridge ? bridge->dev : get_dpdev(vport->dp));
++error_rx_handler_unregister:
++	netdev_rx_handler_unregister(vport->dev);
+ error_unlock:
+ 	rtnl_unlock();
+ error_put:

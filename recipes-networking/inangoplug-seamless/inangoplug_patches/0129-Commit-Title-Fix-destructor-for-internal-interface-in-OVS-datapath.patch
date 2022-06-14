@@ -1,0 +1,153 @@
+From b238f0f3bfcb22210283d36e980f08ab4b045a1f Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Tue, 14 Jun 2022 14:30:25 +0000
+Subject: [PATCH] Commit Title : Fix destructor for internal interface in OVS
+ datapath
+
+BugID                 : 27584
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           :
+ * Fixed destructor for internal interface in OVS datapath
+ * Fixed sysfs destructor in OVS datapath
+ * Fixed notify_datapath redefiniton
+---
+ datapath/am_pp.c        |  4 +---
+ datapath/datapath.c     |  9 ++++-----
+ datapath/dp_sysfs.h     |  4 ++--
+ datapath/dp_sysfs_dp.c  | 13 +++++--------
+ datapath/vport-netdev.c |  4 ++--
+ 5 files changed, 14 insertions(+), 20 deletions(-)
+
+diff --git a/datapath/am_pp.c b/datapath/am_pp.c
+index 5ffd6c668..c588f3882 100644
+--- a/datapath/am_pp.c
++++ b/datapath/am_pp.c
+@@ -112,9 +112,7 @@ int am_create_session(struct datapath *dp, struct sw_flow *flow, bool proactive_
+ 	if (err)
+ 		return err;
+ 
+-	if (notify_datapath == NULL) {
+-		notify_datapath = dp;
+-	}
++	notify_datapath = dp;
+ 
+ 	new_session.proactive_session = proactive_flag;
+ 
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index 7bfd913c9..9020cc06d 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -342,7 +342,6 @@ static void destroy_dp_rcu(struct rcu_head *rcu)
+ 	ovs_flow_tbl_destroy(&dp->table);
+ 	free_percpu(dp->stats_percpu);
+ 	kfree(dp->ports);
+-	kobject_put(&dp->ifobj);
+ 	ovs_meters_exit(dp);
+ 	kfree(dp);
+ }
+@@ -387,9 +386,10 @@ void ovs_dp_detach_port(struct vport *p)
+ {
+ 	ASSERT_OVSL();
+ 
+-	OVS_LOG_DBG("detach vport %s from datapath\n", p->dev->name);
+-	if (p->port_no != OVSP_LOCAL) {
++	if (p->type != OVS_VPORT_TYPE_INTERNAL) {
+ 		ovs_dp_sysfs_del_if(p);
++	} else {
++		ovs_dp_sysfs_del_bridge(p);
+ 	}
+ 
+ 	dp_ifinfo_notify(RTM_DELLINK, p);
+@@ -1943,7 +1943,6 @@ static void __dp_destroy(struct datapath *dp)
+ 				ovs_dp_detach_port(vport);
+ 	}
+ 
+-	ovs_dp_sysfs_del_dp(dp);
+ 	list_del_rcu(&dp->list_node);
+ 
+ 	/* OVSP_LOCAL is datapath internal port. We need to make sure that
+@@ -2684,7 +2683,7 @@ restart:
+ 	ovs_dp_brcompat_init(vport, &parms);
+ 	vport->type = parms.type;
+ 	if (parms.type == OVS_VPORT_TYPE_INTERNAL) {
+-		ovs_dp_sysfs_add_dp(vport->dp, vport);
++		ovs_dp_sysfs_add_bridge(vport->dp, vport);
+ 	}
+ 	else{
+ 		if (!bridgeName || !*bridgeName)
+diff --git a/datapath/dp_sysfs.h b/datapath/dp_sysfs.h
+index 64b65d37d..bf6c79638 100644
+--- a/datapath/dp_sysfs.h
++++ b/datapath/dp_sysfs.h
+@@ -26,8 +26,8 @@ struct datapath;
+ struct vport;
+ 
+ /* dp_sysfs_dp.c */
+-int ovs_dp_sysfs_add_dp(struct datapath *dp, struct vport *vport);
+-int ovs_dp_sysfs_del_dp(struct datapath *dp);
++int ovs_dp_sysfs_add_bridge(struct datapath *dp, struct vport *vport);
++int ovs_dp_sysfs_del_bridge(struct vport *vport);
+ 
+ /* dp_sysfs_if.c */
+ int ovs_dp_sysfs_add_if(struct vport *p, struct vport *br);
+diff --git a/datapath/dp_sysfs_dp.c b/datapath/dp_sysfs_dp.c
+index ab2f3fc3c..71bfc3b21 100644
+--- a/datapath/dp_sysfs_dp.c
++++ b/datapath/dp_sysfs_dp.c
+@@ -817,7 +817,7 @@ static struct bin_attribute brforward_attribute = {
+  *   to hold links.  The ifobj exists in the same data structure
+  *   as its parent the bridge so reference counting works.
+  */
+-int ovs_dp_sysfs_add_dp(struct datapath *dp, struct vport *vport)
++int ovs_dp_sysfs_add_bridge(struct datapath *dp, struct vport *vport)
+ {
+ 	struct kobject *kobj = vport->ops->get_kobj(vport);
+ 	int err;
+@@ -861,9 +861,8 @@ int ovs_dp_sysfs_add_dp(struct datapath *dp, struct vport *vport)
+ 	return err;
+ }
+ 
+-int ovs_dp_sysfs_del_dp(struct datapath *dp)
++int ovs_dp_sysfs_del_bridge(struct vport *vport)
+ {
+-	struct vport *vport = ovs_vport_ovsl(dp, OVSP_LOCAL);
+ 	struct kobject *kobj = vport->ops->get_kobj(vport);
+ 
+ #ifdef CONFIG_NET_NS
+@@ -871,15 +870,13 @@ int ovs_dp_sysfs_del_dp(struct datapath *dp)
+ 		return 0;
+ #endif
+ 
+-	kobject_del(&dp->ifobj);
++	kobject_put(vport->ifobj);
+ 	sysfs_remove_group(kobj, &bridge_group);
+ 	sysfs_remove_bin_file(kobj, &brforward_attribute);
+ 
+ 	return 0;
+ }
+ #else /* !CONFIG_SYSFS */
+-int ovs_dp_sysfs_add_dp(struct datapath *dp) { return 0; }
+-int ovs_dp_sysfs_del_dp(struct datapath *dp) { return 0; }
+-int dp_sysfs_add_if(struct vport *p) { return 0; }
+-int dp_sysfs_del_if(struct vport *p) { return 0; }
++int ovs_dp_sysfs_add_bridge(struct datapath *dp, struct vport *vport) { return 0; }
++int ovs_dp_sysfs_del_bridge(struct vport *vport) { return 0; }
+ #endif /* !CONFIG_SYSFS */
+diff --git a/datapath/vport-netdev.c b/datapath/vport-netdev.c
+index cf929c05d..3f299c758 100644
+--- a/datapath/vport-netdev.c
++++ b/datapath/vport-netdev.c
+@@ -191,10 +191,10 @@ void ovs_netdev_detach_dev(struct vport *vport)
+ {
+ 	ASSERT_RTNL();
+ 	ovs_brcompat_port_destroy(vport);
+-	vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;
+-	netdev_rx_handler_unregister(vport->dev);
+ 	netdev_upper_dev_unlink(vport->dev,
+ 				netdev_master_upper_dev_get(vport->dev));
++	netdev_rx_handler_unregister(vport->dev);
++	vport->dev->priv_flags &= ~IFF_OVS_DATAPATH;
+ 	dev_set_promiscuity(vport->dev, -1);
+ }
+ 

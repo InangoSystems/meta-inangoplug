@@ -127,5 +127,7 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0125-Commit-Title-Fix-AM-session-not-deleted-when-flow-is-modified.patch \
     file://0126-Commit-Title-Fix-brlan0-availability.patch \
     file://0127-Commit-Title-fix-reboot-on-toggle-router-mode.patch \
+    file://0128-Commit-Title-Fix-handling-sysfs-netlink-ioctl-when-InangoPLug-disabled-Migratio.patch \
+    file://0129-Commit-Title-Fix-destructor-for-internal-interface-in-OVS-datapath.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"
