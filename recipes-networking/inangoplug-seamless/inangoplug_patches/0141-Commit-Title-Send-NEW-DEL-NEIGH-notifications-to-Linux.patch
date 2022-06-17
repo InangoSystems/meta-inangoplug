@@ -1,0 +1,258 @@
+From 1998a2f25ed4ca83d6e69b20b98a07adf254c9a6 Mon Sep 17 00:00:00 2001
+From: Anton Bilohai <a.bilohai@inango-systems.com>
+Date: Thu, 9 Jun 2022 00:09:55 +0300
+Subject: [PATCH] Commit Title: Send NEW/DEL NEIGH notifications to Linux
+
+BugID: 27194
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description:
+    - Currently, OVS doesn't notify Linux about any change in FDB.
+    - To improve OVS integration in Linux, we should mimic that
+    behaviour and also sent out notifications about NEW/DEL NEIGHB OVS
+    detects.
+---
+ lib/automake.mk              |  3 +++
+ lib/dpif-netlink.c           | 26 ++++++++++++++++++++------
+ lib/dpif-netlink.h           |  5 +++--
+ lib/mac-learning.c           |  9 +++++++--
+ lib/mac-learning.h           |  2 +-
+ ofproto/ofproto-dpif-xlate.c | 17 ++++++++++-------
+ ofproto/ofproto-dpif.c       |  9 +++++++++
+ ofproto/ofproto-dpif.h       |  1 +
+ 8 files changed, 54 insertions(+), 18 deletions(-)
+
+diff --git a/lib/automake.mk b/lib/automake.mk
+index 983e34435..2ffb40f38 100644
+--- a/lib/automake.mk
++++ b/lib/automake.mk
+@@ -373,6 +373,9 @@ lib_libopenvswitch_la_SOURCES = \
+ 	lib/lldp/lldpd-structs.c \
+ 	lib/lldp/lldpd-structs.h
+ 
++lib_libopenvswitch_la_LIBADD += \
++	ofproto/libofproto.la
++
+ if WIN32
+ lib_libopenvswitch_la_SOURCES += \
+ 	lib/daemon-windows.c \
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index 254c11b62..f63d945cc 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -763,6 +763,15 @@ get_vport_type(const struct dpif_netlink_vport *vport)
+     return "unknown";
+ }
+ 
++int
++dpif_to_dp_ifindex(void *dpif)
++{
++    struct dpif_netlink *dpif_nl;
++
++    dpif_nl = dpif_netlink_cast((struct dpif*) dpif);
++    return dpif_nl->dp_ifindex;
++}
++
+ enum ovs_vport_type
+ netdev_to_ovs_vport_type(const char *type)
+ {
+@@ -4304,13 +4313,14 @@ dpif_netlink_vport_get(const char *name, struct dpif_netlink_vport *reply,
+ }
+ 
+ static int
+-dpif_netlink_mac_send(int ifindex, const struct eth_addr src_mac, uint8_t cmd)
++dpif_netlink_mac_send(odp_port_t odp_index, int dp_ifindex, const struct eth_addr src_mac, uint8_t cmd)
+ {
+     struct dpif_netlink_vport request;
+ 
+     dpif_netlink_vport_init(&request);
+     request.cmd = cmd;
+-    request.dp_ifindex = ifindex;
++    request.port_no = odp_index;
++    request.dp_ifindex = dp_ifindex;
+ 
+     memcpy(request.ea, src_mac.ea, sizeof(src_mac.ea));
+ 
+@@ -4318,11 +4328,13 @@ dpif_netlink_mac_send(int ifindex, const struct eth_addr src_mac, uint8_t cmd)
+ }
+ 
+ int
+-dpif_netlink_rtm_newneigh(int ifindex, const struct eth_addr src_mac)
++dpif_netlink_rtm_newneigh(odp_port_t odp_index, int dp_ifindex, const struct eth_addr src_mac)
+ {
+     int error;
+ 
+-    error = dpif_netlink_mac_send(ifindex, src_mac, OVS_VPORT_CMD_NEWNEIGH);
++    VLOG_DBG("Sending NEWNEIGH odp: %u, dp_ifindex: %d,MAC:%02x:%02x:%02x:%02x:%02x:%02x \n",
++            odp_index, dp_ifindex, src_mac.ea[0], src_mac.ea[1],src_mac.ea[2],src_mac.ea[3],src_mac.ea[4],src_mac.ea[5]);
++    error = dpif_netlink_mac_send(odp_index, dp_ifindex, src_mac, OVS_VPORT_CMD_NEWNEIGH);
+ 
+     if (!error) {
+         return -1;
+@@ -4332,11 +4344,13 @@ dpif_netlink_rtm_newneigh(int ifindex, const struct eth_addr src_mac)
+ }
+ 
+ int
+-dpif_netlink_rtm_delneigh(int ifindex, const struct eth_addr src_mac)
++dpif_netlink_rtm_delneigh(odp_port_t odp_index, int dp_ifindex, const struct eth_addr src_mac)
+ {
+     int error;
+ 
+-    error = dpif_netlink_mac_send(ifindex, src_mac, OVS_VPORT_CMD_DELNEIGH);
++    VLOG_DBG("Sending DELNEIGH odp: %u, dp_ifindex: %d, MAC:%02x:%02x:%02x:%02x:%02x:%02x \n",
++            odp_index, dp_ifindex, src_mac.ea[0], src_mac.ea[1],src_mac.ea[2],src_mac.ea[3],src_mac.ea[4],src_mac.ea[5]);
++    error = dpif_netlink_mac_send(odp_index, dp_ifindex, src_mac, OVS_VPORT_CMD_DELNEIGH);
+ 
+     if (!error) {
+         return -1;
+diff --git a/lib/dpif-netlink.h b/lib/dpif-netlink.h
+index adeb58b7d..31f704743 100644
+--- a/lib/dpif-netlink.h
++++ b/lib/dpif-netlink.h
+@@ -63,8 +63,8 @@ int dpif_netlink_vport_transact(const struct dpif_netlink_vport *request,
+ int dpif_netlink_vport_get(const char *name, struct dpif_netlink_vport *reply,
+                            struct ofpbuf **bufp);
+ 
+-int dpif_netlink_rtm_newneigh(int ifindex, const struct eth_addr src_mac);
+-int dpif_netlink_rtm_delneigh(int ifindex, const struct eth_addr src_mac);
++int dpif_netlink_rtm_newneigh(odp_port_t odp_index, int dp_ifindex, const struct eth_addr src_mac);
++int dpif_netlink_rtm_delneigh(odp_port_t odp_index, int dp_ifindex, const struct eth_addr src_mac);
+ 
+ int dpif_netlink_rtm_add_mcast_grp(const void *dpif_, int port_no, const struct in6_addr *addr, uint16_t vlan, const struct eth_addr *mac);
+ int dpif_netlink_rtm_del_mcast_grp(const void *dpif_, int port_no, struct in6_addr *addr, uint16_t vlan, const struct eth_addr *mac);
+@@ -75,5 +75,6 @@ int dpif_netlink_vport_set_flags(const char *name, uint32_t flags);
+ int dpif_netlink_vport_set_carrier(const char *name, bool carrier);
+ 
+ enum ovs_vport_type netdev_to_ovs_vport_type(const char *type);
++int dpif_to_dp_ifindex(void *dpif);
+ 
+ #endif /* dpif-netlink.h */
+diff --git a/lib/mac-learning.c b/lib/mac-learning.c
+index 077033039..67a428ad5 100644
+--- a/lib/mac-learning.c
++++ b/lib/mac-learning.c
+@@ -30,6 +30,7 @@
+ #include "unaligned.h"
+ #include "util.h"
+ #include "vlan-bitmap.h"
++#include "ofproto/ofproto-dpif.h"
+ 
+ COVERAGE_DEFINE(mac_learning_learned);
+ COVERAGE_DEFINE(mac_learning_expired);
+@@ -339,7 +340,6 @@ mac_learning_insert(struct mac_learning *ml,
+         e->mlport = NULL;
+         COVERAGE_INC(mac_learning_learned);
+         ml->total_learned++;
+-        dpif_netlink_rtm_newneigh(ml->ifindex, e->mac);
+     } else {
+         ovs_list_remove(&e->lru_node);
+     }
+@@ -512,9 +512,14 @@ mac_learning_lookup(const struct mac_learning *ml,
+ void
+ mac_learning_expire(struct mac_learning *ml, struct mac_entry *e)
+ {
++    void *port;
++    odp_port_t odp_port;
++
++    port = mac_entry_get_port(ml, e);
++    odp_port = ofbundle_to_odp_port(port);
+     ml->need_revalidate = true;
++    dpif_netlink_rtm_delneigh(odp_port, ml->dp_ifindex, e->mac);
+     mac_entry_set_port(ml, e, NULL);
+-    dpif_netlink_rtm_delneigh(ml->ifindex, e->mac);
+     hmap_remove(&ml->table, &e->hmap_node);
+     ovs_list_remove(&e->lru_node);
+     free(e);
+diff --git a/lib/mac-learning.h b/lib/mac-learning.h
+index c1050f047..ffb4681b5 100644
+--- a/lib/mac-learning.h
++++ b/lib/mac-learning.h
+@@ -159,7 +159,7 @@ struct mac_learning {
+     struct ovs_refcount ref_cnt;
+     struct ovs_rwlock rwlock;
+     bool need_revalidate;
+-    int ifindex;
++    int dp_ifindex;
+ 
+     /* Statistics */
+     uint64_t total_learned;
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 10949f9ad..8bbe0d4f2 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -66,6 +66,7 @@
+ #include "tunnel.h"
+ #include "util.h"
+ #include "uuid.h"
++#include "dpif-netlink.h"
+ 
+ COVERAGE_DEFINE(xlate_actions);
+ COVERAGE_DEFINE(xlate_actions_oversize);
+@@ -2573,14 +2574,10 @@ update_learning_table__(const struct xbridge *xbridge,
+                         struct xbundle *in_xbundle, struct eth_addr dl_src,
+                         int vlan, bool is_grat_arp)
+ {
+-    struct netdev *netdev;
+-    struct xport *xport;
+-    xport = CONTAINER_OF(ovs_list_front(&in_xbundle->xports), struct xport,
+-                             bundle_node);
+-
+-    netdev = xport->netdev;
+-    xbridge->ml->ifindex = netdev_get_ifindex(netdev);
++    int dp_ifindex;
+ 
++    dp_ifindex = dpif_to_dp_ifindex(xbridge->dpif);
++    xbridge->ml->dp_ifindex = dp_ifindex;
+     return (in_xbundle == &ofpp_none_bundle
+             || !mac_learning_update(xbridge->ml, dl_src, vlan,
+                                     is_grat_arp,
+@@ -2593,11 +2590,17 @@ update_learning_table(const struct xlate_ctx *ctx,
+                       struct xbundle *in_xbundle, struct eth_addr dl_src,
+                       int vlan, bool is_grat_arp)
+ {
++
+     if (!update_learning_table__(ctx->xbridge, in_xbundle, dl_src, vlan,
+                                  is_grat_arp)) {
++        struct xport *xport;
++
+         xlate_report_debug(ctx, OFT_DETAIL, "learned that "ETH_ADDR_FMT" is "
+                            "on port %s in VLAN %d",
+                            ETH_ADDR_ARGS(dl_src), in_xbundle->name, vlan);
++        xport = CONTAINER_OF(ovs_list_front(&in_xbundle->xports), struct xport,
++                             bundle_node);
++        dpif_netlink_rtm_newneigh(xport->odp_port, ctx->xbridge->ml->dp_ifindex, dl_src);
+     }
+ }
+ 
+diff --git a/ofproto/ofproto-dpif.c b/ofproto/ofproto-dpif.c
+index 3a34e07cb..8ed5cde3c 100644
+--- a/ofproto/ofproto-dpif.c
++++ b/ofproto/ofproto-dpif.c
+@@ -6683,6 +6683,15 @@ odp_port_to_ofport(const struct dpif_backer *backer, odp_port_t odp_port)
+     return NULL;
+ }
+ 
++odp_port_t
++ofbundle_to_odp_port(void *port)
++{
++    struct ofport_dpif *ofport;
++
++    ofport = ofbundle_get_a_port((struct ofbundle*) port);
++    return ofport->odp_port;
++}
++
+ static ofp_port_t
+ odp_port_to_ofp_port(const struct ofproto_dpif *ofproto, odp_port_t odp_port)
+ {
+diff --git a/ofproto/ofproto-dpif.h b/ofproto/ofproto-dpif.h
+index 7499d2409..4af3badf4 100644
+--- a/ofproto/ofproto-dpif.h
++++ b/ofproto/ofproto-dpif.h
+@@ -289,6 +289,7 @@ extern struct shash all_dpif_backers;
+ struct ofport_dpif *odp_port_to_ofport(const struct dpif_backer *, odp_port_t);
+ 
+ odp_port_t ofp_port_to_odp_port_ext(const struct ofproto_dpif *ofproto, ofp_port_t ofp_port);
++odp_port_t ofbundle_to_odp_port(void *port);
+ 
+ /* A bridge based on a "dpif" datapath. */
+ 

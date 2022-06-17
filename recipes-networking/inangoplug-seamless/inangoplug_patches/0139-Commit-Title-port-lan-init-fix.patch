@@ -1,0 +1,46 @@
+From 23cc7262180bcf8abd647d21fb0d74e74c500004 Mon Sep 17 00:00:00 2001
+From: Georgii Okhokhonin <g.okhokhonin@inango-systems.com>
+Date: Tue, 7 Jun 2022 18:33:58 +0300
+Subject: [PATCH] Commit Title: port lan init fix
+
+BugId: 29083
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description:
+* move boot from utopia to services
+* set flag before running ioctl for mac set
+---
+ lib/netdev.c                                    | 7 +++++++
+ rhel/usr_lib_systemd_system_openvswitch.service | 1 +
+ 2 files changed, 8 insertions(+)
+
+diff --git a/lib/netdev.c b/lib/netdev.c
+index dab206811..63e8d81d8 100644
+--- a/lib/netdev.c
++++ b/lib/netdev.c
+@@ -977,6 +977,13 @@ netdev_send_wait(struct netdev *netdev, int qid)
+ int
+ netdev_set_etheraddr(struct netdev *netdev, const struct eth_addr mac)
+ {
++    enum ovs_vport_type ovs_type = netdev_to_ovs_vport_type(netdev_get_type(netdev));
++    struct eth_addr old_mac;
++
++    netdev_get_etheraddr(netdev, &old_mac);
++    if (ovs_type == OVS_VPORT_TYPE_INTERNAL && !eth_addr_equals(old_mac, mac)) {
++        dpif_netlink_vport_set_flags(netdev_get_name(netdev), OVS_VPORT_FLAG_SET_MAC);
++    }
+     return netdev->netdev_class->set_etheraddr(netdev, mac);
+ }
+ 
+diff --git a/rhel/usr_lib_systemd_system_openvswitch.service b/rhel/usr_lib_systemd_system_openvswitch.service
+index 61b312b14..22948d151 100644
+--- a/rhel/usr_lib_systemd_system_openvswitch.service
++++ b/rhel/usr_lib_systemd_system_openvswitch.service
+@@ -6,6 +6,7 @@ PartOf=network.target
+ Requires=ovsdb-server.service
+ Requires=ovs-vswitchd.service
+ Requires=ovs-brcompatd.service
++Before=gwprovapp.service gwprovapp-ethwan.service
+ 
+ [Service]
+ Type=oneshot

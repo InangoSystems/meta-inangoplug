@@ -8,7 +8,7 @@ DEPENDS_append_class-target = " inangoplug-pp-acceleration-mod"
 RDEPENDS_${PN}_remove = "\
     python python3 python-twisted python3-twisted python3-six \
     coreutils gawk grep \
-    ${@ 'sed' if d.getVar('BUILD_TYPE', True) == 'RDKB-OS' else ''} \
+    ${@ 'sed' if d.getVar('MXL_BUILD_FLAVOR', True) == 'RDKBOS' else ''} \
     perl perl-module-strict \
 "
 RDEPENDS_${PN} += "${PN}-testcontroller "

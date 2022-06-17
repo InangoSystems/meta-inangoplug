@@ -1,0 +1,23 @@
+From e832befe3ca1cd9d6c59d5d6bd1c2435ec56c7ac Mon Sep 17 00:00:00 2001
+From: Georgii Okhokhonin <g.okhokhonin@inango-systems.com>
+Date: Fri, 10 Jun 2022 14:07:28 +0300
+Subject: [PATCH] port change init sequence: fix build issue
+
+BugID: 29083
+openvswitch.h should be sync in kernel and openvswitch
+---
+ datapath/linux/compat/include/linux/openvswitch.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/datapath/linux/compat/include/linux/openvswitch.h b/datapath/linux/compat/include/linux/openvswitch.h
+index 8e1fd59a7..94431fe66 100644
+--- a/datapath/linux/compat/include/linux/openvswitch.h
++++ b/datapath/linux/compat/include/linux/openvswitch.h
+@@ -470,6 +470,7 @@ enum ovs_frag_type {
+ /* vport operational flags */
+ #define	OVS_VPORT_FLAG_SET_MTU_BY_USER  (0x01u)
+ #define	OVS_VPORT_FLAG_SET_MTU_AUTO     (0x02u)
++#define	OVS_VPORT_FLAG_SET_MAC		(0x04u)
+ 
+ struct ovs_key_ethernet {
+ 	__u8	 eth_src[ETH_ALEN];

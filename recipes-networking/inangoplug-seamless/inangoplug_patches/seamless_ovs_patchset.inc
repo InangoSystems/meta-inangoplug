@@ -137,5 +137,10 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0135-Commit-Title-Remove-brcompat-from-scripts.patch \
     file://0136-Commit-Title-Add-Hairpin-configuration-to-ports.patch \
     file://0137-Commit-Title-Add-handling-of-hairpin-mode-for-ports-in-openvswitch.patch \
+    file://0138-Ported-openvswitch-changes-from-kernel-4.9-to-kernel-5.15.patch \
+    file://0139-Commit-Title-port-lan-init-fix.patch \
+    file://0140-port-change-init-sequence-fix-build-issue.patch \
+    file://0141-Commit-Title-Send-NEW-DEL-NEIGH-notifications-to-Linux.patch \
+    file://0142-Commit-Title-Fixate-lib-build-order.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"
