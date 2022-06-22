@@ -129,5 +129,20 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0127-Commit-Title-fix-reboot-on-toggle-router-mode.patch \
     file://0128-Commit-Title-Fix-handling-sysfs-netlink-ioctl-when-InangoPLug-disabled-Migratio.patch \
     file://0129-Commit-Title-Fix-destructor-for-internal-interface-in-OVS-datapath.patch \
+    file://0130-Commit-Title-Support-bridge-getlink-event.patch \
+    file://0131-Commit-Title-support-new-netlink-events.patch \
+    file://0132-Commit-Title-Validate-bridge-name-before-creating-deleting-via-netlinks.patch \
+    file://0133-Commit-Title-RDKB-OS_OVS-GW-and-WIFI-commands-cause-ATOM-to-stuck.patch \
+    file://0134-Fixed-OVS-bridges-managing.patch \
+    file://0135-Commit-Title-Support-configure-mac-address-via-newlink-operations.patch \
+    file://0136-Commit-Title-Support-configure-mac-address-via-newlink-operations.patch \
+    file://0137-Commit-Title-Propogate-link-status-into-kernel-space-for-OVS-bridges.patch \
+    file://0138-Commit-Title-Fix-return-status-during-create-bridge.patch \
+    file://0139-Commit-Title-fix-recursive-mac-configuration.patch \
+    file://0140-Commit-Title-deadlock-with-parallel-ip-link-add-.-type-bridge.patch \
+    file://0141-Commit-Title-fix-parallel-addbr-with-ioctl-and-netlink.patch \
+    file://0142-Commit-Title-Send-RNTL-notification-when-port-is-set.patch \
+    file://0143-Commit-Title-Use-Datapath-ID-instead-of-Linux-ID-during-RTNL-notification.patch \
+    file://0144-Commit-Title-Don-t-operate-with-vport-outside-of-rcu-lock.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

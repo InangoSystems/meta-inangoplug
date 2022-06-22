@@ -1,0 +1,48 @@
+From c3814e9bc3e2552284cb6baffbfdd3197cd01152 Mon Sep 17 00:00:00 2001
+From: Anton Bilohai <a.bilohai@inango-systems.com>
+Date: Mon, 11 Apr 2022 18:39:26 +0300
+Subject: [PATCH] Commit Title: Send RNTL notification when port is set
+
+BugID: 27194
+Bug Fixed(y/N[blankN]): n
+CodeReviewId: 0
+Description:
+    - Send NEWNIGH netlink notification to Linux when port is changed in
+    FDB table
+---
+ lib/mac-learning.c           | 1 -
+ ofproto/ofproto-dpif-xlate.c | 2 ++
+ 2 files changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/lib/mac-learning.c b/lib/mac-learning.c
+index 077033039..6f6891529 100644
+--- a/lib/mac-learning.c
++++ b/lib/mac-learning.c
+@@ -339,7 +339,6 @@ mac_learning_insert(struct mac_learning *ml,
+         e->mlport = NULL;
+         COVERAGE_INC(mac_learning_learned);
+         ml->total_learned++;
+-        dpif_netlink_rtm_newneigh(ml->ifindex, e->mac);
+     } else {
+         ovs_list_remove(&e->lru_node);
+     }
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 015ecec23..e458e9d50 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -66,6 +66,7 @@
+ #include "tunnel.h"
+ #include "util.h"
+ #include "uuid.h"
++#include "dpif-netlink.h"
+ 
+ COVERAGE_DEFINE(xlate_actions);
+ COVERAGE_DEFINE(xlate_actions_oversize);
+@@ -2596,6 +2597,7 @@ update_learning_table(const struct xlate_ctx *ctx,
+         xlate_report_debug(ctx, OFT_DETAIL, "learned that "ETH_ADDR_FMT" is "
+                            "on port %s in VLAN %d",
+                            ETH_ADDR_ARGS(dl_src), in_xbundle->name, vlan);
++        dpif_netlink_rtm_newneigh(ctx->xbridge->ml->ifindex, dl_src);
+     }
+ }
+ 

@@ -1,0 +1,48 @@
+From 8af318ce9c001c988f97f4beca44035a6a297101 Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Thu, 2 Jun 2022 14:17:33 +0300
+Subject: [PATCH] Commit Title: Fix return status during create bridge
+
+BugId: 28984
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description: return status of run_vsctl is reversed to return status of
+parse_command
+---
+ vswitchd/ovs-brcompatd.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index 00bee4251..d865b0828 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -519,6 +519,7 @@ handle_bridge_cmd(struct ofpbuf *buffer, bool add)
+     const unsigned char *mac_addr = NULL;
+     uint32_t seq;
+     int error;
++    int vsctl_ok;
+ 
+     error = parse_command(buffer, &seq, &br_name, NULL, NULL, NULL, NULL, (const char **)&mac_addr);
+     if (!error) {
+@@ -529,18 +530,18 @@ handle_bridge_cmd(struct ofpbuf *buffer, bool add)
+             char assignment[MAC_ADDR_ASSIGNMENT_STRLEN];
+             FORMAT_MAC_ADDRESS_ASSIGNMENT(mac_addr, assignment);
+ 
+-            error = run_vsctl(vsctl_program, VSCTL_OPTIONS,
++            vsctl_ok = run_vsctl(vsctl_program, VSCTL_OPTIONS,
+                         "--", vsctl_cmd, br_name,
+                         "--", "set", "bridge", br_name, assignment,
+                         "--", "comment", "ovs-brcompatd:", brctl_cmd, br_name,
+                         (char *) NULL);
+         } else {
+-            error = run_vsctl(vsctl_program, VSCTL_OPTIONS,
++            vsctl_ok = run_vsctl(vsctl_program, VSCTL_OPTIONS,
+                         "--", vsctl_cmd, br_name,
+                         "--", "comment", "ovs-brcompatd:", brctl_cmd, br_name,
+                         (char *) NULL);
+         }
+-        if (!error) {
++        if (!vsctl_ok) {
+             error = add ? EEXIST : ENXIO;
+         } else {
+             if(!on_bridge_add_del(add, br_name)) {

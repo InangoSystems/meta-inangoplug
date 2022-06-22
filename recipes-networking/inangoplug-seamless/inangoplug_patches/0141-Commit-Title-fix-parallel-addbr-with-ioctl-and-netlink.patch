@@ -1,0 +1,102 @@
+From fd203590d37893412da075a82f90508d7f278f92 Mon Sep 17 00:00:00 2001
+From: Georgii Okhokhonin <g.okhokhonin@inango-systems.com>
+Date: Thu, 16 Jun 2022 14:34:28 +0300
+Subject: [PATCH] Commit Title: fix parallel addbr with ioctl and netlink
+
+BugId: 28555
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description: move netlink_dev under common mutex for ioctl and netlink
+---
+ datapath/brcompat_main.c | 31 +++++++++++++++----------------
+ 1 file changed, 15 insertions(+), 16 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 6e0c7ea8a..ef6587ecf 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -122,14 +122,6 @@ static struct net *brc_net = NULL;
+  * period of time.) */
+ static DEFINE_MUTEX(brc_serial);
+ 
+-static DEFINE_MUTEX(brc_netdevice);
+-static struct net_device * netlink_dev;
+-
+-static struct net_device *brc_get_netdev(void)
+-{
+-	return netlink_dev;
+-}
+-
+ /* Userspace communication. */
+ static DEFINE_SPINLOCK(brc_lock);    /* Ensure atomic access to these vars. */
+ static DECLARE_COMPLETION(brc_done); /* Userspace signaled operation done? */
+@@ -138,6 +130,9 @@ static u32 brc_seq;		     /* Sequence number for current op. */
+ static bool brc_netlink_flg = false; /* Flag that indicate that exist brcompat netlink processing */
+ 
+ static DEFINE_MUTEX(brc_addbr_lock); /* Ensure atomic bridge adding. */
++static struct net_device * netlink_dev; /* Pointer to net_device allocated in kernel,
++					   in case of netlink newlink. Must be
++					   processed under brc_addbr_lock. */
+ static DEFINE_MUTEX(brc_name_lock);  /* Ensure atomic access to bridge_name. */
+ static char bridge_name[IFNAMSIZ] = {0};
+ 
+@@ -186,7 +181,8 @@ static int brc_send_simple_command(struct net *net, struct sk_buff *request)
+ 	return -error;
+ }
+ 
+-static int brc_add_del_bridge(struct net *net, char *name, char *mac, int add)
++static int brc_add_del_bridge(struct net *net, struct net_device *dev,
++			      char *name, char *mac, int add)
+ {
+ 	struct sk_buff *request;
+ 	int result;
+@@ -207,6 +203,7 @@ static int brc_add_del_bridge(struct net *net, char *name, char *mac, int add)
+ 
+ 	/* if (add == BRC_GENL_C_DP_ADD) */
+ 	mutex_lock(&brc_addbr_lock);
++	netlink_dev = dev;
+ 
+ 	mutex_lock(&brc_name_lock);
+ 	strcpy(bridge_name, name);
+@@ -218,24 +215,26 @@ static int brc_add_del_bridge(struct net *net, char *name, char *mac, int add)
+ 	*bridge_name = '\0';
+ 	mutex_unlock(&brc_name_lock);
+ 
++	netlink_dev = NULL;
+ 	mutex_unlock(&brc_addbr_lock);
+ 
+ 	return result;
+ }
+ 
++static struct net_device *brc_get_netdev(void)
++{
++	return netlink_dev;
++}
++
+ static int brc_add_del_bridge_netlink(struct net *net, struct net_device *dev, int add)
+ {
+ 	int err;
+ 	rtnl_unlock();
+-	mutex_lock(&brc_netdevice);
+-	netlink_dev = dev;
+ 	if (dev->addr_assign_type == NET_ADDR_SET) {
+-		err = brc_add_del_bridge(net, dev->name, dev->dev_addr, add);
++		err = brc_add_del_bridge(net, dev, dev->name, dev->dev_addr, add);
+ 	} else {
+-		err = brc_add_del_bridge(net, dev->name, NULL, add);
++		err = brc_add_del_bridge(net, dev, dev->name, NULL, add);
+ 	}
+-	netlink_dev = NULL;
+-	mutex_unlock(&brc_netdevice);
+ 	rtnl_lock();
+ 	return err;
+ }
+@@ -246,7 +245,7 @@ static int brc_add_del_bridge_ioctl(struct net *net, char __user *uname, int add
+ 	if (copy_from_user(name, uname, IFNAMSIZ))
+ 		return -EFAULT;
+ 	name[IFNAMSIZ - 1] = 0;
+-	return brc_add_del_bridge(net, name, NULL, add);
++	return brc_add_del_bridge(net, NULL, name, NULL, add);
+ }
+ 
+ static int brc_get_indices(struct net *net,

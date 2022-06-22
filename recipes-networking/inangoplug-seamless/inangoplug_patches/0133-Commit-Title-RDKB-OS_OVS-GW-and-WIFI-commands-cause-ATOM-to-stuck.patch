@@ -1,0 +1,36 @@
+From a211f7f994b8b996092dc682e2d0a9b9ea2650f6 Mon Sep 17 00:00:00 2001
+From: Victoria Anosova <v.anosova@inango-systems.com>
+Date: Thu, 28 Apr 2022 18:59:56 +0500
+Subject: [PATCH] Commit Title: [RDKB-OS_OVS] GW and WIFI commands cause ATOM
+ to stuck
+
+BugId                 : 28378
+Bug Fixed(y/N[blankN]):
+CodeReviewId          : 0
+Description           : Added parse of interface<%d> name for netlink devices
+---
+ datapath/vport-internal_dev.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/datapath/vport-internal_dev.c b/datapath/vport-internal_dev.c
+index 97e850b88..c3cf81d4f 100644
+--- a/datapath/vport-internal_dev.c
++++ b/datapath/vport-internal_dev.c
+@@ -318,10 +318,17 @@ static int br_newlink(struct net *src_net, struct net_device *dev, struct nlattr
+ 	int err;
+ 	mutex_lock(&brc_netdevice);
+ 	netlink_dev = dev;
++
++	err = dev_get_valid_name(src_net, netlink_dev, netlink_dev->name);
++	if (err < 0) {
++		goto out;
++	}
++
+ 	if (ovs_dp_br_brc_add_del_bridge_netlink_hook)
+ 		err = ovs_dp_br_brc_add_del_bridge_netlink_hook(src_net, dev->name, BRC_GENL_C_DP_ADD);
+ 	else
+ 		err = -EOPNOTSUPP;
++out:
+ 	netlink_dev = NULL;
+ 	mutex_unlock(&brc_netdevice);
+ 	return err;
