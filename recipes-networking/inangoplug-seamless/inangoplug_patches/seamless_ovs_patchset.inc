@@ -144,5 +144,6 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0142-Commit-Title-Send-RNTL-notification-when-port-is-set.patch \
     file://0143-Commit-Title-Use-Datapath-ID-instead-of-Linux-ID-during-RTNL-notification.patch \
     file://0144-Commit-Title-Don-t-operate-with-vport-outside-of-rcu-lock.patch \
+    file://0145-Commit-Title-7.3.3-bridge-removing-doesn-t-work-via-ip-link.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"
