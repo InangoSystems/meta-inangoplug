@@ -146,5 +146,6 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0144-Commit-Title-Don-t-operate-with-vport-outside-of-rcu-lock.patch \
     file://0145-Commit-Title-7.3.3-bridge-removing-doesn-t-work-via-ip-link.patch \
     file://0146-Commit-Title-Fixate-lib-build-order.patch \
+    file://0147-Commit-Title-Store-odp-port-in-FDB-instead-of-get-from-other-library.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"
