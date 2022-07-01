@@ -1,0 +1,27 @@
+From aa2f0e53301d0cfaf1a58849f1195bf050068b6d Mon Sep 17 00:00:00 2001
+From: Victoria Anosova <v.anosova@inango-systems.com>
+Date: Wed, 22 Jun 2022 17:01:55 +0300
+Subject: [PATCH] Commit Title: bridge removing doesn't work via ip link
+
+BugId: 29376
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description: fix execution of command "ip link
+             delete <br> type bridge"
+---
+ datapath/brcompat_main.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index 6aa9c4c86..e6fff2b5f 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -231,7 +231,7 @@ static int brc_add_del_bridge_netlink(struct net *net, struct net_device *dev, i
+ {
+ 	int err;
+ 	rtnl_unlock();
+-	if (dev->addr_assign_type == NET_ADDR_SET) {
++	if ((add == BRC_GENL_C_DP_ADD) && (dev->addr_assign_type == NET_ADDR_SET)) {
+ 		err = brc_add_del_bridge(net, dev, dev->name, dev->dev_addr, add);
+ 	} else {
+ 		err = brc_add_del_bridge(net, dev, dev->name, NULL, add);

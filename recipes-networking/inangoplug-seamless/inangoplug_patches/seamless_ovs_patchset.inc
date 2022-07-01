@@ -151,5 +151,10 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0149-Commit-Title-Use-lookup_vport.patch \
     file://0150-Commit-Title-Formatting.patch \
     file://0151-Commit-Title-Fixate-lib-build-order.patch \
+    file://0152-Commit-Title-deadlock-with-parallel-ip-link-add-.-type-bridge.patch \
+    file://0153-Commit-Title-fix-parallel-addbr-with-ioctl-and-netlink.patch \
+    file://0154-Commit-Title-Don-t-operate-with-vport-outside-of-rcu-lock.patch \
+    file://0155-Commit-Title-bridge-removing-doesn-t-work-via-ip-link.patch \
+    file://0156-Commit-Title-Cannot-build-OVS-native-because-OVS-have-a-cycle-dependency.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"
