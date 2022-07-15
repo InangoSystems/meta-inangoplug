@@ -142,5 +142,6 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0140-port-change-init-sequence-fix-build-issue.patch \
     file://0141-Commit-Title-Send-NEW-DEL-NEIGH-notifications-to-Linux.patch \
     file://0142-Commit-Title-Fixate-lib-build-order.patch \
+    file://0143-Commit-Title-Cannot-build-OVS-native-because-OVS-have-a-cycle-dependency.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

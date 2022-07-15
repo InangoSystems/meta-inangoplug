@@ -1,0 +1,353 @@
+From 4d17e54ecd106fa565cfebb010d17786872e83e9 Mon Sep 17 00:00:00 2001
+From: Anton Chigrin <a.chigrin@inango-systems.com>
+Date: Fri, 24 Jun 2022 18:55:34 +0300
+Subject: [PATCH] Commit Title: Cannot build OVS-native because OVS have a
+ cycle dependency.
+
+BugID: 29418
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description:
+- resolve cycle dependency in build time
+- exted FDB to store odp_port_no additionally
+- remove unused function
+---
+ Makefile.am                  |  3 +--
+ lib/automake.mk              |  5 ++++-
+ lib/learning-switch.c        |  2 +-
+ lib/mac-learning.c           | 23 +++++++++++------------
+ lib/mac-learning.h           |  5 +++--
+ ofproto/automake.mk          |  1 +
+ ofproto/ofproto-dpif-xlate.c | 35 +++++++++++++++++++++--------------
+ ofproto/ofproto-dpif.c       | 17 +++++++----------
+ ofproto/ofproto-dpif.h       |  1 -
+ 9 files changed, 49 insertions(+), 43 deletions(-)
+
+diff --git a/Makefile.am b/Makefile.am
+index ce017b226..619e32c28 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -113,8 +113,7 @@ MAN_FRAGMENTS =
+ MAN_ROOTS =
+ noinst_DATA =
+ noinst_HEADERS =
+-# Move libs define here to make libs build in this order. Due to changes, libopenvswitch depends on libofproto
+-lib_LTLIBRARIES = lib/libsflow.la ofproto/libofproto.la lib/libopenvswitch.la
++lib_LTLIBRARIES =
+ noinst_LTLIBRARIES =
+ noinst_man_MANS =
+ noinst_PROGRAMS =
+diff --git a/lib/automake.mk b/lib/automake.mk
+index 78976fd70..9dc2cab0e 100644
+--- a/lib/automake.mk
++++ b/lib/automake.mk
+@@ -43,10 +43,11 @@ lib_libopenvswitchinclude_HEADERS = \
+ 	lib/unixctl.h \
+ 	lib/util.h
+ 
++lib_LTLIBRARIES += lib/libopenvswitch.la
++
+ lib_libopenvswitch_la_LIBADD = $(SSL_LIBS)
+ lib_libopenvswitch_la_LIBADD += $(CAPNG_LDADD)
+ lib_libopenvswitch_la_LIBADD += $(LIBBPF_LDADD)
+-lib_libopenvswitch_la_LIBADD += ofproto/libofproto.la
+ 
+ if WIN32
+ lib_libopenvswitch_la_LIBADD += ${PTHREAD_LIBS}
+@@ -407,6 +408,8 @@ nodist_lib_libopenvswitch_la_SOURCES = \
+ 	lib/vswitch-idl.h
+ CLEANFILES += $(nodist_lib_libopenvswitch_la_SOURCES)
+ 
++lib_LTLIBRARIES += lib/libsflow.la
++
+ lib_libsflow_la_LDFLAGS = \
+         $(OVS_LTINFO) \
+         -Wl,--version-script=$(top_builddir)/lib/libsflow.sym \
+diff --git a/lib/learning-switch.c b/lib/learning-switch.c
+index 8102475ca..93ad58082 100644
+--- a/lib/learning-switch.c
++++ b/lib/learning-switch.c
+@@ -641,5 +641,5 @@ set_mac_entry_ofp_port(struct mac_learning *ml,
+                        struct mac_entry *e, ofp_port_t ofp_port)
+     OVS_REQ_WRLOCK(ml->rwlock)
+ {
+-    mac_entry_set_port(ml, e, (void *) (OVS_FORCE uintptr_t) ofp_port);
++    mac_entry_set_port(ml, e, (void *) (OVS_FORCE uintptr_t) ofp_port, e->odp_port_no);
+ }
+diff --git a/lib/mac-learning.c b/lib/mac-learning.c
+index 67a428ad5..2faf8a5f3 100644
+--- a/lib/mac-learning.c
++++ b/lib/mac-learning.c
+@@ -97,7 +97,7 @@ mac_learning_port_lookup(struct mac_learning *ml, void *port)
+  * that there is a degree of fairness, that is, each port is entitled to its
+  * fair share of MAC entries. */
+ void
+-mac_entry_set_port(struct mac_learning *ml, struct mac_entry *e, void *port)
++mac_entry_set_port(struct mac_learning *ml, struct mac_entry *e, void *port, odp_port_t odp_port_no)
+     OVS_REQ_WRLOCK(ml->rwlock)
+ {
+     if (mac_entry_get_port(ml, e) != port) {
+@@ -118,6 +118,7 @@ mac_entry_set_port(struct mac_learning *ml, struct mac_entry *e, void *port)
+                             mlport->heap_node.priority - 1);
+             }
+             e->mlport = NULL;
++            e->odp_port_no = ODPP_NONE;
+         }
+ 
+         if (port) {
+@@ -137,6 +138,7 @@ mac_entry_set_port(struct mac_learning *ml, struct mac_entry *e, void *port)
+             }
+             ovs_list_push_back(&mlport->port_lrus, &e->port_lru_node);
+             e->mlport = mlport;
++            e->odp_port_no = odp_port_no;
+         }
+     }
+ }
+@@ -338,6 +340,7 @@ mac_learning_insert(struct mac_learning *ml,
+         e->vlan = vlan;
+         e->grat_arp_lock = TIME_MIN;
+         e->mlport = NULL;
++        e->odp_port_no = ODPP_NONE;
+         COVERAGE_INC(mac_learning_learned);
+         ml->total_learned++;
+     } else {
+@@ -414,7 +417,7 @@ is_mac_learning_update_needed(const struct mac_learning *ml,
+ static bool
+ update_learning_table__(struct mac_learning *ml, struct eth_addr src,
+                         int vlan, bool is_gratuitous_arp, bool is_bond,
+-                        void *in_port)
++                        void *in_port, odp_port_t odp_port_no)
+     OVS_REQ_WRLOCK(ml->rwlock)
+ {
+     struct mac_entry *mac;
+@@ -445,7 +448,7 @@ update_learning_table__(struct mac_learning *ml, struct eth_addr src,
+             COVERAGE_INC(mac_learning_moved);
+             ml->total_moved++;
+         }
+-        mac_entry_set_port(ml, mac, in_port);
++        mac_entry_set_port(ml, mac, in_port, odp_port_no);
+         return true;
+     }
+     return false;
+@@ -460,7 +463,7 @@ update_learning_table__(struct mac_learning *ml, struct eth_addr src,
+ bool
+ mac_learning_update(struct mac_learning *ml, struct eth_addr src,
+                     int vlan, bool is_gratuitous_arp, bool is_bond,
+-                    void *in_port)
++                    void *in_port, odp_port_t odp_port_no)
+     OVS_EXCLUDED(ml->rwlock)
+ {
+     bool need_update;
+@@ -479,7 +482,7 @@ mac_learning_update(struct mac_learning *ml, struct eth_addr src,
+             /* Slow path: MAC learning table might need an update. */
+             ovs_rwlock_wrlock(&ml->rwlock);
+             updated = update_learning_table__(ml, src, vlan, is_gratuitous_arp,
+-                                              is_bond, in_port);
++                                              is_bond, in_port, odp_port_no);
+             ovs_rwlock_unlock(&ml->rwlock);
+         }
+     }
+@@ -512,14 +515,10 @@ mac_learning_lookup(const struct mac_learning *ml,
+ void
+ mac_learning_expire(struct mac_learning *ml, struct mac_entry *e)
+ {
+-    void *port;
+-    odp_port_t odp_port;
+-
+-    port = mac_entry_get_port(ml, e);
+-    odp_port = ofbundle_to_odp_port(port);
+     ml->need_revalidate = true;
+-    dpif_netlink_rtm_delneigh(odp_port, ml->dp_ifindex, e->mac);
+-    mac_entry_set_port(ml, e, NULL);
++    if (e->odp_port_no)
++        dpif_netlink_rtm_delneigh(e->odp_port_no, ml->dp_ifindex, e->mac);
++    mac_entry_set_port(ml, e, NULL, ODPP_NONE);
+     hmap_remove(&ml->table, &e->hmap_node);
+     ovs_list_remove(&e->lru_node);
+     free(e);
+diff --git a/lib/mac-learning.h b/lib/mac-learning.h
+index ffb4681b5..765ae2555 100644
+--- a/lib/mac-learning.h
++++ b/lib/mac-learning.h
+@@ -115,12 +115,13 @@ struct mac_entry {
+      *
+      * The client-specified data is mlport->port. */
+     struct mac_learning_port *mlport;
++    odp_port_t odp_port_no;
+     struct ovs_list port_lru_node; /* In mac_learning_port's "port_lru"s. */
+ };
+ 
+ static inline void *mac_entry_get_port(const struct mac_learning *ml,
+                                        const struct mac_entry *);
+-void mac_entry_set_port(struct mac_learning *, struct mac_entry *, void *port);
++void mac_entry_set_port(struct mac_learning *, struct mac_entry *, void *port, odp_port_t odp_port_no);
+ 
+ /* Information about client-provided port pointers (the 'port' member), to
+  * allow for per-port fairness.
+@@ -217,7 +218,7 @@ struct mac_entry *mac_learning_insert(struct mac_learning *ml,
+     OVS_REQ_WRLOCK(ml->rwlock);
+ bool mac_learning_update(struct mac_learning *ml, struct eth_addr src,
+                          int vlan, bool is_gratuitous_arp, bool is_bond,
+-                         void *in_port)
++                         void *in_port, odp_port_t odp_port_no)
+     OVS_EXCLUDED(ml->rwlock);
+ 
+ /* Lookup. */
+diff --git a/ofproto/automake.mk b/ofproto/automake.mk
+index 08e59deed..05c40c8fa 100644
+--- a/ofproto/automake.mk
++++ b/ofproto/automake.mk
+@@ -8,6 +8,7 @@
+ # Includes Inango Systems Ltd’s changes/modifications dated: 2021, 2022.
+ # Changed/modified portions - Copyright (c) 2021, 2022 , Inango Systems Ltd.
+ 
++lib_LTLIBRARIES += ofproto/libofproto.la
+ ofproto_libofproto_la_LDFLAGS = \
+         $(OVS_LTINFO) \
+         -Wl,--version-script=$(top_builddir)/ofproto/libofproto.sym \
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 8bbe0d4f2..0a022ec16 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2572,7 +2572,7 @@ is_admissible(struct xlate_ctx *ctx, struct xport *in_port,
+ static bool
+ update_learning_table__(const struct xbridge *xbridge,
+                         struct xbundle *in_xbundle, struct eth_addr dl_src,
+-                        int vlan, bool is_grat_arp)
++                        int vlan, bool is_grat_arp, odp_port_t odp_port_no)
+ {
+     int dp_ifindex;
+ 
+@@ -2582,7 +2582,8 @@ update_learning_table__(const struct xbridge *xbridge,
+             || !mac_learning_update(xbridge->ml, dl_src, vlan,
+                                     is_grat_arp,
+                                     in_xbundle->bond != NULL,
+-                                    in_xbundle->ofbundle));
++                                    in_xbundle->ofbundle,
++                                    odp_port_no));
+ }
+ 
+ static void
+@@ -2590,17 +2591,23 @@ update_learning_table(const struct xlate_ctx *ctx,
+                       struct xbundle *in_xbundle, struct eth_addr dl_src,
+                       int vlan, bool is_grat_arp)
+ {
++    odp_port_t odp_port_no = ODPP_NONE;
++    struct xport *xport;
+ 
++    xlate_report_debug(ctx, OFT_DETAIL, "learned that "ETH_ADDR_FMT" is "
++                        "on port %s in VLAN %d",
++                        ETH_ADDR_ARGS(dl_src), in_xbundle->name, vlan);
++    xport = get_ofp_port(ctx->xbridge, ctx->base_flow.in_port.ofp_port);
++    if (!xport)
++    {
++        VLOG_WARN("Cannot find xport for xbundle: %s", in_xbundle->name);
++    } else {
++        odp_port_no = xport->odp_port;
++    }
+     if (!update_learning_table__(ctx->xbridge, in_xbundle, dl_src, vlan,
+-                                 is_grat_arp)) {
+-        struct xport *xport;
++                                 is_grat_arp, odp_port_no)) {
+ 
+-        xlate_report_debug(ctx, OFT_DETAIL, "learned that "ETH_ADDR_FMT" is "
+-                           "on port %s in VLAN %d",
+-                           ETH_ADDR_ARGS(dl_src), in_xbundle->name, vlan);
+-        xport = CONTAINER_OF(ovs_list_front(&in_xbundle->xports), struct xport,
+-                             bundle_node);
+-        dpif_netlink_rtm_newneigh(xport->odp_port, ctx->xbridge->ml->dp_ifindex, dl_src);
++        dpif_netlink_rtm_newneigh(odp_port_no, ctx->xbridge->ml->dp_ifindex, dl_src);
+     }
+ }
+ 
+@@ -6956,7 +6963,6 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
+     const struct ofpact *a;
+ 
+     /* dl_type already in the mask, not set below. */
+-
+     if (!ofpacts_len) {
+         xlate_report(ctx, OFT_ACTION, "drop");
+         return;
+@@ -8234,18 +8240,19 @@ xlate_mac_learning_update(const struct ofproto_dpif *ofproto,
+     struct xlate_cfg *xcfg = ovsrcu_get(struct xlate_cfg *, &xcfgp);
+     struct xbridge *xbridge;
+     struct xbundle *xbundle;
++    struct xport *xport;
+ 
+     xbridge = xbridge_lookup(xcfg, ofproto);
+     if (!xbridge) {
+         return;
+     }
+ 
+-    xbundle = lookup_input_bundle__(xbridge, in_port, NULL);
+-    if (!xbundle) {
++    xbundle = lookup_input_bundle__(xbridge, in_port, &xport);
++    if (!xbundle || !xport) {
+         return;
+     }
+ 
+-    update_learning_table__(xbridge, xbundle, dl_src, vlan, is_grat_arp);
++    update_learning_table__(xbridge, xbundle, dl_src, vlan, is_grat_arp, xport->odp_port);
+ }
+ 
+ void
+diff --git a/ofproto/ofproto-dpif.c b/ofproto/ofproto-dpif.c
+index 8ed5cde3c..65fcaa72e 100644
+--- a/ofproto/ofproto-dpif.c
++++ b/ofproto/ofproto-dpif.c
+@@ -193,6 +193,7 @@ static odp_port_t ofp_port_to_odp_port(const struct ofproto_dpif *,
+ 
+ static ofp_port_t odp_port_to_ofp_port(const struct ofproto_dpif *,
+                                        odp_port_t);
++static struct ofport_dpif * ofbundle_get_a_port(const struct ofbundle *bundle);
+ 
+ static struct ofport_dpif *
+ ofport_dpif_cast(const struct ofport *ofport)
+@@ -3078,13 +3079,18 @@ bundle_move(struct ofbundle *old, struct ofbundle *new)
+     struct mac_learning *ml = ofproto->ml;
+     struct mac_entry *mac, *next_mac;
+ 
++    struct ofport_dpif *new_port;
++    odp_port_t odp_port_no;
++
+     ovs_assert(new->ofproto == old->ofproto);
+ 
+     ofproto->backer->need_revalidate = REV_RECONFIGURE;
+     ovs_rwlock_wrlock(&ml->rwlock);
++    new_port = ofbundle_get_a_port(new);
++    odp_port_no = ofp_port_to_odp_port(ofproto, new_port->up.ofp_port);
+     LIST_FOR_EACH_SAFE (mac, next_mac, lru_node, &ml->lrus) {
+         if (mac_entry_get_port(ml, mac) == old) {
+-            mac_entry_set_port(ml, mac, new);
++            mac_entry_set_port(ml, mac, new, odp_port_no);
+         }
+     }
+     ovs_rwlock_unlock(&ml->rwlock);
+@@ -6683,15 +6689,6 @@ odp_port_to_ofport(const struct dpif_backer *backer, odp_port_t odp_port)
+     return NULL;
+ }
+ 
+-odp_port_t
+-ofbundle_to_odp_port(void *port)
+-{
+-    struct ofport_dpif *ofport;
+-
+-    ofport = ofbundle_get_a_port((struct ofbundle*) port);
+-    return ofport->odp_port;
+-}
+-
+ static ofp_port_t
+ odp_port_to_ofp_port(const struct ofproto_dpif *ofproto, odp_port_t odp_port)
+ {
+diff --git a/ofproto/ofproto-dpif.h b/ofproto/ofproto-dpif.h
+index 4af3badf4..7499d2409 100644
+--- a/ofproto/ofproto-dpif.h
++++ b/ofproto/ofproto-dpif.h
+@@ -289,7 +289,6 @@ extern struct shash all_dpif_backers;
+ struct ofport_dpif *odp_port_to_ofport(const struct dpif_backer *, odp_port_t);
+ 
+ odp_port_t ofp_port_to_odp_port_ext(const struct ofproto_dpif *ofproto, ofp_port_t ofp_port);
+-odp_port_t ofbundle_to_odp_port(void *port);
+ 
+ /* A bridge based on a "dpif" datapath. */
+ 
