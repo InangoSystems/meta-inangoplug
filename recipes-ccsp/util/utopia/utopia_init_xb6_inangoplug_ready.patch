@@ -7,7 +7,7 @@ Index: git/source/scripts/init/system/utopia_init_xb6.sh
  syscfg unset UpdateNvram
  syscfg commit
 +
-+OVS_ENABLE=`syscfg get CONFIG_INANGO_INANGOPLUG_ENABLE`
++OVS_ENABLE=`syscfg get CONFIG_OVS_INFRASTRUCTURE_ENABLE`
 +loopBreakCounter=0
 +
 +touch /tmp/syscfg_inited
