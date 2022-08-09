@@ -63,15 +63,15 @@ do_install_append () {
     install -m 644 ${S}/config/inangoplug_defaults ${D}${sysconfdir}/inangoplug/inangoplug_defaults
 
     # Set paths for Private Key, Certificate and CA Certificate
-    sed -i -e 's#CONFIG_INANGO_INANGOPLUG_SSL_DEFAULT_DIR=#CONFIG_INANGO_INANGOPLUG_SSL_DEFAULT_DIR=${CONFIG_INANGO_INANGOPLUG_SSL_DEFAULT_DIR}#' ${D}${sysconfdir}/inangoplug/inangoplug.cfg
-    sed -i -e 's#CONFIG_INANGO_INANGOPLUG_SSL_RUNTIME_DIR=#CONFIG_INANGO_INANGOPLUG_SSL_RUNTIME_DIR=${CONFIG_INANGO_INANGOPLUG_SSL_RUNTIME_DIR}#' ${D}${sysconfdir}/inangoplug/inangoplug.cfg
+    sed -i -e 's#CONFIG_OVS_INFRASTRUCTURE_SSL_DEFAULT_DIR=#CONFIG_OVS_INFRASTRUCTURE_SSL_DEFAULT_DIR=${CONFIG_OVS_INFRASTRUCTURE_SSL_DEFAULT_DIR}#' ${D}${sysconfdir}/inangoplug/inangoplug.cfg
+    sed -i -e 's#CONFIG_OVS_INFRASTRUCTURE_SSL_RUNTIME_DIR=#CONFIG_OVS_INFRASTRUCTURE_SSL_RUNTIME_DIR=${CONFIG_OVS_INFRASTRUCTURE_SSL_RUNTIME_DIR}#' ${D}${sysconfdir}/inangoplug/inangoplug.cfg
 
     # Set default parameters for Inangoplug
-    sed -i -e 's#CONFIG_INANGO_INANGOPLUG_ENABLE=#CONFIG_INANGO_INANGOPLUG_ENABLE=${CONFIG_INANGO_INANGOPLUG_ENABLE}#' ${D}${sysconfdir}/inangoplug/inangoplug_defaults
-    sed -i -e 's#CONFIG_INANGO_INANGOPLUG_SO_SERVER=#CONFIG_INANGO_INANGOPLUG_SO_SERVER=${CONFIG_INANGO_INANGOPLUG_SO_SERVER}#' ${D}${sysconfdir}/inangoplug/inangoplug_defaults
-    echo -n "${CONFIG_INANGO_INANGOPLUG_SC_PRIVKEY}" > ${D}${CONFIG_INANGO_INANGOPLUG_SSL_DEFAULT_DIR}/sc-privkey.pem
-    echo -n "${CONFIG_INANGO_INANGOPLUG_SC_CERT}" > ${D}${CONFIG_INANGO_INANGOPLUG_SSL_DEFAULT_DIR}/sc-cert.pem
-    echo -n "${CONFIG_INANGO_INANGOPLUG_CA_CERT}" > ${D}${CONFIG_INANGO_INANGOPLUG_SSL_DEFAULT_DIR}/cacert.pem
+    sed -i -e 's#CONFIG_OVS_INFRASTRUCTURE_ENABLE=#CONFIG_OVS_INFRASTRUCTURE_ENABLE=${CONFIG_OVS_INFRASTRUCTURE_ENABLE}#' ${D}${sysconfdir}/inangoplug/inangoplug_defaults
+    sed -i -e 's#CONFIG_INANGO_SO_SERVER=#CONFIG_INANGO_SO_SERVER=${CONFIG_INANGO_SO_SERVER}#' ${D}${sysconfdir}/inangoplug/inangoplug_defaults
+    echo -n "${CONFIG_OVS_INFRASTRUCTURE_SC_PRIVKEY}" > ${D}${CONFIG_OVS_INFRASTRUCTURE_SSL_DEFAULT_DIR}/sc-privkey.pem
+    echo -n "${CONFIG_OVS_INFRASTRUCTURE_SC_CERT}" > ${D}${CONFIG_OVS_INFRASTRUCTURE_SSL_DEFAULT_DIR}/sc-cert.pem
+    echo -n "${CONFIG_OVS_INFRASTRUCTURE_CA_CERT}" > ${D}${CONFIG_OVS_INFRASTRUCTURE_SSL_DEFAULT_DIR}/cacert.pem
 
     install -d ${D}${systemd_unitdir}/system
     install -D -m 0644 ${S}/scripts/CcspInangoplugComponent.service ${D}${systemd_unitdir}/system/CcspInangoplugComponent.service

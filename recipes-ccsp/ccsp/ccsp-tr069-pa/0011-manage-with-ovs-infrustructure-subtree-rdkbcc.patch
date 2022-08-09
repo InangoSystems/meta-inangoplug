@@ -1,0 +1,34 @@
+Index: git/config/ccsp_tr069_pa_mapper_arm.xml
+===================================================================
+--- git.orig/config/ccsp_tr069_pa_mapper_arm.xml
++++ git/config/ccsp_tr069_pa_mapper_arm.xml
+@@ -7537,7 +7537,28 @@
+         <Param>
+             <Name>Device.DSLite.InterfaceSetting.{i}.X_RDKCENTRAL-COM_IPv6FragEnable</Name>
+         </Param>
+-        <!-- Device.X_INANGO_Inangoplug. -->
++        <!-- Device.OvsInfrastructure. -->
++        <Param>
++            <Name>Device.OvsInfrastructure.Enable</Name>
++        </Param>
++        <Param>
++            <Name>Device.OvsInfrastructure.DatapathID</Name>
++        </Param>
++        <Param>
++            <Name>Device.OvsInfrastructure.PrivateKey</Name>
++        </Param>
++        <Param>
++            <Name>Device.OvsInfrastructure.Certificate</Name>
++        </Param>
++        <Param>
++            <Name>Device.OvsInfrastructure.CACertificate</Name>
++        </Param>
++        <!-- Device.X_INANGO. -->
++        <Param>
++            <Name>Device.X_INANGO.SOServer</Name>
++        </Param>
++        <!-- Device.X_INANGO_Inangoplug. -->
++        <!-- X_INANGO_Inangoplug is obsolete, and left for compatability. -->
+         <Param>
+             <Name>Device.X_INANGO_Inangoplug.InangoplugEnable</Name>
+         </Param>
