@@ -1,0 +1,97 @@
+From b6fa6af51b70d54649087b434068120f5efae1be Mon Sep 17 00:00:00 2001
+From: Igor Plesser <i.plesser@inango-systems.com>
+Date: Wed, 7 Dec 2022 13:17:09 +0200
+Subject: [PATCH] Fix datapath crashing when deleting an interface with active
+ multicast subscriptions
+
+BugID: 31369
+---
+ datapath/datapath.c | 24 ++++++++++++++++--------
+ 1 file changed, 16 insertions(+), 8 deletions(-)
+
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index d9f658235..c6a7e408b 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -2266,7 +2266,8 @@ static int ovs_vport_cmd_addmcastgrp(struct sk_buff *skb, struct genl_info *info
+ 
+ 	ovs_lock();
+ 	vport = lookup_vport(sock_net(skb->sk), info->userhdr, a);
+-	if (vport == NULL)
++	err = PTR_ERR(vport);
++	if (IS_ERR(vport))
+ 		goto err;
+ 
+ 	err = ovs_vport_cmd_mcast_fill_msg(vport, info, &msg, &group, mac);
+@@ -2294,7 +2295,8 @@ static int ovs_vport_cmd_delmcastgrp(struct sk_buff *skb, struct genl_info *info
+ 
+ 	ovs_lock();
+ 	vport = lookup_vport(sock_net(skb->sk), info->userhdr, a);
+-	if (vport == NULL)
++	err = PTR_ERR(vport);
++	if (IS_ERR(vport))
+ 		goto err;
+ 
+ 	err = ovs_vport_cmd_mcast_fill_msg(vport, info, &msg, &group, mac);
+@@ -2326,6 +2328,7 @@ uint32_t del_vport_flags(struct vport *vport, uint32_t flags) {
+ 
+ static int ovs_vport_cmd_set_flags(struct sk_buff *skb, struct genl_info *info)
+ {
++	int err = -1;
+ 	struct vport *vport;
+ 	struct nlattr **a = info->attrs;
+ 	uint32_t flags;
+@@ -2333,9 +2336,10 @@ static int ovs_vport_cmd_set_flags(struct sk_buff *skb, struct genl_info *info)
+ 	ovs_lock();
+ 
+ 	vport = lookup_vport(sock_net(skb->sk), info->userhdr, a);
+-	if (vport == NULL){
++	err = PTR_ERR(vport);
++	if (IS_ERR(vport)){
+ 		ovs_unlock();
+-		return -1;
++		return err;
+ 	}
+ 
+ 	if (a[OVS_VPORT_ATTR_FLAGS]) {
+@@ -2352,15 +2356,17 @@ static int ovs_vport_cmd_set_flags(struct sk_buff *skb, struct genl_info *info)
+ 
+ static int ovs_vport_cmd_del_flags(struct sk_buff *skb, struct genl_info *info)
+ {
++	int err = -1;
+ 	struct vport *vport;
+ 	struct nlattr **a = info->attrs;
+ 	uint32_t flags;
+ 
+ 	ovs_lock();
+ 	vport = lookup_vport(sock_net(skb->sk), info->userhdr, a);
+-	if (vport == NULL){
++	err = PTR_ERR(vport);
++	if (IS_ERR(vport)){
+ 		ovs_unlock();
+-		return -1;
++		return err;
+ 	}
+ 
+ 	if (a[OVS_VPORT_ATTR_FLAGS]) {
+@@ -2377,6 +2383,7 @@ static int ovs_vport_cmd_del_flags(struct sk_buff *skb, struct genl_info *info)
+ 
+ static int ovs_vport_cmd_set_carrier(struct sk_buff *skb, struct genl_info *info)
+ {
++	int err = -1;
+ 	struct vport *vport;
+ 	struct nlattr **a = info->attrs;
+ 	uint32_t carrier;
+@@ -2384,9 +2391,10 @@ static int ovs_vport_cmd_set_carrier(struct sk_buff *skb, struct genl_info *info
+ 	ovs_lock();
+ 
+ 	vport = lookup_vport(sock_net(skb->sk), info->userhdr, a);
+-	if (vport == NULL){
++	err = PTR_ERR(vport);
++	if (IS_ERR(vport)){
+ 		ovs_unlock();
+-		return -1;
++		return err;
+ 	}
+ 
+ 	if (a[OVS_VPORT_ATTR_FLAGS]) {
