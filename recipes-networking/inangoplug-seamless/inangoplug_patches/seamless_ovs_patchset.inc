@@ -149,5 +149,7 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0147-Commit-Title-Store-odp-port-in-FDB-instead-of-get-from-other-library.patch \
     file://0148-rename-management-script-service.patch \
     file://0149-Fix-datapath-crashing-when-deleting-an-interface-with-active-multicast-subscrip.patch \
+    file://0150-Fixed-deleting-multicast-subscription.patch \
+    file://0151-Fixed-race-condition-in-brcompat.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"

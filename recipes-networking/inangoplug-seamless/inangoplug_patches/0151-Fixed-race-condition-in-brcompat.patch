@@ -1,0 +1,253 @@
+From 89885f03f1d568b7afbd04509613a112f7de2785 Mon Sep 17 00:00:00 2001
+From: Igor Plesser <i.plesser@inango-systems.com>
+Date: Wed, 4 Jan 2023 11:40:48 +0200
+Subject: [PATCH] Fixed race condition in brcompat
+
+BugID: 31681
+- Delete port in NETDEV_UNREGISTER event, using brcompat
+---
+ datapath/brcompat_main.c               | 43 ++++++++++++++++++++++++
+ datapath/datapath.c                    |  2 ++
+ datapath/datapath.h                    |  1 +
+ datapath/dp_notify.c                   |  2 ++
+ include/openvswitch/brcompat-netlink.h |  3 ++
+ vswitchd/ovs-brcompatd.c               | 61 +++++++++++++++-------------------
+ 6 files changed, 77 insertions(+), 35 deletions(-)
+
+diff --git a/datapath/brcompat_main.c b/datapath/brcompat_main.c
+index f2c0f8879..a331ece57 100644
+--- a/datapath/brcompat_main.c
++++ b/datapath/brcompat_main.c
+@@ -679,6 +679,28 @@ nla_put_failure:
+ 	return -ENOMEM;
+ }
+ 
++static int brc_set_ulong_val_cmd_sync(struct net_device *dev, int oper, unsigned long param)
++{
++	struct sk_buff *request;
++	int err;
++
++	ASSERT_RTNL();
++
++	request = brc_make_request(oper, dev->name, NULL);
++	if (!request)
++		return -ENOMEM;
++	if (nla_put_u64_64bit(request, BRC_GENL_A_ULONG_VAL, param, BRC_GENL_A_PAD))
++		goto nla_put_failure;
++
++	err = brc_send_simple_command(dev_net(dev), request);
++
++	return err;
++
++nla_put_failure:
++	kfree_skb(request);
++	return -ENOMEM;
++}
++
+ static int brc_get_ulong_val_cmd(struct net_device *dev, int oper, unsigned long *uvalue)
+ {
+ 	return brc_get_ulong_val_cmd_with_net(dev_net(dev), dev->name, oper, uvalue);
+@@ -1366,6 +1388,8 @@ static int brc_br_port_setup(struct vport *br_vport, struct vport *vport, int ad
+ 	}
+ 	else
+ 	{
++		if (!vport->brcompat_data)
++			return 0;
+ 		br_compat_multicast_disable_port(vport->brcompat_data);
+ 		br_compat_multicast_del_port(vport->brcompat_data);
+ 		vport->brcompat_data = NULL;
+@@ -1666,6 +1690,19 @@ nla_put_failure:
+ }
+ #endif
+ 
++static int brc_handle_event(struct net_device *dev, unsigned long event)
++{
++	switch (event)
++	{
++	case NETDEV_UNREGISTER:
++		return brc_set_ulong_val_cmd_sync(dev, BRC_GENL_C_NETDEV_UNREGISTER, 0);
++	default:
++		pr_warn("wrong event in brc_handle_event\n");
++	}
++
++	return -EINVAL;
++}
++
+ void br_dev_setup(struct net_device *dev)
+ {
+ 	if (check_bridge_list(dev->name) && br_ovs_link_ops->setup)
+@@ -1817,6 +1854,9 @@ static int __init brc_init(void)
+ 	/* Set the openvswitch br_setlink handler */
+ 	ovs_dp_br_setlink_hook = brc_br_setlink;
+ 
++	/* Set the openvswitch handle_event handler */
++	brc_handle_event_hook = brc_handle_event;
++
+ 	/* Set the br_compat br_get_mtu_set_by_user handler */
+ 	br_compat_get_bridge_hook = brc_br_get_bridge;
+ 
+@@ -1917,6 +1957,9 @@ static void brc_cleanup(void)
+ 	/* Unregister br_setlink hooks */
+ 	ovs_dp_br_setlink_hook = NULL;
+ 
++	/* Unregister handle_event hooks */
++	brc_handle_event_hook = NULL;
++
+ 	/* set the openvswitch linux bridge struct handler */
+ 	ovs_dp_br_bridge_setup = NULL;
+ 
+diff --git a/datapath/datapath.c b/datapath/datapath.c
+index c6a7e408b..40fea9c51 100644
+--- a/datapath/datapath.c
++++ b/datapath/datapath.c
+@@ -145,6 +145,8 @@ int (*ovs_get_fdb_entries)(struct net_device *dev, void *user,
+ 			       unsigned long maxnum, unsigned long offset, bool is_user_buf);
+ EXPORT_SYMBOL(ovs_get_fdb_entries);
+ 
++int (*brc_handle_event_hook)(struct net_device *dev, unsigned long event);
++EXPORT_SYMBOL(brc_handle_event_hook);
+ static struct vport *lookup_vport(struct net *net,
+ 				  const struct ovs_header *ovs_header,
+ 				  struct nlattr *a[OVS_VPORT_ATTR_MAX + 1]);
+diff --git a/datapath/datapath.h b/datapath/datapath.h
+index 2642a11d4..fd6672f47 100644
+--- a/datapath/datapath.h
++++ b/datapath/datapath.h
+@@ -292,6 +292,7 @@ extern void (*ovs_dp_dev_stop)(struct vport *vport);
+ extern int (*ovs_dp_dev_set_mtu_set_by_user)(struct net_device *dev, int is_set_by_user);
+ extern int (*ovs_dp_multicast_add_group)(struct vport *vport, struct br_ip *group, unsigned char *mac);
+ extern int (*ovs_dp_multicast_del_group)(struct vport *vport, struct br_ip *group, unsigned char *mac);
++extern int (*brc_handle_event_hook)(struct net_device *dev, unsigned long event);
+ 
+ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key);
+ void ovs_dp_detach_port(struct vport *);
+diff --git a/datapath/dp_notify.c b/datapath/dp_notify.c
+index 89e360e92..fe7925a1a 100644
+--- a/datapath/dp_notify.c
++++ b/datapath/dp_notify.c
+@@ -87,6 +87,8 @@ static int dp_device_event(struct notifier_block *unused, unsigned long event,
+ 	switch (event) {
+ 	case NETDEV_UNREGISTER:
+ 		{
++			if (brc_handle_event_hook)
++				brc_handle_event_hook(dev, NETDEV_UNREGISTER);
+ 			/* upper_dev_unlink and decrement promisc immediately */
+ 			ovs_netdev_detach_dev(vport);
+ 
+diff --git a/include/openvswitch/brcompat-netlink.h b/include/openvswitch/brcompat-netlink.h
+index ebc8eaa46..5698ed9ff 100644
+--- a/include/openvswitch/brcompat-netlink.h
++++ b/include/openvswitch/brcompat-netlink.h
+@@ -145,6 +145,9 @@ enum brc_genl_command {
+     BRC_GENL_C_SET_MTU, /* K: Set MTU. */
+     BRC_GENL_C_SET_PORT_MC_SNOOPING_FLOOD_REPORTS, /* K: Set the port multicast snooping flood reports */
+ 
++    /* Event handlers */
++    BRC_GENL_C_NETDEV_UNREGISTER, /* K: NETDEV_UNREGISTER event handler */
++
+     __BRC_GENL_C_MAX,
+     BRC_GENL_C_MAX = __BRC_GENL_C_MAX - 1
+ };
+diff --git a/vswitchd/ovs-brcompatd.c b/vswitchd/ovs-brcompatd.c
+index fe37e5958..62c42fdf8 100644
+--- a/vswitchd/ovs-brcompatd.c
++++ b/vswitchd/ovs-brcompatd.c
+@@ -1198,6 +1198,28 @@ handle_set_boolean_val_port_cmd(struct ofpbuf *buffer, const char *sub_cmd)
+     return error;
+ }
+ 
++static int
++handle_del_port_no_wait_cmd(struct ofpbuf *buffer)
++{
++    const char *pr_name;
++    uint32_t seq;
++    int error;
++
++    error = parse_command(buffer, &seq, &pr_name, NULL, NULL, NULL, NULL, NULL);
++
++    if (!error) {
++
++        if (!run_vsctl(vsctl_program, VSCTL_OPTIONS, "--no-wait",
++                       "--", "del-port", pr_name,
++                       "--", "comment", "del-port:", 
++                       pr_name, "Disap", (char *) NULL)) {
++            error = EINVAL;
++        }
++        send_simple_reply(seq, error);
++    }
++    return error;
++}
++
+ static int
+ handle_set_mc_router_port_cmd(struct ofpbuf *buffer)
+ {
+@@ -1685,6 +1707,10 @@ brc_recv_update(void)
+     case BRC_GENL_C_SET_MTU:
+         handle_set_ulong_val_interface_cmd(&buffer, "mtu_request");
+         break;
++
++    case BRC_GENL_C_NETDEV_UNREGISTER:
++        handle_del_port_no_wait_cmd(&buffer);
++        break;
+     /* } seamless-ovs */
+ 
+     default:
+@@ -1697,40 +1723,9 @@ error:
+     ofpbuf_uninit(&buffer);
+ }
+ 
+-static void
+-netdev_changed_cb(const struct rtnetlink_change *change,
+-                  void *aux OVS_UNUSED)
+-{
+-    char br_name[IFNAMSIZ];
+-    const char *port_name;
+-
+-    if (!change) {
+-        VLOG_WARN_RL(&rl, "network monitor socket overflowed");
+-        return;
+-    }
+-
+-    if (change->nlmsg_type != RTM_DELLINK || !change->master_ifindex) {
+-        return;
+-    }
+-
+-    port_name = change->ifname;
+-    if (!if_indextoname(change->master_ifindex, br_name)) {
+-        return;
+-    }
+-
+-    VLOG_INFO("network device %s destroyed, removing from bridge %s",
+-              port_name, br_name);
+-
+-    run_vsctl(vsctl_program, VSCTL_OPTIONS,
+-              "--", "--if-exists", "del-port", port_name,
+-              "--", "comment", "ovs-brcompatd:", port_name, "disappeared",
+-              (char *) NULL);
+-}
+-
+ int
+ main(int argc, char *argv[])
+ {
+-    struct nln_notifier *link_notifier;
+     struct unixctl_server *unixctl;
+     int retval;
+ 
+@@ -1757,8 +1752,6 @@ main(int argc, char *argv[])
+                    "\"brcompat\" kernel module.");
+     }
+ 
+-    link_notifier = rtnetlink_notifier_create(netdev_changed_cb, NULL);
+-
+     daemonize_complete();
+ 
+     for (;;) {
+@@ -1775,8 +1768,6 @@ main(int argc, char *argv[])
+         poll_block();
+     }
+ 
+-    rtnetlink_notifier_destroy(link_notifier);
+-
+     return 0;
+ }
+ 
