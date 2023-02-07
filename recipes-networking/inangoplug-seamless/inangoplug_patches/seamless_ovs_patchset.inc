@@ -151,5 +151,6 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0149-Fix-datapath-crashing-when-deleting-an-interface-with-active-multicast-subscrip.patch \
     file://0150-Fixed-deleting-multicast-subscription.patch \
     file://0151-Fixed-race-condition-in-brcompat.patch \
+    file://0152-Fixed-vswitchd-crash-if-an-interface-has-subscriptions-from-more-than-one-MAC.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"
