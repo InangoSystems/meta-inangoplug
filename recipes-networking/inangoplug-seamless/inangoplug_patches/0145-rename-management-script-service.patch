@@ -1,0 +1,27 @@
+From 4449d4092a7a62a657d701ecf52523165e192adb Mon Sep 17 00:00:00 2001
+From: Igor Plesser <i.plesser@inango-systems.com>
+Date: Mon, 7 Nov 2022 11:03:11 +0600
+Subject: [PATCH] rename management script/service
+
+BugID: 30863
+
+- Renamed scripts/services not related to Inango or Plug
+---
+ rhel/usr_lib_systemd_system_ovsdb-server.service | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/rhel/usr_lib_systemd_system_ovsdb-server.service b/rhel/usr_lib_systemd_system_ovsdb-server.service
+index 12c75078e..1f8002843 100644
+--- a/rhel/usr_lib_systemd_system_ovsdb-server.service
++++ b/rhel/usr_lib_systemd_system_ovsdb-server.service
+@@ -1,8 +1,8 @@
+ [Unit]
+ Description=Open vSwitch Database Unit
+-After=systemd-rpcbind-puma7.service check_inangoplug_enabled.service
++After=systemd-rpcbind-puma7.service check_ovs_infra_enabled.service
+ Before=network.target network.service
+-BindsTo=check_inangoplug_enabled.service
++BindsTo=check_ovs_infra_enabled.service
+ Wants=ovs-delete-transient-ports.service
+ PartOf=openvswitch.service
+ 

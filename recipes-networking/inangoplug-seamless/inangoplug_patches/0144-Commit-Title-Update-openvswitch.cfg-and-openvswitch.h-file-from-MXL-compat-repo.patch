@@ -1,0 +1,36 @@
+From 1ff36d4662a1f078a5d7fea37567eda8f213e55c Mon Sep 17 00:00:00 2001
+From: Victoria Anosova <v.anosova@inango-systems.com>
+Date: Wed, 26 Apr 2023 13:00:36 +0000
+Subject: [PATCH] Commit Title: Update openvswitch.cfg and openvswitch.h file
+ from MXL compat repos
+
+BugID: 32969
+Bug Fixed(y/N[blankN]): y
+CodeReviewId: 0
+Description: edited order of elements in enum
+---
+ datapath/linux/compat/include/linux/openvswitch.h | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/datapath/linux/compat/include/linux/openvswitch.h b/datapath/linux/compat/include/linux/openvswitch.h
+index 94431fe66..1516e0e0c 100644
+--- a/datapath/linux/compat/include/linux/openvswitch.h
++++ b/datapath/linux/compat/include/linux/openvswitch.h
+@@ -236,13 +236,14 @@ enum ovs_vport_cmd {
+ 	OVS_VPORT_CMD_DEL,
+ 	OVS_VPORT_CMD_GET,
+ 	OVS_VPORT_CMD_SET,
+-	OVS_VPORT_CMD_NEWNEIGH,
+-	OVS_VPORT_CMD_DELNEIGH,
+ 	OVS_VPORT_CMD_ADDMCASTGRP,
+ 	OVS_VPORT_CMD_DELMCASTGRP,
++	OVS_VPORT_CMD_NEWNEIGH,
++	OVS_VPORT_CMD_DELNEIGH,
+ 	OVS_VPORT_CMD_SET_FLAGS,
+ 	OVS_VPORT_CMD_DEL_FLAGS,
+-	OVS_VPORT_CMD_SET_CARRIER
++	OVS_VPORT_CMD_SET_CARRIER,
++	__OVS_VPORT_CMD_MAX
+ };
+ 
+ enum ovs_vport_type {

@@ -75,23 +75,23 @@ do_install_append () {
 
     install -d ${D}${systemd_unitdir}/system
     install -D -m 0644 ${S}/scripts/CcspInangoplugComponent.service ${D}${systemd_unitdir}/system/CcspInangoplugComponent.service
-    install -m 0644 ${S}/scripts/check_inangoplug_enabled.service ${D}${systemd_unitdir}/system/check_inangoplug_enabled.service
+    install -m 0644 ${S}/scripts/check_ovs_infra_enabled.service ${D}${systemd_unitdir}/system/check_ovs_infra_enabled.service
     install -m 0644 ${S}/scripts/connect_inangoplug.service ${D}${systemd_unitdir}/system/connect_inangoplug.service
     install -d ${D}${sysconfdir}/scripts
-    install -m 0755 ${S}/scripts/run_inangoplug.sh.in ${D}${sysconfdir}/scripts/run_inangoplug.sh
+    install -m 0755 ${S}/scripts/run_ovs_infra.sh ${D}${sysconfdir}/scripts/run_ovs_infra.sh
     install -m 0755 ${S}/scripts/connect_inangoplug.sh ${D}${sysconfdir}/scripts/connect_inangoplug.sh
 
     # Set path for syscfg.db
     if ${@bb.utils.contains('MXL_BUILD_FLAVOR', 'RDKBCC', 'true', 'false', d)};
     then
-        sed -i -e 's#@SYSCFG_FILE@#/opt/secure/data/syscfg.db#' ${D}${sysconfdir}/scripts/run_inangoplug.sh
+        sed -i -e 's#@SYSCFG_FILE@#/opt/secure/data/syscfg.db#' ${D}${sysconfdir}/scripts/run_ovs_infra.sh
     else
-        sed -i -e 's#@SYSCFG_FILE@#/nvram/syscfg.db#' ${D}${sysconfdir}/scripts/run_inangoplug.sh
+        sed -i -e 's#@SYSCFG_FILE@#/nvram/syscfg.db#' ${D}${sysconfdir}/scripts/run_ovs_infra.sh
     fi
 }
 
 SYSTEMD_SERVICE_${PN} += "CcspInangoplugComponent.service \
-                          check_inangoplug_enabled.service \
+                          check_ovs_infra_enabled.service \
                           connect_inangoplug.service \
                          "
 
