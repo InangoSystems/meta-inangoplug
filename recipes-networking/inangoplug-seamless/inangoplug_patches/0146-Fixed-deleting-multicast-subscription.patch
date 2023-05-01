@@ -1,0 +1,38 @@
+From b03844b9a9dcb18861972519c970b64e3bd48ac7 Mon Sep 17 00:00:00 2001
+From: Igor Plesser <i.plesser@inango-systems.com>
+Date: Mon, 26 Dec 2022 13:23:47 +0200
+Subject: [PATCH] Fixed deleting multicast subscription
+
+BugID: 31650
+
+- Changed the condition, if the MAC address is not specified when deleting the bundle, delete the bundle.
+---
+ lib/mcast-snooping.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/lib/mcast-snooping.c b/lib/mcast-snooping.c
+index e23eb825b..07910f4de 100644
+--- a/lib/mcast-snooping.c
++++ b/lib/mcast-snooping.c
+@@ -443,8 +443,10 @@ mcast_snooping_flush_group(struct mcast_snooping *ms, struct mcast_group *grp)
+ }
+ 
+ 
+-/* Delete bundle returning true if it succeeds,
+- * false if it didn't find the group. */
++/* If the MAC address is specified, then we look
++ * for the bundle with the desired MAC and delete it,
++ * if MAC equals NULL, delete all the bundles.
++ * Returns true if succeed, otherwise false */
+ static bool
+ mcast_group_delete_bundle(struct mcast_snooping *ms OVS_UNUSED,
+                           struct mcast_group *grp, void *port, const struct eth_addr *mac)
+@@ -453,7 +455,7 @@ mcast_group_delete_bundle(struct mcast_snooping *ms OVS_UNUSED,
+     struct mcast_group_bundle *b;
+ 
+     LIST_FOR_EACH (b, bundle_node, &grp->bundle_lru) {
+-        if (b->port == port && (mac ? eth_addr_equals(*mac, b->mac) : eth_addr_is_broadcast(b->mac))) {
++        if (b->port == port && (mac ? eth_addr_equals(*mac, b->mac) : true)) {
+             ovs_list_remove(&b->bundle_node);
+             dpif_netlink_rtm_del_mcast_grp(b->dpif, b->port_no, &grp->addr, grp->vlan, mac);
+             mcast_snooping_flush_group_bundle(ms, b);

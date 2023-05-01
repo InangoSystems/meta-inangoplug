@@ -143,5 +143,9 @@ INANGOPLUG_PATCHSET_LIST ?= " \
     file://0141-Commit-Title-Send-NEW-DEL-NEIGH-notifications-to-Linux.patch \
     file://0142-Commit-Title-Fixate-lib-build-order.patch \
     file://0143-Commit-Title-Cannot-build-OVS-native-because-OVS-have-a-cycle-dependency.patch \
+    file://0144-porting-changes-related-to-brcompat-split-under-feature-flag.patch \
+    file://0145-rename-management-script-service.patch \
+    file://0146-Fixed-deleting-multicast-subscription.patch \
+    file://0147-Fixed-vswitchd-crash-if-an-interface-has-subscriptions-from-more-than-one-MAC.patch \
 "
 SRC_URI_prepend = "${INANGOPLUG_PATCHSET_LIST}"
